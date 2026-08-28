@@ -4,6 +4,16 @@
 `/root/projects/mazon/app` — Amazon affiliate niche-finder. Backend is stdlib
 Python (`http.server`, `sqlite3`, `urllib`). No framework, no install.
 
+## Git note (environment)
+The sandbox filesystem has a broken `link()` on `/root/projects` (returns ENOENT),
+so a normal in-tree `.git` cannot write loose objects. The working repo keeps its
+gitdir at `/root/.gitdirs/mazon` and `/root/projects/mazon/.git` is a gitfile:
+```
+gitdir: /root/.gitdirs/mazon
+```
+Do not `rm -rf .git` or `git init` in-tree here. To add the repo remote / push,
+operate normally from `/root/projects/mazon` (git auto-reads the gitfile).
+
 ## Run
 - Server: `python3 server.py` (serves `static/` + `/api/*` on port 8765).
 - Env: `MAZON_TAG=<your-tag>-NN`, `MAZON_MARKET=com` (default).
