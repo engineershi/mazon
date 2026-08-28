@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mazon — Buy Link & Marketing Tools</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1><a href="/" style="color:var(--accent);text-decoration:none">Mazon</a></h1>
+  <p class="tagline">Direct-buyer push tools: copy-paste affiliate links, email draft, social post.</p>
+</header>
+<main>
+  <section class="card">
+    <h2>Generate push links</h2>
+    <div class="row">
+      <select id="kw-select"><option value="">— choose a saved niche —</option></select>
+      <button id="tool-btn">Generate tools</button>
+    </div>
+    <p class="hint">Picks the top products of the niche and builds affiliate-tagged links.</p>
+    <p id="tool-msg" class="msg"></p>
+  </section>
+
+  <section class="card">
+    <h2>Text links (DMs / bios / comments)</h2>
+    <textarea id="text" readonly rows="6" placeholder="Generate first…"></textarea>
+    <button data-grab="text">Copy</button>
+  </section>
+
+  <section class="card">
+    <h2>Email draft</h2>
+    <textarea id="email" readonly rows="10" placeholder="Generate first…"></textarea>
+    <button data-grab="email">Copy</button>
+  </section>
+
+  <section class="card">
+    <h2>Social post caption</h2>
+    <textarea id="post" readonly rows="6" placeholder="Generate first…"></textarea>
+    <button data-grab="post">Copy</button>
+  </section>
+
+  <section class="card">
+    <h2>Markdown (blog / site)</h2>
+    <textarea id="markdown" readonly rows="8" placeholder="Generate first…"></textarea>
+    <button data-grab="markdown">Copy</button>
+  </section>
+
+  <section class="card">
+    <h2>Top pick + short link</h2>
+    <p id="top-pick" class="msg"></p>
+    <p class="hint">Each /go/&lt;ASIN&gt; link 302-redirects buyers to the tagged Amazon product — memorable and short.</p>
+  </section>
+</main>
+
+<script>
+"use strict";
+function $(id){return document.getElementById(id);}
+async function loadNicheList(){
+  const r = await fetch("/api/niches");
+  const d = await r.json();
+  $("kw-select").innerHTML = '<option value="">— choose a saved niche —</option>' +
+    (d.niches||[]).map(n=>`<option value="${encodeURIComponent(n.keyword)}">${n.keyword}</option>`).join("");
+}
+async function genTools(){
+  const kw = $("kw-select").value;
+  if(!kw){ $("tool-msg").textContent="Pick a saved niche first."; return; }
+  $("tool-msg").textContent="Building links…";
+  const r = await fetch("/api/tools?keyword="+kw);
+  const d = await r.json();
+  $("text").value = d.text_links;
+  $("email").value = d.email;
+  $("post").value = d.post;
+  $("markdown").value = d.markdown;
+  const p = d.top_pick;
+  $("top-pick").textContent = p && p.asin
+    ? `Top pick: ${p.title} — ${location.origin}/go/${p.asin} (redirects to tagged Amazon)`
+    : "No top pick yet.";
+  $("tool-msg").textContent = `Built ${d.count} products. Tag: ${d.affiliate_tag||"not set"}.`;
+}
+document.addEventListener("DOMContentLoaded", ()=>{
+  loadNicheList();
+  $("tool-btn").onclick = genTools;
+  document.addEventListener("click", (e)=>{
+    const b = e.target.closest("[data-grab]");
+    if(!b) return;
+    const el = $(b.dataset.grab);
+    el.select(); document.execCommand("copy");
+    b.textContent = "Copied ✓";
+    setTimeout(()=>b.textContent="Copy", 1200);
+  });
+});
+</script>
+</body>
+</html>

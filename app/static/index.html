@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mazon — Amazon Affiliate Niche Finder</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>Mazon</h1>
+  <p class="tagline">Amazon affiliate niche finder — no API key needed to start earning.</p>
+  <nav>
+    <a href="#mine">Mine</a>
+    <a href="#search">Search</a>
+    <a href="#saved">Saved</a>
+    <a href="/tool">Tools</a>
+    <a href="#settings">Settings</a>
+  </nav>
+</header>
+
+<main>
+  <section id="settings" class="card">
+    <h2>Settings</h2>
+    <div class="row">
+      <label>Marketplace
+        <select id="market"></select>
+      </label>
+      <label>Affiliate tag
+        <input id="tag" placeholder="yourname-20" title="Appended to every product link">
+        <button id="save-settings">Save</button>
+      </label>
+    </div>
+    <div id="scraper-keys"></div>
+    <p id="settings-msg" class="msg"></p>
+  </section>
+
+  <section id="mine" class="card">
+    <h2>Mine a niche</h2>
+    <div class="row">
+      <input id="mine-seed" placeholder="e.g. keto snacks" size="32">
+      <select id="mine-market"></select>
+      <button id="mine-btn">Mine</button>
+    </div>
+    <p class="hint">Uses Amazon autosuggest + product search. Enter any broad topic.</p>
+    <p id="mine-msg" class="msg"></p>
+    <div id="mine-results"></div>
+  </section>
+
+  <section id="search" class="card">
+    <h2>Search products</h2>
+    <div class="row">
+      <input id="search-q" placeholder="search Amazon products" size="32">
+      <select id="search-market"></select>
+      <button id="search-btn">Search</button>
+    </div>
+    <p id="search-msg" class="msg"></p>
+    <div id="search-results" class="grid"></div>
+  </section>
+
+  <section id="saved" class="card">
+    <h2>Saved niches</h2>
+    <div id="saved-list"></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

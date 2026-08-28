@@ -1,0 +1,28 @@
+# Mazon
+
+## App root
+`/root/projects/mazon/app` — Amazon affiliate niche-finder. Backend is stdlib
+Python (`http.server`, `sqlite3`, `urllib`). No framework, no install.
+
+## Run
+- Server: `python3 server.py` (serves `static/` + `/api/*` on port 8765).
+- Env: `MAZON_TAG=<your-tag>-NN`, `MAZON_MARKET=com` (default).
+
+## Tests
+```
+cd /root/projects/mazon/app
+python3 -m unittest discover -s tests -v
+```
+All tests are offline: they stub `amazon._urlopen` and keep `CACHE_TTL=0`,
+`MIN_INTERVAL=0`. After changing backend code run the full suite; keep it green.
+
+## Conventions
+- Stdlib only; no third-party imports.
+- `amazon.py` = keyless Amazon product data (search, autosuggest, scraper
+  providers, affiliate URL builder). `niche.py` = mining. `seo.py` = crawlable
+  SSR pages. `market_engine.py` = buyer-push link/text tools. `server.py` = HTTP.
+- Every network call bottoms out in module-level `amazon._urlopen` so tests can
+  inject fake responses; providers never raise on the happy path.
+- Affiliate links always built via `amazon.affiliate_url(asin)` / `/go/<ASIN>` —
+  never hardcode `?tag=`.
+- New tests under `tests/` as plain `unittest` classes.
