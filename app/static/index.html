@@ -8,27 +8,37 @@
 </head>
 <body>
 <header>
-  <h1>Mazon</h1>
-  <p class="tagline">Amazon affiliate niche finder — no API key needed to start earning.</p>
+  <a class="logo" href="/">
+    <span class="mark">M</span><span>Mazon <em>Finds</em></span>
+  </a>
+  <div class="hero">
+    <h1>Find winning niches, <span>no code, no API key.</span></h1>
+    <p class="tagline">Amazon affiliate niche finder — mine a topic, pick products, and push ready-to-share affiliate links straight from one dashboard.</p>
+    <div class="hero-badges">
+      <span class="badge demand">✓ live Amazon data</span>
+      <span class="badge saturation">✓ autosuggest expansion</span>
+      <span class="badge source">✓ affiliate-ready links</span>
+    </div>
+  </div>
   <nav>
-    <a href="#mine">Mine</a>
-    <a href="#search">Search</a>
-    <a href="#saved">Saved</a>
-    <a href="/tool">Tools</a>
-    <a href="#settings">Settings</a>
+    <a href="#mine" class="primary">🌱 Mine</a>
+    <a href="#search">🔍 Search</a>
+    <a href="#saved">💾 Saved</a>
+    <a href="/tool">🛠 Tools</a>
+    <a href="#settings">🎛 Settings</a>
   </nav>
 </header>
 
 <main>
   <section id="settings" class="card">
-    <h2>Settings</h2>
+    <h2>🎛 Settings</h2>
     <div class="row">
       <label>Marketplace
         <select id="market"></select>
       </label>
       <label>Affiliate tag
         <input id="tag" placeholder="yourname-20" title="Appended to every product link">
-        <button id="save-settings">Save</button>
+        <button id="save-settings" class="warm">Save</button>
       </label>
     </div>
     <div id="scraper-keys"></div>
@@ -36,11 +46,11 @@
   </section>
 
   <section id="mine" class="card">
-    <h2>Mine a niche</h2>
+    <h2>🌱 Mine a niche</h2>
     <div class="row">
       <input id="mine-seed" placeholder="e.g. keto snacks" size="32">
       <select id="mine-market"></select>
-      <button id="mine-btn">Mine</button>
+      <button id="mine-btn" class="warm">Mine</button>
     </div>
     <p class="hint">Uses Amazon autosuggest + product search. Enter any broad topic.</p>
     <p id="mine-msg" class="msg"></p>
@@ -48,21 +58,25 @@
   </section>
 
   <section id="search" class="card">
-    <h2>Search products</h2>
+    <h2>🔍 Search products</h2>
     <div class="row">
       <input id="search-q" placeholder="search Amazon products" size="32">
       <select id="search-market"></select>
-      <button id="search-btn">Search</button>
+      <button id="search-btn" class="warm">Search</button>
     </div>
     <p id="search-msg" class="msg"></p>
     <div id="search-results" class="grid"></div>
   </section>
 
   <section id="saved" class="card">
-    <h2>Saved niches</h2>
+    <h2>💾 Saved niches</h2>
     <div id="saved-list"></div>
   </section>
 </main>
+
+<footer>
+  <p>Mazon Finds — honest Amazon comparison picks with affiliate links.</p>
+</footer>
 
 <script src="/app.js"></script>
 </body>

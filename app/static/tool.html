@@ -8,50 +8,63 @@
 </head>
 <body>
 <header>
-  <h1><a href="/" style="color:var(--accent);text-decoration:none">Mazon</a></h1>
-  <p class="tagline">Direct-buyer push tools: copy-paste affiliate links, email draft, social post.</p>
+  <a class="logo" href="/">
+    <span class="mark">M</span><span>Mazon <em>Finds</em></span>
+  </a>
+  <div class="hero">
+    <h1>Direct-buyer <span>push tools.</span></h1>
+    <p class="tagline">Copy-paste affiliate links, an email draft, a social post, and markdown — all tagged and ready to share.</p>
+  </div>
+  <nav>
+    <a href="/" class="primary">🌱 Dashboard</a>
+  </nav>
 </header>
+
 <main>
   <section class="card">
-    <h2>Generate push links</h2>
+    <h2>🧭 Generate push links</h2>
     <div class="row">
       <select id="kw-select"><option value="">— choose a saved niche —</option></select>
-      <button id="tool-btn">Generate tools</button>
+      <button id="tool-btn" class="warm">Generate tools</button>
     </div>
     <p class="hint">Picks the top products of the niche and builds affiliate-tagged links.</p>
     <p id="tool-msg" class="msg"></p>
   </section>
 
   <section class="card">
-    <h2>Text links (DMs / bios / comments)</h2>
+    <h2>💬 Text links (DMs / bios / comments)</h2>
     <textarea id="text" readonly rows="6" placeholder="Generate first…"></textarea>
-    <button data-grab="text">Copy</button>
+    <button data-grab="text" class="warm">Copy</button>
   </section>
 
   <section class="card">
-    <h2>Email draft</h2>
+    <h2>✉️ Email draft</h2>
     <textarea id="email" readonly rows="10" placeholder="Generate first…"></textarea>
-    <button data-grab="email">Copy</button>
+    <button data-grab="email" class="warm">Copy</button>
   </section>
 
   <section class="card">
-    <h2>Social post caption</h2>
+    <h2>📣 Social post caption</h2>
     <textarea id="post" readonly rows="6" placeholder="Generate first…"></textarea>
-    <button data-grab="post">Copy</button>
+    <button data-grab="post" class="warm">Copy</button>
   </section>
 
   <section class="card">
-    <h2>Markdown (blog / site)</h2>
+    <h2>📝 Markdown (blog / site)</h2>
     <textarea id="markdown" readonly rows="8" placeholder="Generate first…"></textarea>
-    <button data-grab="markdown">Copy</button>
+    <button data-grab="markdown" class="warm">Copy</button>
   </section>
 
   <section class="card">
-    <h2>Top pick + short link</h2>
+    <h2>🏆 Top pick + short link</h2>
     <p id="top-pick" class="msg"></p>
     <p class="hint">Each /go/&lt;ASIN&gt; link 302-redirects buyers to the tagged Amazon product — memorable and short.</p>
   </section>
 </main>
+
+<footer>
+  <p>Mazon Finds — honest Amazon comparison picks with affiliate links.</p>
+</footer>
 
 <script>
 "use strict";

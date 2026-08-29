@@ -26,12 +26,12 @@ function productCard(p) {
   const sym = {"EUR":"€","GBP":"£","JPY":"¥","INR":"₹","CAD":"C$","AUD":"A$",
                "SGD":"S$","NZD":"NZ$","MXN":"MX$","CNY":"¥"}[p.currency] || "$";
   const price = p.price != null ? sym + Number(p.price).toFixed(2) : "—";
-  const stars = p.stars != null ? "★ " + p.stars : "";
-  const revs = p.reviews != null ? " (" + p.reviews.toLocaleString() + ")" : "";
+  const stars = p.stars != null ? `<span class="stars">★ ${p.stars}</span>` : "";
+  const revs = p.reviews != null ? ` (${p.reviews.toLocaleString()})` : "";
   return `<div class="product">
     <h4 title="${esc(p.title)}">${esc((p.title||"").slice(0,90))}</h4>
     <div class="price">${esc(price)}</div>
-    <div class="meta">${esc(stars + revs)} ${esc(p.asin||"")}</div>
+    <div class="meta">${stars}${revs} ${esc(p.asin||"")}</div>
     <a href="${esc(p.url)}" target="_blank" rel="nofollow noopener">View on Amazon ↗</a>
   </div>`;
 }
