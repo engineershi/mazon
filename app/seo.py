@@ -146,6 +146,18 @@ def render_niche(keyword, niche):
     return head + body + _footer()
 
 
+def indexable_urls(saved_niches, base_url=None):
+    """Absolute URLs that belong in the sitemap + IndexNow submissions.
+
+    Mirrors render_sitemap() but returns ready-to-submit absolute URLs.
+    """
+    base = (base_url or BASE_URL).rstrip("/")
+    urls = [base + "/"]
+    for n in (saved_niches or []):
+        urls.append(base + "/n/" + _slugify(n["keyword"]))
+    return urls
+
+
 def render_sitemap(entries):
     """entries: list of (url_path, lastmod). Returns sitemap.xml bytes."""
     urls = "".join(

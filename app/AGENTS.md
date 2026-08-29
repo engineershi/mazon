@@ -33,6 +33,7 @@ All tests are offline: they stub `amazon._urlopen` and keep `CACHE_TTL=0`,
   SSR pages. `market_engine.py` = buyer-push link/text tools. `server.py` = HTTP.
 - Every network call bottoms out in module-level `amazon._urlopen` so tests can
   inject fake responses; providers never raise on the happy path.
-- Affiliate links always built via `amazon.affiliate_url(asin)` / `/go/<ASIN>` —
-  never hardcode `?tag=`.
+- Affiliate links are always direct and tagged via `amazon.affiliate_url(asin)`
+  (or `market_engine.redirect_url(asin)`); never hardcode `?tag=` and never
+  generate cloaked `/go/` links in new output (kept only as a legacy resolver).
 - New tests under `tests/` as plain `unittest` classes.

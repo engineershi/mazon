@@ -6,12 +6,12 @@ Everything is keyless and produces affiliate-tagged, copy-paste-ready output:
   * build_text_links  — clickable short text links for comments, DMs, bios
   * build_markdown     — Markdown link blocks for a niche's top products
   * build_email_draft  — a ready-to-send buyer email with all product links
-  * build_qr_url       — a QR-friendly redirect URL a poster/scanner leads buyers to
-  * build_redirect     — the in-app /go/<asin> endpoint that 302s to the tagged URL
+  * build_qr_url       — a QR-ready URL a poster/scanner leads buyers to
+  * expand_go          — legacy /go/<asin> resolver (still served for old links)
   * pick_for_buyers    — heuristic to surface the single best "buy this" pick
 
-Combine these with real traffic (social posts, forums, email) and every link
-is an affiliate link ready to earn the moment a buyer clicks + converts.
+All outbound links are DIRECT, affiliate-tagged amazon.com/dp/<ASIN>?tag=...
+URLs (no /go cloaking) so the site stays Amazon-Affiliate-compliant.
 """
 import html
 import re
@@ -50,7 +50,7 @@ def pick_for_buyers(items):
 
 def build_text_links(items, label="View on Amazon"):
     """Plain text links: `best keto snacks - https://amzn.to/...`. Paste straight
-    into a comment/DM/bio. Uses the /go redirect so it's short & clickable."""
+    into a comment/DM/bio. Uses the direct tagged Amazon URL."""
     out = []
     for it in _best_items(items, 5):
         asin = it.get("asin")
@@ -107,7 +107,7 @@ def build_post_template(items, caption="My top picks for this week 👇"):
 _FUNNEL_STAGES = [
     ("1 · Attract", "Awareness content (social/DM/email) links to a focused landing page"),
     ("2 · Convert", "Landing page pushes ONE product with social proof + a single CTA"),
-    ("3 · Deliver", "Every CTA is an affiliate /go/<asin> 302 to the tagged Amazon listing"),
+    ("3 · Deliver", "Every CTA is a direct affiliate-tagged Amazon listing link (no cloaking)"),
     ("4 · Multiply", "Follow-up emails + review requests compound long-term revenue"),
 ]
 
@@ -135,13 +135,11 @@ def build_landing_page(keyword, items, site_url=None):
     rest = [it for it in _best_items(items, 6) if it.get("asin") != (pick or {}).get("asin")]
     if not pick or not pick.get("asin"):
         return "<html><body><p>No products yet.</p></body></html>"
-    base = (site_url or "").rstrip("/")
     title = _clip(pick.get("title"), 90)
     price = _price(pick) or "—"
     stars = pick.get("stars")
     reviews = pick.get("reviews")
-    go = f"{base}/go/{pick['asin']}"
-    direct = amazon.affiliate_url(pick["asin"])
+    go = amazon.affiliate_url(pick["asin"])
     rating = f"{stars}★ ({reviews:,} ratings)" if (stars and reviews) else "highly rated on Amazon"
     e = html.escape
     bullet_lines = []
@@ -364,7 +362,7 @@ Thanks for giving it a shot! 🙏
 def build_boost_campaigns(keyword, items):
     """Ready-to-run promo angle templates for the pick."""
     pick = pick_for_buyers(items)
-    url = redirect_url(pick["asin"]) if pick else "/go"
+    url = redirect_url(pick["asin"]) if pick else "#"
     title = _clip(pick.get("title"), 55) if pick else keyword
     return [
         {"name": "Problem → Agitate → Solution (PAS)", "script": f"""Awareness:
@@ -419,15 +417,17 @@ def qr_url(asin):
     return f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(u)}"
 
 
-# ------------------------------------------------------------------ redirect
-# Short, memorable, trackable in-app links. /go/<ASIN> 302s to the affiliate
-# URL. (A real t.co/bit.ly shortener can be dropped in later.)
+# ------------------------------------------------------------------ links
+# Every outbound link is a DIRECT, affiliate-tagged amazon.com/dp/<ASIN>?tag=...
+# URL. Amazon's program terms frown on cloaked/redirected links unless you have
+# written permission, so /go/<ASIN> is kept only as a legacy resolver for links
+# already published — new output always uses the full tagged URL.
 def redirect_url(asin):
-    return f"/go/{asin}"
+    return amazon.affiliate_url(asin)
 
 
 def expand_go(asin):
-    """The server handler for /go/<ASIN>: returns (target_url, marketplace)."""
+    """Legacy resolver for the /go/<ASIN> endpoint (old links only)."""
     return amazon.affiliate_url(asin), amazon.MARKET
 
 
@@ -438,5 +438,5 @@ def status_blurb(scraper_cfg=None):
         "tools": ["text-links", "markdown", "email-draft", "social-post",
                   "funnel (landing page /lp/<slug>, 5-email sequence, DM scripts, "
                   "review pipeline, boost campaigns)",
-                  "redirect /go/<asin>", "qr"],
+                  "direct affiliate links", "qr"],
     }

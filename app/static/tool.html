@@ -157,9 +157,9 @@ function renderFunnel(f){
       <span class="price">${esc(price)}</span>
       <span class="badge demand">⭐ ${p.stars||"—"} · ${p.reviews!=null ? Number(p.reviews).toLocaleString() : ""} reviews</span>
       <a href="${esc(p.url)}" target="_blank" rel="nofollow noopener">Amazon ↗</a>
-      <a href="${esc(location.origin+"/go/"+p.asin)}" target="_blank" rel="nofollow noopener">Short link ↗</a>`;
-    // QR
-    const qr = "https://api.qrserver.com/v1/create-qr-code/?size=220x220&data="+encodeURIComponent(location.origin+"/go/"+p.asin);
+      <a href="${esc(p.url)}" target="_blank" rel="nofollow noopener">Direct link ↗</a>`;
+    // QR (encodes the direct tagged Amazon URL, compliant)
+    const qr = "https://api.qrserver.com/v1/create-qr-code/?size=220x220&data="+encodeURIComponent(p.url);
     $("qr-box").innerHTML = `<a href="${esc(qr)}" target="_blank" rel="noopener"><img src="${esc(qr)}" alt="QR code" style="border:1px solid var(--border);border-radius:12px;width:150px;height:150px"></a><p style="margin:6px 0 0">Scan → opens the tagged product.</p>`;
   } else { $("top-pick").style.display="none"; $("qr-box").innerHTML=""; }
 

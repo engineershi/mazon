@@ -12,6 +12,7 @@ import amazon
 import market_engine
 import niche
 import seo
+import indexnow
 
 amazon.CACHE_TTL = 0
 amazon.MIN_INTERVAL = 0.0
@@ -136,10 +137,11 @@ class TestMarketEngine(unittest.TestCase):
         amazon.AFFILIATE_TAG = "yourname-20"
         amazon.set_market("com")
 
-    def test_text_links_include_redirect(self):
+    def test_text_links_use_direct_tagged_url(self):
         out = market_engine.build_text_links(
             [{"asin": "B0KETO1234", "title": "Keto Bar", "reviews": 10}])
-        self.assertIn("/go/B0KETO1234", out)
+        self.assertIn("https://www.amazon.com/dp/B0KETO1234?tag=yourname-20", out)
+        self.assertNotIn("/go/", out)
 
     def test_pick_best_product(self):
         p = market_engine.pick_for_buyers([
@@ -152,7 +154,8 @@ class TestMarketEngine(unittest.TestCase):
         d = market_engine.build_email_draft(
             [{"asin": "B0KETO1234", "title": "Keto Bar", "reviews": 10}])
         self.assertTrue(d.startswith("Subject:"))
-        self.assertIn("/go/B0KETO1234", d)
+        self.assertIn("https://www.amazon.com/dp/B0KETO1234?tag=yourname-20", d)
+        self.assertNotIn("/go/", d)
 
     def test_redirect_expands_to_affiliate(self):
         url, market = market_engine.expand_go("B0KETO1234")
@@ -175,10 +178,10 @@ class TestSalesFunnel(unittest.TestCase):
                                              site_url="https://mazon.example")
         self.assertTrue(h.startswith("<!DOCTYPE html>"))
         self.assertIn("Get it on Amazon", h)
-        self.assertIn("/go/B0KETO1234", h)
+        self.assertNotIn("/go/", h)
         self.assertIn("we earn from qualifying purchases", h)
         self.assertIn("keto snacks", h)
-        self.assertIn('href="https://mazon.example/go/B0KETO1234"', h)
+        self.assertIn('href="https://www.amazon.com/dp/B0KETO1234?tag=yourname-20"', h)
 
     def test_email_sequence_parts(self):
         seq = market_engine.build_email_sequence("keto snacks", self.items)
@@ -186,19 +189,23 @@ class TestSalesFunnel(unittest.TestCase):
         for m in seq:
             self.assertIn("subject", m)
             self.assertIn("body", m)
-        self.assertIn("/go/B0KETO1234", seq[0]["body"])
+        self.assertIn("https://www.amazon.com/dp/B0KETO1234?tag=yourname-20", seq[0]["body"])
+        self.assertNotIn("/go/", seq[0]["body"])
 
     def test_social_pack(self):
         pack = market_engine.build_social_pack("keto snacks", self.items)
         self.assertIn("instagram", pack)
-        self.assertIn("/go/B0KETO1234", pack["instagram"]["caption"])
+        self.assertIn("https://www.amazon.com/dp/B0KETO1234?tag=yourname-20",
+                      pack["instagram"]["caption"])
+        self.assertNotIn("/go/", pack["x"]["caption"])
         self.assertTrue(pack["x"]["hashtags"].startswith("#"))
 
     def test_dm_conversation_scripts(self):
         c = market_engine.build_dm_conversation("keto snacks", self.items)
         self.assertIn("opener", c)
         self.assertIn("close", c)
-        self.assertIn("/go/B0KETO1234", c["close"])
+        self.assertIn("https://www.amazon.com/dp/B0KETO1234?tag=yourname-20", c["close"])
+        self.assertNotIn("/go/", c["close"])
 
     def test_review_pipeline_never_incentivizes(self):
         r = market_engine.build_review_pipeline("keto snacks", self.items)
@@ -209,7 +216,8 @@ class TestSalesFunnel(unittest.TestCase):
     def test_boost_campaigns(self):
         b = market_engine.build_boost_campaigns("keto snacks", self.items)
         self.assertGreaterEqual(len(b), 5)
-        self.assertIn("/go/B0KETO1234", b[0]["script"])
+        self.assertIn("https://www.amazon.com/dp/B0KETO1234?tag=yourname-20", b[0]["script"])
+        self.assertNotIn("/go/", b[0]["script"])
 
     def test_build_funnel_payload(self):
         f = market_engine.build_funnel("keto snacks", self.items,
@@ -227,12 +235,13 @@ class TestSEO(unittest.TestCase):
         html = seo.render_niche("keto snacks", {
             "products": [{"asin": "B0KETO1234", "title": "Keto Bar",
                           "price": 12.99, "stars": 4.5, "reviews": 10,
-                          "url": "/go/B0KETO1234"}],
+                          "url": "https://www.amazon.com/dp/B0KETO1234?tag=yourname-20"}],
             "source": "amazon"}).decode("utf-8")
         self.assertIn("<title>", html)
         self.assertIn('rel="canonical"', html)
         self.assertIn("@type", html)
-        self.assertIn("/go/B0KETO1234", html)
+        self.assertIn("https://www.amazon.com/dp/B0KETO1234?tag=yourname-20", html)
+        self.assertNotIn("/go/", html)
 
     def test_landing_jsonld_not_visible_text(self):
         html = seo.render_landing([{"keyword": "keto snacks"}]).decode("utf-8")
@@ -312,6 +321,50 @@ class TestRealisticParsing(unittest.TestCase):
             [{"asin": "B0FFZZZ001", "title": "Keto Bar", "price": 8.58,
               "currency": "EUR", "reviews": 100}])
         self.assertIn("\u20ac8.58", md)
+
+
+class TestIndexNow(unittest.TestCase):
+    KEY = "0aa657c0ce459baba7a21e6d40e35351"
+
+    def setUp(self):
+        indexnow._DEFAULT_KEY = self.KEY
+        seo.BASE_URL = "https://mazon.example"
+
+    def test_key_and_file_route(self):
+        self.assertEqual(indexnow.key(), self.KEY)
+        self.assertEqual(
+            indexnow.key_file_path(),
+            "https://mazon.example/%s.txt" % self.KEY)
+        self.assertEqual(indexnow.serve_key("/%s.txt" % self.KEY), self.KEY)
+        self.assertIsNone(indexnow.serve_key("/other.txt"))
+
+    def test_submit_urls_success(self):
+        indexnow._post = lambda url, payload, timeout=20: 200
+        ok, msg = indexnow.submit_urls(
+            ["https://mazon.example/", "https://mazon.example/n/keto-snacks"],
+            base_url="https://mazon.example")
+        self.assertTrue(ok)
+        self.assertIn("accepted", msg)
+
+    def test_submit_urls_accepts_202(self):
+        indexnow._post = lambda url, payload, timeout=20: 202
+        ok, _ = indexnow.submit_urls(["https://mazon.example/"],
+                                     base_url="https://mazon.example")
+        self.assertTrue(ok)
+
+    def test_submit_urls_rejects_foreign_urls(self):
+        indexnow._post = lambda url, payload, timeout=20: 200
+        ok, msg = indexnow.submit_urls(["https://evil.example/x"],
+                                       base_url="https://mazon.example")
+        self.assertFalse(ok)
+        self.assertIn("no urls", msg)
+
+    def test_submit_urls_invalid_key(self):
+        indexnow._DEFAULT_KEY = "xyz"
+        ok, msg = indexnow.submit_urls(["https://mazon.example/"],
+                                       base_url="https://mazon.example")
+        self.assertFalse(ok)
+        self.assertIn("invalid key", msg)
 
 
 if __name__ == "__main__":

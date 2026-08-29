@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "-y", "@playwright/mcp@latest"],
+      "enabled": true
+    },
+    "duckduckgo": {
+      "type": "local",
+      "command": ["npx", "-y", "mcp-server-duckduckgo@latest"],
+      "enabled": true
+    }
+  }
+}

@@ -1,0 +1,16 @@
+# One broad niche seed per line (blank / # lines ignored).
+# Mined nightly by .github/workflows/remine.yml to refresh product data.
+keto
+back-pain
+skin-care
+jewelry
+yoga
+home-office
+kitchen
+beauty
+sleep
+dog-toys
+desk-lamp
+water-bottle
+coffee
+air-fryer

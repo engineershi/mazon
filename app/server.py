@@ -23,6 +23,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import amazon
+import indexnow
 import market_engine
 import niche
 import seo
@@ -89,6 +90,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, seo.render_robots(), "text/plain; charset=utf-8")
             if path == "/sitemap.xml":
                 return self._send(200, self._sitemap(), "application/xml; charset=utf-8")
+            key_body = indexnow.serve_key(path)
+            if key_body is not None:
+                return self._send(200, key_body.encode("utf-8"), "text/plain; charset=utf-8")
+            if path == "/api/indexnow":
+                return self._indexnow(q)
             if path == "/":
                 return self._send(200, self._landing(), "text/html; charset=utf-8")
             if path.startswith("/n/"):
@@ -131,6 +137,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._save_niche()
             if parsed.path == "/api/settings":
                 return self._save_settings()
+            if parsed.path == "/api/indexnow":
+                return self._indexnow_post()
             self._send(404, {"error": "not found"})
         except Exception as e:
             self._send(500, {"error": str(e)})
@@ -255,6 +263,31 @@ class Handler(BaseHTTPRequestHandler):
                           "text/html; charset=utf-8")
 
     # ------------------------------------------------------------------ marketing tools
+    def _all_urls(self, extra=None):
+        """Absolute site URLs that should be indexed (sitemap set + extras)."""
+        urls = seo.indexable_urls(self._all_niches())
+        for u in (extra or []):
+            if str(u).startswith("http"):
+                urls.append(str(u))
+            else:
+                urls.append(seo.BASE_URL.rstrip("/") + str(u))
+        return urls
+
+    def _indexnow(self, q):
+        return self._send(200, {
+            "key": indexnow.key(),
+            "key_file": indexnow.key_file_path(),
+            "endpoint": indexnow.ENDPOINT,
+            "url_count": len(self._all_urls()),
+            "status": "ready",
+        })
+
+    def _indexnow_post(self):
+        body = self._body()
+        urls = self._all_urls(body.get("urls") or [])
+        ok, message = indexnow.submit_urls(urls)
+        return self._send(200, {"ok": ok, "message": message, "submitted": len(urls)})
+
     def _best_for_tools(self, q):
         items = []
         keyword = (q.get("keyword") or [""])[0].strip()
