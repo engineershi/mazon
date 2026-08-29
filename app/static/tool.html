@@ -3,8 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mazon — Buy Link & Marketing Tools</title>
+<title>Mazon — Marketing Suite</title>
 <link rel="stylesheet" href="/style.css">
+<style>
+  .stage { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+  .stage div { flex:1 1 170px; background:#fffdf8; border:1px solid var(--border);
+    border-radius:14px; padding:12px 14px; }
+  .stage b { color:var(--accent); display:block; margin-bottom:4px; }
+  .stage p { margin:0; font-size:12.5px; color:var(--muted); }
+  .sub { border-top:1px dashed var(--border); padding-top:14px; margin-top:14px; }
+  .sub h3 { margin:0 0 4px; font-size:15px; }
+  .sub .who { font-size:12.5px; color:var(--muted); margin:0 0 8px; }
+  .sub textarea { width:100%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }
+  .sub .row { margin-bottom:0; }
+  .row-gap { margin-top:10px; }
+  .cols { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
+  .pick-line { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .pick-line .price { font-size:20px; font-weight:800; color:var(--accent); }
+  .pick-line a { font-weight:700; }
+</style>
 </head>
 <body>
 <header>
@@ -12,53 +29,92 @@
     <span class="mark">M</span><span>Mazon <em>Finds</em></span>
   </a>
   <div class="hero">
-    <h1>Direct-buyer <span>push tools.</span></h1>
-    <p class="tagline">Copy-paste affiliate links, an email draft, a social post, and markdown — all tagged and ready to share.</p>
+    <h1>Marketing <span>suite.</span></h1>
+    <p class="tagline">Turn a niche shortlist into a complete sales funnel — landing page, email automation, DM scripts, review pipeline and boost campaigns, all affiliate-tagged.</p>
   </div>
   <nav>
     <a href="/" class="primary">🌱 Dashboard</a>
+    <a href="#funnel">🥧 Funnel</a>
+    <a href="#lp">🖥 Landing</a>
+    <a href="#emails">✉️ Emails</a>
+    <a href="#social">📣 Social</a>
+    <a href="#dm">💬 DMs</a>
+    <a href="#reviews">⭐ Reviews</a>
+    <a href="#boosts">🚀 Boosts</a>
   </nav>
 </header>
 
 <main>
-  <section class="card">
-    <h2>🧭 Generate push links</h2>
+  <section class="card" id="pick">
+    <h2>🧭 Generate the funnel</h2>
     <div class="row">
-      <select id="kw-select"><option value="">— choose a saved niche —</option></select>
-      <button id="tool-btn" class="warm">Generate tools</button>
+      <label>Saved niche
+        <select id="kw-select"><option value="">— choose a saved niche —</option></select>
+      </label>
+      <button id="tool-btn" class="warm">Generate funnel</button>
     </div>
-    <p class="hint">Picks the top products of the niche and builds affiliate-tagged links.</p>
     <p id="tool-msg" class="msg"></p>
+    <div id="top-pick" class="pick-line" style="display:none"></div>
+  </section>
+
+  <section class="card" id="funnel">
+    <h2>🥧 Funnel stages</h2>
+    <div class="stage" id="stage-list"><p class="hint">Pick a niche and generate to see the funnel.</p></div>
+  </section>
+
+  <section class="card" id="lp">
+    <h2>🖥 Landing page</h2>
+    <p class="hint">A live, crawlable sales page is hosted for every saved niche — link your social/email traffic straight to it.</p>
+    <div class="row">
+      <button id="lp-open" class="warm" disabled>Open live page ↗</button>
+      <button id="lp-copy" data-grab="lp-html">Copy HTML</button>
+    </div>
+    <textarea id="lp-html" readonly rows="8" placeholder="Generate first…"></textarea>
+  </section>
+
+  <section class="card" id="emails">
+    <h2>✉️ Email sequence (5-part)</h2>
+    <div id="email-list"><p class="hint">Automation-ready: hook → proof → objections → urgency → follow-up + review ask.</p></div>
+  </section>
+
+  <section class="card" id="social">
+    <h2>📣 Social posts per platform</h2>
+    <div class="cols" id="social-list"><p class="hint">Captions + hashtags for each channel, link included.</p></div>
+  </section>
+
+  <section class="card" id="dm">
+    <h2>💬 Customer conversation scripts</h2>
+    <div id="dm-list"><p class="hint">Opening DM, objection handling, closing, review ask.</p></div>
+  </section>
+
+  <section class="card" id="reviews">
+    <h2>⭐ Review pipeline</h2>
+    <div id="review-list"><p class="hint">Ethical review gathering — never incentivized, always honest.</p></div>
+  </section>
+
+  <section class="card" id="boosts">
+    <h2>🚀 Marketing boosts</h2>
+    <div id="boost-list"><p class="hint">Ready-to-run promo angle templates.</p></div>
   </section>
 
   <section class="card">
-    <h2>💬 Text links (DMs / bios / comments)</h2>
-    <textarea id="text" readonly rows="6" placeholder="Generate first…"></textarea>
-    <button data-grab="text" class="warm">Copy</button>
-  </section>
-
-  <section class="card">
-    <h2>✉️ Email draft</h2>
-    <textarea id="email" readonly rows="10" placeholder="Generate first…"></textarea>
-    <button data-grab="email" class="warm">Copy</button>
-  </section>
-
-  <section class="card">
-    <h2>📣 Social post caption</h2>
-    <textarea id="post" readonly rows="6" placeholder="Generate first…"></textarea>
-    <button data-grab="post" class="warm">Copy</button>
-  </section>
-
-  <section class="card">
-    <h2>📝 Markdown (blog / site)</h2>
-    <textarea id="markdown" readonly rows="8" placeholder="Generate first…"></textarea>
-    <button data-grab="markdown" class="warm">Copy</button>
-  </section>
-
-  <section class="card">
-    <h2>🏆 Top pick + short link</h2>
-    <p id="top-pick" class="msg"></p>
-    <p class="hint">Each /go/&lt;ASIN&gt; link 302-redirects buyers to the tagged Amazon product — memorable and short.</p>
+    <h2>⚡ Quick links</h2>
+    <div class="cols">
+      <div>
+        <h3>Text links (DMs / bios)</h3>
+        <textarea id="text" readonly rows="5" placeholder="Generate first…"></textarea>
+        <button data-grab="text" class="warm">Copy</button>
+      </div>
+      <div>
+        <h3>Markdown (blog / site)</h3>
+        <textarea id="markdown" readonly rows="5" placeholder="Generate first…"></textarea>
+        <button data-grab="markdown" class="warm">Copy</button>
+      </div>
+      <div>
+        <h3>QR code</h3>
+        <div id="qr-box" class="hint" style="margin-top:4px"></div>
+      </div>
+    </div>
   </section>
 </main>
 
@@ -69,38 +125,152 @@
 <script>
 "use strict";
 function $(id){return document.getElementById(id);}
+function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+
 async function loadNicheList(){
   const r = await fetch("/api/niches");
   const d = await r.json();
   $("kw-select").innerHTML = '<option value="">— choose a saved niche —</option>' +
-    (d.niches||[]).map(n=>`<option value="${encodeURIComponent(n.keyword)}">${n.keyword}</option>`).join("");
+    (d.niches||[]).map(n=>`<option value="${encodeURIComponent(n.keyword)}">${esc(n.keyword)}</option>`).join("");
 }
+
+function copyArea(id, btn){
+  const el = $(id);
+  el.style.display="block";
+  el.select();
+  navigator.clipboard ? navigator.clipboard.writeText(el.value).then(()=>flash(btn)) : (document.execCommand("copy"), flash(btn));
+}
+function flash(btn){ const t=btn.textContent; btn.textContent="Copied ✓"; setTimeout(()=>btn.textContent=t, 1200); }
+
+function renderFunnel(f){
+  // stages
+  $("stage-list").innerHTML = (f.stages||[]).map(s=>`<div><b>${esc(s[0])}</b><p>${esc(s[1])}</p></div>`).join("");
+  // top pick
+  const p = f.pick;
+  if (p && p.asin){
+    const sym = {"EUR":"€","GBP":"£","JPY":"¥","INR":"₹","CAD":"C$","AUD":"A$","SGD":"S$","NZD":"NZ$","MXN":"MX$","CNY":"¥"}[p.currency] || "$";
+    const price = p.price!=null ? sym+Number(p.price).toFixed(2) : "—";
+    $("top-pick").style.display="flex";
+    $("top-pick").innerHTML = `
+      <span class="badge source">🥇 Top pick</span>
+      <span><b>${esc(p.title)}</b></span>
+      <span class="price">${esc(price)}</span>
+      <span class="badge demand">⭐ ${p.stars||"—"} · ${p.reviews!=null ? Number(p.reviews).toLocaleString() : ""} reviews</span>
+      <a href="${esc(p.url)}" target="_blank" rel="nofollow noopener">Amazon ↗</a>
+      <a href="${esc(location.origin+"/go/"+p.asin)}" target="_blank" rel="nofollow noopener">Short link ↗</a>`;
+    // QR
+    const qr = "https://api.qrserver.com/v1/create-qr-code/?size=220x220&data="+encodeURIComponent(location.origin+"/go/"+p.asin);
+    $("qr-box").innerHTML = `<a href="${esc(qr)}" target="_blank" rel="noopener"><img src="${esc(qr)}" alt="QR code" style="border:1px solid var(--border);border-radius:12px;width:150px;height:150px"></a><p style="margin:6px 0 0">Scan → opens the tagged product.</p>`;
+  } else { $("top-pick").style.display="none"; $("qr-box").innerHTML=""; }
+
+  // landing
+  $("lp-html").value = f.landing_page;
+  const lo = $("lp-open");
+  lo.disabled = false;
+  lo.onclick = () => window.open(f.landing_url, "_blank");
+
+  // emails
+  $("email-list").innerHTML = "";
+  (f.email_sequence||[]).forEach(m=>{
+    const box = document.createElement("div");
+    box.className = "sub";
+    box.innerHTML = `<h3>${esc(m.name)}</h3><p class="who">Subject: ${esc(m.subject)}</p>`;
+    const ta = document.createElement("textarea");
+    ta.readOnly=true; ta.rows=8; ta.value=m.body;
+    const b = document.createElement("button");
+    b.className="warm"; b.textContent="Copy";
+    b.onclick = () => copyArea(ta, b);
+    box.appendChild(b); box.appendChild(ta);
+    $("email-list").appendChild(box);
+  });
+
+  // social
+  const sl = $("social-list"); sl.innerHTML="";
+  (Object.entries(f.social||{})).forEach(([platform, s])=>{
+    const box = document.createElement("div");
+    box.className = "sub";
+    box.innerHTML = `<h3>📣 ${esc(platform)}</h3><p class="who"># ${s.hashtags}</p>`;
+    const ta = document.createElement("textarea");
+    ta.readOnly=true; ta.rows=5; ta.value=s.caption;
+    const b = document.createElement("button");
+    b.className="warm"; b.textContent="Copy caption";
+    b.onclick = () => copyArea(ta, b);
+    box.appendChild(b); box.appendChild(ta);
+    sl.appendChild(box);
+  });
+
+  // dm
+  $("dm-list").innerHTML="";
+  (Object.entries(f.conversation||{})).forEach(([k, script])=>{
+    const box = document.createElement("div");
+    box.className = "sub";
+    box.innerHTML = `<h3>💬 ${esc(k.replace(/_/g," "))}</h3>`;
+    const ta = document.createElement("textarea");
+    ta.readOnly=true; ta.rows=4; ta.value=script;
+    const b = document.createElement("button");
+    b.className="warm"; b.textContent="Copy";
+    b.onclick = () => copyArea(ta, b);
+    box.appendChild(b); box.appendChild(ta);
+    $("dm-list").appendChild(box);
+  });
+
+  // reviews
+  const rl = $("review-list"); rl.innerHTML="";
+  (f.reviews ? Object.entries(f.reviews) : []).forEach(([k, v])=>{
+    const b = document.createElement("h3");
+    b.textContent = k.replace(/_/g," ");
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = v;
+    rl.appendChild(b); rl.appendChild(p);
+    if (k.startsWith("request_")){
+      const box = document.createElement("div");
+      box.className = "sub";
+      const ta = document.createElement("textarea");
+      ta.readOnly=true; ta.rows=4; ta.value=v;
+      const cb = document.createElement("button");
+      cb.className="warm"; cb.textContent="Copy";
+      cb.onclick = () => copyArea(ta, cb);
+      box.appendChild(cb); box.appendChild(ta);
+      rl.appendChild(box);
+    }
+  });
+
+  // boosts
+  $("boost-list").innerHTML="";
+  (f.boosts||[]).forEach(bost=>{
+    const box = document.createElement("div");
+    box.className = "sub";
+    box.innerHTML = `<h3>🚀 ${esc(bost.name)}</h3>`;
+    const ta = document.createElement("textarea");
+    ta.readOnly=true; ta.rows=5; ta.value=bost.script;
+    const b = document.createElement("button");
+    b.className="warm"; b.textContent="Copy";
+    b.onclick = () => copyArea(ta, b);
+    box.appendChild(b); box.appendChild(ta);
+    $("boost-list").appendChild(box);
+  });
+}
+
 async function genTools(){
   const kw = $("kw-select").value;
   if(!kw){ $("tool-msg").textContent="Pick a saved niche first."; return; }
-  $("tool-msg").textContent="Building links…";
+  $("tool-msg").textContent="Building funnel…";
   const r = await fetch("/api/tools?keyword="+kw);
   const d = await r.json();
+  $("tool-msg").textContent = `Built ${d.count} products for "${d.keyword}". Tag: ${d.affiliate_tag||"not set"}.`;
   $("text").value = d.text_links;
-  $("email").value = d.email;
-  $("post").value = d.post;
   $("markdown").value = d.markdown;
-  const p = d.top_pick;
-  $("top-pick").textContent = p && p.asin
-    ? `Top pick: ${p.title} — ${location.origin}/go/${p.asin} (redirects to tagged Amazon)`
-    : "No top pick yet.";
-  $("tool-msg").textContent = `Built ${d.count} products. Tag: ${d.affiliate_tag||"not set"}.`;
+  renderFunnel(d.funnel);
 }
+
 document.addEventListener("DOMContentLoaded", ()=>{
   loadNicheList();
   $("tool-btn").onclick = genTools;
   document.addEventListener("click", (e)=>{
     const b = e.target.closest("[data-grab]");
     if(!b) return;
-    const el = $(b.dataset.grab);
-    el.select(); document.execCommand("copy");
-    b.textContent = "Copied ✓";
-    setTimeout(()=>b.textContent="Copy", 1200);
+    copyArea(b.dataset.grab, b);
   });
 });
 </script>

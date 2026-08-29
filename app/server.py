@@ -93,6 +93,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self._landing(), "text/html; charset=utf-8")
             if path.startswith("/n/"):
                 return self._niche_page(path, q)
+            if path.startswith("/lp/"):
+                return self._landing_page(path)
             go = re.match(r"^/go/([A-Z0-9]{10})$", path)
             if go:
                 return self._go(go.group(1))
@@ -239,6 +241,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         return None
 
+    def _landing_page(self, path):
+        slug = path[len("/lp/"):].rstrip("/") or "niche"
+        for n in self._all_niches():
+            try:
+                if slug == seo._slugify(n["keyword"]):
+                    html = market_engine.build_landing_page(
+                        n["keyword"], n["products"], site_url=seo.BASE_URL)
+                    return self._send(200, html, "text/html; charset=utf-8")
+            except Exception:
+                continue
+        return self._send(404, b"<html><body><p>Landing page not found.</p></body></html>",
+                          "text/html; charset=utf-8")
+
     # ------------------------------------------------------------------ marketing tools
     def _best_for_tools(self, q):
         items = []
@@ -265,6 +280,9 @@ class Handler(BaseHTTPRequestHandler):
             "email": market_engine.build_email_draft(items),
             "post": market_engine.build_post_template(items),
             "top_pick": market_engine.pick_for_buyers(items),
+            "funnel": market_engine.build_funnel(keyword, items,
+                                                 site_url=seo.BASE_URL,
+                                                 affiliate_tag=amazon.AFFILIATE_TAG),
         })
 
 

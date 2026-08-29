@@ -159,6 +159,69 @@ class TestMarketEngine(unittest.TestCase):
         self.assertIn("amazon.com/dp/B0KETO1234?tag=yourname-20", url)
 
 
+class TestSalesFunnel(unittest.TestCase):
+    def setUp(self):
+        amazon.AFFILIATE_TAG = "yourname-20"
+        amazon.set_market("com")
+        self.items = [
+            {"asin": "B0KETO1234", "title": "Keto Bar Crunch", "price": 12.99,
+             "stars": 4.5, "reviews": 1240, "currency": "USD"},
+            {"asin": "B0KETO5678", "title": "Keto Crackers", "price": 8.0,
+             "stars": 4.0, "reviews": 300, "currency": "USD"},
+        ]
+
+    def test_build_landing_page(self):
+        h = market_engine.build_landing_page("keto snacks", self.items,
+                                             site_url="https://mazon.example")
+        self.assertTrue(h.startswith("<!DOCTYPE html>"))
+        self.assertIn("Get it on Amazon", h)
+        self.assertIn("/go/B0KETO1234", h)
+        self.assertIn("we earn from qualifying purchases", h)
+        self.assertIn("keto snacks", h)
+        self.assertIn('href="https://mazon.example/go/B0KETO1234"', h)
+
+    def test_email_sequence_parts(self):
+        seq = market_engine.build_email_sequence("keto snacks", self.items)
+        self.assertEqual(len(seq), 5)
+        for m in seq:
+            self.assertIn("subject", m)
+            self.assertIn("body", m)
+        self.assertIn("/go/B0KETO1234", seq[0]["body"])
+
+    def test_social_pack(self):
+        pack = market_engine.build_social_pack("keto snacks", self.items)
+        self.assertIn("instagram", pack)
+        self.assertIn("/go/B0KETO1234", pack["instagram"]["caption"])
+        self.assertTrue(pack["x"]["hashtags"].startswith("#"))
+
+    def test_dm_conversation_scripts(self):
+        c = market_engine.build_dm_conversation("keto snacks", self.items)
+        self.assertIn("opener", c)
+        self.assertIn("close", c)
+        self.assertIn("/go/B0KETO1234", c["close"])
+
+    def test_review_pipeline_never_incentivizes(self):
+        r = market_engine.build_review_pipeline("keto snacks", self.items)
+        combined = " ".join(str(v) for v in r.values()).lower()
+        self.assertIn("honest", combined)
+        self.assertIn("no incentive", combined)
+
+    def test_boost_campaigns(self):
+        b = market_engine.build_boost_campaigns("keto snacks", self.items)
+        self.assertGreaterEqual(len(b), 5)
+        self.assertIn("/go/B0KETO1234", b[0]["script"])
+
+    def test_build_funnel_payload(self):
+        f = market_engine.build_funnel("keto snacks", self.items,
+                                       site_url="https://mazon.example",
+                                       affiliate_tag="yourname-20")
+        self.assertEqual(f["landing_url"], "/lp/keto-snacks")
+        self.assertEqual(len(f["email_sequence"]), 5)
+        self.assertIn("landing_page", f)
+        self.assertIn("reviews", f)
+        self.assertTrue(f["stages"])
+
+
 class TestSEO(unittest.TestCase):
     def test_niche_page_crawlable(self):
         html = seo.render_niche("keto snacks", {

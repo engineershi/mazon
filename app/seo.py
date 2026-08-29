@@ -129,7 +129,7 @@ def render_niche(keyword, niche):
 <div class="product">
   <h4>{_clean(it.get('title'))}</h4>
   <div class="price">{it.get('price') and '%s%0.2f' % (amazon.currency_symbol(it.get("currency")), it.get("price")) or '—'}</div>
-  <div class="meta">{"★ " + str(it.get("stars")) if it.get("stars") else ""}{" (" + str(it.get("reviews")) + " reviews)" if it.get("reviews") else ""}</div>
+  <div class="meta">{('<span class="stars">★ %s</span>' % it.get("stars")) if it.get("stars") else ""}{" (" + str(it.get("reviews")) + " reviews)" if it.get("reviews") else ""}</div>
   <a href="{_clean(it.get('url'))}" target="_blank" rel="nofollow sponsored noopener">Check price on Amazon</a>
 </div>"""
     body = f"""
