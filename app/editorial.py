@@ -17,7 +17,7 @@ import re
 
 import amazon
 
-BASE_URL = os.environ.get("PSTORE_URL", "https://pstore.onrender.com").rstrip("/")
+BASE_URL = os.environ.get("PSTORE_URL", "https://pstore-gxbv.onrender.com").rstrip("/")
 
 
 def _clean(s):

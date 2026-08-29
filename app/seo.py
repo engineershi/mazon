@@ -18,7 +18,7 @@ import editorial
 
 SITE_NAME = "pstore"
 SITE_DESC = "Hand-picked Amazon product picks by niche."
-BASE_URL = os.environ.get("PSTORE_URL", "https://pstore.onrender.com").rstrip("/")
+BASE_URL = os.environ.get("PSTORE_URL", "https://pstore-gxbv.onrender.com").rstrip("/")
 
 
 def _clean(s):
@@ -99,7 +99,7 @@ def _footer():
 
 # ------------------------------------------------------------------ info pages
 STATIC_PAGES = ["about", "contact", "privacy", "terms", "disclosure"]
-CONTACT_EMAIL = os.environ.get("PSTORE_CONTACT", "hello@pstore.onrender.com")
+CONTACT_EMAIL = os.environ.get("PSTORE_CONTACT", "hello@pstore-gxbv.onrender.com")
 
 
 def _page_header():

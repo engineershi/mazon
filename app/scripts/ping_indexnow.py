@@ -4,7 +4,7 @@
 so fresh content is crawled within minutes instead of days.
 
 Used by .github/workflows/remine.yml every night and safe to run manually:
-    PSTORE_URL=https://pstore.onrender.com python app/scripts/ping_indexnow.py
+    PSTORE_URL=https://pstore-gxbv.onrender.com python app/scripts/ping_indexnow.py
 
 Exit code 1 on any failure so CI surfaces problems.
 """
@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import seo
 import indexnow
 
-BASE = os.environ.get("PSTORE_URL", "https://pstore.onrender.com").rstrip("/")
+BASE = os.environ.get("PSTORE_URL", "https://pstore-gxbv.onrender.com").rstrip("/")
 
 
 def saved_niches(db_path):

@@ -7,7 +7,7 @@ name: nightly-remine
 # Optional secrets (add in repo Settings > Secrets) to enable auto-deploy:
 #   RENDER_API_KEY          (Render dashboard -> Account -> API keys)
 #   RENDER_SERVICE_ID       (e.g. srv-da99ijtg1s2s739mqgj0)
-#   PSTORE_URL               (defaults to https://pstore.onrender.com)
+#   PSTORE_URL               (defaults to https://pstore-gxbv.onrender.com)
 #   PSTORE_TAG / INDEXNOW_KEY (overrides; the committed defaults work too)
 
 on:
@@ -60,5 +60,5 @@ jobs:
 
       - name: Ping IndexNow for fresh URLs
         env:
-          PSTORE_URL: ${{ secrets.PSTORE_URL || 'https://pstore.onrender.com' }}
+          PSTORE_URL: ${{ secrets.PSTORE_URL || 'https://pstore-gxbv.onrender.com' }}
         run: python app/scripts/ping_indexnow.py
