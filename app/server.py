@@ -116,7 +116,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, page, "text/html; charset=utf-8")
             # owner dashboard (static app UI) — kept off "/" so the root stays crawlable
             if path == "/dashboard" or path == "/index.html":
-                return self._send(200, open(os.path.join(STATIC, "index.html"), "rb").read(), "text/html; charset=utf-8")
+                with open(os.path.join(STATIC, "index.html"), "rb") as fh:
+                    return self._send(200, fh.read(), "text/html; charset=utf-8")
             if path == "/app.js":
                 return self._send(200, open(os.path.join(STATIC, "app.js"), "rb").read(), "application/javascript; charset=utf-8")
             if path == "/style.css":
@@ -242,10 +243,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _niche_page(self, path, q):
         slug = path[len("/n/"):].rstrip("/") or "niche"
-        for n in self._all_niches():
+        all_niches = self._all_niches()
+        for n in all_niches:
             try:
                 if slug == seo._slugify(n["keyword"]):
-                    return self._send(200, seo.render_niche(n["keyword"], n), "text/html; charset=utf-8")
+                    return self._send(200, seo.render_niche(n["keyword"], n, saved_niches=all_niches),
+                                      "text/html; charset=utf-8")
             except Exception:
                 continue
         return self._send(404, seo.render_niche(slug, {"products": [], "source": ""}),

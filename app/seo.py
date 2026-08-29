@@ -14,6 +14,7 @@ import re
 import urllib.parse
 
 import amazon
+import editorial
 
 SITE_NAME = "Mazon Finds"
 SITE_DESC = "Hand-picked Amazon product picks by niche."
@@ -252,6 +253,8 @@ and review signals — so you can compare in minutes, not hours. Pick a niche an
 <p class="hint">Honest picks. Live data. Affiliate-tagged links (see our
 <a href="/disclosure">Disclosure</a>).</p></section>
 
+{editorial.featured_html(saved_niches)}
+
 <section class="card"><h2>🌱 How we pick</h2>
 <div class="features">
   <div class="feature"><h3>⛏️ Niche mining</h3>
@@ -286,36 +289,50 @@ ordering — deals change constantly.</p></div>
     return head + body + _footer()
 
 
-def render_niche(keyword, niche):
-    """Crawlable niche page: title H1, meta, product cards, FAQ-ish prose."""
+def render_niche(keyword, niche, saved_niches=None):
+    """Crawlable niche page in the answer-first review layout: breadcrumbs,
+    byline, human intro, ranked picks with honest pros/cons, comparison table,
+    methodology + trust, FAQ, related niches."""
     items = niche.get("products") or []
     canonical = "/n/" + _slugify(keyword)
-    title = f"Best {keyword} to Buy — Top Picks"
-    desc = (f"Compare top {keyword} picks, prices and ratings. "
-            f"Hand-curated {keyword} products with affiliate links.")
-    jsonld = {"@context": "https://schema.org", "@graph": _product_graph(items)}
+    title = "Best %s to Buy — Ranked Picks From Live Amazon Data" % keyword
+    desc = (f"See the best {keyword}, ranked. We score live Amazon listings on "
+            f"rating, review volume and price, then show you which to buy and "
+            f"why — with honest pros and cons for each.")
+    best = editorial.best_pick(items)
+    ranked = "".join(
+        editorial.pick_html(keyword, it, idx, items)
+        for idx, it in enumerate(score_order(items)))
+    graph = _product_graph(items)
+    if best:
+        graph.append(editorial.faq_jsonld(keyword, best))
+    graph.append(editorial.breadcrumb_jsonld(keyword))
+    jsonld = {"@context": "https://schema.org", "@graph": graph}
     head = _head(title, desc, canonical, canonical, jsonld=jsonld)
-    cards = ""
-    for it in items:
-        cards += f"""
-<div class="product">
-  <h4>{_clean(it.get('title'))}</h4>
-  <div class="price">{it.get('price') and '%s%0.2f' % (amazon.currency_symbol(it.get("currency")), it.get("price")) or '—'}</div>
-  <div class="meta">{('<span class="stars">★ %s</span>' % it.get("stars")) if it.get("stars") else ""}{" (" + str(it.get("reviews")) + " reviews)" if it.get("reviews") else ""}</div>
-  <a href="{_clean(it.get('url'))}" target="_blank" rel="nofollow sponsored noopener">Check price on Amazon</a>
-</div>"""
     body = f"""
-<header><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1></header>
+<header><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
+<nav><a href="/">🏠 Home</a><a href="/about">About</a><a href="/disclosure">Disclosure</a></nav></header>
 <main>
 <div class="card">
-  <h1>{_clean(keyword)}</h1>
-  <p>{_clean(desc)}</p>
-  <p class="hint">Researched via Amazon {_clean(niche.get("source") or "search")} · {len(items)} product picks</p>
-  <div class="grid">{cards}</div>
+  {editorial.breadcrumbs_html(keyword)}
+  <h1>Best {_clean(keyword)}: ranked picks</h1>
+  {editorial.byline_html(keyword, items, best) if best else ""}
+  <p class="lede">{_clean(editorial.intro(keyword, items))}</p>
+  {editorial.trust_block_html()}
+  {editorial.faq_html(keyword, best) if best else ""}
+  <h2>The ranked list</h2>
+  {ranked}
+  {editorial.comparison_html(items) if items else ""}
+  {editorial.methodology_html()}
+  {editorial.related_html(keyword, saved_niches) if saved_niches else ""}
 </div>
 </main>
 """.encode("utf-8")
     return head + body + _footer()
+
+
+def score_order(items):
+    return [it for it, _s in editorial.score_items(items)]
 
 
 def indexable_urls(saved_niches, base_url=None):

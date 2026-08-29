@@ -9,6 +9,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import amazon
+import editorial
 import market_engine
 import niche
 import seo
@@ -230,6 +231,88 @@ class TestSalesFunnel(unittest.TestCase):
         self.assertTrue(f["stages"])
 
 
+class TestEditorial(unittest.TestCase):
+    PRODUCTS = [
+        {"asin": "B0BBB", "title": "Premium Keto Bar 12-pack", "price": 13.29,
+         "stars": 4.2, "reviews": 1664,
+         "url": "https://www.amazon.com/dp/B0BBB?tag=yourname-20", "currency": "USD"},
+        {"asin": "B0CCC", "title": "Keto Crackers Variety", "price": 12.99,
+         "stars": 3.9, "reviews": 2761,
+         "url": "https://www.amazon.com/dp/B0CCC?tag=yourname-20", "currency": "USD"},
+        {"asin": "B0DDD", "title": "Protein Chips Multipack", "price": 29.98,
+         "stars": 4.5, "reviews": 12435,
+         "url": "https://www.amazon.com/dp/B0DDD?tag=yourname-20", "currency": "USD"},
+    ]
+
+    def test_best_pick_is_deterministic_and_strong(self):
+        amazon.set_tag("yourname-20")
+        best = editorial.best_pick(self.PRODUCTS)
+        self.assertIsNotNone(best)
+        self.assertEqual(best["asin"], "B0BBB")
+        self.assertEqual(editorial.best_pick(self.PRODUCTS)["asin"], best["asin"])
+
+    def test_intro_mentions_keyword_and_is_honest(self):
+        amazon.set_tag("yourname-20")
+        text = editorial.intro("keto snacks", self.PRODUCTS)
+        self.assertIn("keto snacks", text)
+        self.assertNotIn("we tested", text.lower())
+
+    def test_pros_cons_are_data_derived(self):
+        amazon.set_tag("yourname-20")
+        for item in self.PRODUCTS:
+            pp, cc = editorial.pros_cons(item, self.PRODUCTS)
+            self.assertTrue(pp and cc)
+        cheapest = self.PRODUCTS[1]
+        priciest = self.PRODUCTS[2]
+        p, c = editorial.pros_cons(cheapest, self.PRODUCTS)
+        self.assertIn("$12.99", " ".join(p + c))
+        p, c = editorial.pros_cons(priciest, self.PRODUCTS)
+        self.assertIn("$29.98", " ".join(p + c))
+
+    def test_comparison_rows_cover_inventory(self):
+        amazon.set_tag("yourname-20")
+        top = editorial.best_pick(self.PRODUCTS)
+        rows = editorial.comparison_rows(self.PRODUCTS, top_asin=top["asin"])
+        self.assertEqual(len(rows), 3)
+        by_asin = {r["asin"]: r for r in rows}
+        self.assertEqual(by_asin[top["asin"]]["badge"], "Top pick")
+        self.assertEqual(by_asin[top["asin"]]["rank"], "#1")
+        if len(rows) > 1:
+            self.assertEqual(rows[1]["badge"], "Runner-up")
+
+    def test_faq_and_jsonld_shapes(self):
+        amazon.set_tag("yourname-20")
+        best = editorial.best_pick(self.PRODUCTS)
+        qas = editorial.faq("keto snacks", best)
+        self.assertEqual(len(qas), 4)
+        q, a = qas[0]
+        self.assertIn("keto snacks", q)
+        self.assertIn("Premium Keto Bar 12-pack", a)
+        j = editorial.faq_jsonld("keto snacks", best)
+        self.assertEqual(j["@type"], "FAQPage")
+        self.assertEqual(len(j["mainEntity"]), 4)
+        b = editorial.breadcrumb_jsonld("keto snacks")
+        self.assertEqual(b["@type"], "BreadcrumbList")
+        self.assertEqual(b["itemListElement"][1]["name"], "keto snacks picks")
+
+    def test_related_excludes_self_and_caps_at_six(self):
+        niches = [{"keyword": "keto snacks"}] + [{"keyword": "niche %d" % i} for i in range(10)]
+        rel = editorial.related_niches("keto snacks", niches)
+        self.assertNotIn("keto snacks", [n["keyword"] for n in rel])
+        self.assertLessEqual(len(rel), 6)
+
+    def test_featured_pick_returns_best_across_niches(self):
+        amazon.set_tag("yourname-20")
+        niches = [{"keyword": "keto snacks", "products": self.PRODUCTS},
+                  {"keyword": "yoga", "products": [
+                      {"asin": "B0YYY", "title": "Yoga Mat", "price": 20.0,
+                       "stars": 3.0, "reviews": 5,
+                       "url": "https://www.amazon.com/dp/B0YYY?tag=yourname-20"}]}]
+        top, score, kw = editorial.featured_pick(niches)
+        self.assertEqual(kw, "keto snacks")
+        self.assertIsNotNone(top)
+
+
 class TestSEO(unittest.TestCase):
     def test_niche_page_crawlable(self):
         html = seo.render_niche("keto snacks", {
@@ -242,6 +325,27 @@ class TestSEO(unittest.TestCase):
         self.assertIn("@type", html)
         self.assertIn("https://www.amazon.com/dp/B0KETO1234?tag=yourname-20", html)
         self.assertNotIn("/go/", html)
+
+    def test_niche_page_has_editorial_trust_machinery(self):
+        html = seo.render_niche("keto snacks", {
+            "products": [
+                {"asin": "B0KETO1234", "title": "Keto Bar", "price": 12.99,
+                 "stars": 4.5, "reviews": 3100,
+                 "url": "https://www.amazon.com/dp/B0KETO1234?tag=yourname-20"},
+                {"asin": "B0CRACK", "title": "Cracker Packs", "price": 9.99,
+                 "stars": 4.1, "reviews": 900,
+                 "url": "https://www.amazon.com/dp/B0CRACK?tag=yourname-20"},
+            ],
+            "source": "amazon"},
+            saved_niches=[{"keyword": "keto snacks"}, {"keyword": "yoga mats"}],
+        ).decode("utf-8")
+        for section in ("Best overall", "How we pick", "Why trust Mazon Finds",
+                        "Compare the shortlist", "details class=\"faq\"",
+                        "By the", "Updated", "yoga mats", "yoga-mats",
+                        "\"@type\": \"FAQPage\"", "\"@type\": \"BreadcrumbList\"",
+                        "Check price on Amazon"):
+            self.assertIn(section, html, section)
+        self.assertLess(html.index("Best overall"), html.index("Compare the shortlist"))
 
     def test_landing_jsonld_not_visible_text(self):
         html = seo.render_landing([{"keyword": "keto snacks"}]).decode("utf-8")
