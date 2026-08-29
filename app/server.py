@@ -303,8 +303,9 @@ class Handler(BaseHTTPRequestHandler):
             ("Scraper", amazon.scraper_status().get("active", "n/a")),
         ]
         cards = "".join(
-            f'<div class="sub"><h3>{k}</h3><p class="key" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent)"
- title="Click to copy">{v}</p></div>'
+            '<div class="sub"><h3>%s</h3><p class="key" '
+            'onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent)" '
+            'title="Click to copy">%s</p></div>' % (k, v)
             for k, v in rows)
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
