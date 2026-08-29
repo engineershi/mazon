@@ -425,6 +425,17 @@ class TestRoutes(unittest.TestCase):
         st, ctype, body = self._get("/sitemap.xml")
         self.assertEqual(st, 200)
         self.assertIn(b"<loc>", body)
+        for page in seo.STATIC_PAGES:
+            self.assertIn(("/%s</loc>" % page).encode(), body)
+
+    def test_company_pages_application_ready(self):
+        for slug in seo.STATIC_PAGES:
+            st, ctype, body = self._get("/" + slug)
+            html = body.decode("utf-8", "replace")
+            self.assertEqual(st, 200, slug)
+            self.assertTrue(ctype.startswith("text/html"), slug)
+            self.assertIn("As an Amazon Associate", html, slug)
+            self.assertIn('rel="canonical"', html, slug)
 
     def test_landing_page_serves_html_not_json(self):
         st, ctype, body = self._get("/lp/keto-snacks")

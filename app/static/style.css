@@ -192,6 +192,19 @@ a.btn:hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(255, 107,
 .msg { color: var(--muted); font-size: 13px; min-height: 18px; margin: 6px 0 0; }
 
 /* ---------- product cards ---------- */
+.features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+.feature {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 18px;
+}
+.feature h3 { margin: 0 0 8px; font-size: 16px; }
+.feature p { margin: 0; color: var(--muted); font-size: 13.5px; }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(255px, 1fr));

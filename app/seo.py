@@ -82,17 +82,158 @@ def _head(title, desc, canonical, path, jsonld=None):
 
 
 def _footer():
-    return """<footer style="padding:24px;border-top:1px solid var(--border);color:var(--muted);font-size:13px">
-  <p>Mazon Finds — comparison picks. Prices are indicative; check Amazon for the live price. As an Amazon Associate we earn from qualifying purchases.</p>
-  <p><a href="/">Home</a> · <a href="/sitemap.xml">Sitemap</a></p>
+    return f"""<footer style="padding:24px;border-top:1px solid var(--border);color:var(--muted);font-size:13px">
+  <p>Mazon Finds — comparison picks. Prices are indicative; check Amazon for the live price.</p>
+  <p>As an Amazon Associate we earn from qualifying purchases.</p>
+  <p>
+    <a href="/">Home</a> · <a href="/about">About</a> · <a href="/contact">Contact</a> ·
+    <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/disclosure">Disclosure</a> ·
+    <a href="/sitemap.xml">Sitemap</a>
+  </p>
 </footer>
 </body>
 </html>
 """.encode("utf-8")
 
 
+# ------------------------------------------------------------------ info pages
+STATIC_PAGES = ["about", "contact", "privacy", "terms", "disclosure"]
+CONTACT_EMAIL = os.environ.get("MAZON_CONTACT", "hello@mazon.onrender.com")
+
+
+def _page_header():
+    return f"""<header><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
+<p class="tagline">{_clean(SITE_DESC)}</p>
+<nav><a href="/">🏠 Home</a><a href="/about">About</a><a href="/contact">Contact</a></nav></header>
+"""
+
+
+def render_page(slug, title, desc, content_html):
+    """Generic crawlable info page (abouts/legal). Returns full HTML bytes."""
+    canonical = "/" + slug
+    jsonld = {"@context": "https://schema.org", "@type": "WebPage",
+              "name": SITE_NAME, "description": desc, "url": BASE_URL + canonical}
+    head = _head(title, desc, canonical, canonical, jsonld=jsonld)
+    body = ("%s\n<main><div class=\"card\"><h1>%s</h1>%s</div></main>\n"
+            % (_page_header(), _clean(title), content_html)).encode("utf-8")
+    return head + body + _footer()
+
+
+def render_about():
+    desc = "What Mazon Finds is — independent, niche-by-niche Amazon product picks and how we make them."
+    content = f"""
+<p>Mazon Finds is an independent product-discovery site. We research Amazon's own catalog by niche,
+then rank products by demand, rating and saturation so shoppers can compare the strongest picks in
+one place instead of dredging through pages of results.</p>
+<h2>How picks are made</h2>
+<ul>
+  <li><b>Mine the niche.</b> Each topic starts from a broad seed and is expanded using Amazon's
+  autosuggest index to surface the search terms real shoppers use.</li>
+  <li><b>Rank by real signals.</b> Products are scored on demand and saturation from live listings —
+  price, rating and review volume — never on who pays us.</li>
+  <li><b>Curate honestly.</b> If a product doesn't clear the bar, it's not listed. We correct or drop
+  picks when data changes.</li>
+</ul>
+<h2>Editorial independence</h2>
+<p>Vendors can't buy a placement here. Some links are affiliate links (see our
+<a href="/disclosure">Disclosure</a>), which means we may earn a small commission if you buy after
+clicking them — at no extra cost to you. Affiliate relationships never affect which products are chosen
+or their ranking.</p>
+<p>Questions or corrections? <a href="/contact">Contact us</a>.</p>
+"""
+    return render_page("about", "About Mazon Finds", desc, content)
+
+
+def render_contact():
+    desc = "How to reach Mazon Finds — corrections, questions and feedback."
+    content = f"""
+<p>We read and answer every message. Whether it's a price correction, a niche you'd love to see,
+or a general question, drop us a line:</p>
+<p><a class="btn" href="mailto:{CONTACT_EMAIL}">✉️ {CONTACT_EMAIL}</a></p>
+<h2>What to include</h2>
+<ul>
+  <li>Which page or product you're writing about (a link helps).</li>
+  <li>What you noticed — price, availability, rating, or a missing pick.</li>
+  <li>Your name and a way to reply, if you'd like one.</li>
+</ul>
+<p class="hint">We reply within 1–2 business days. Please don't send unsolicited marketing or
+partnership pitches — see <a href="/about">About</a> for how we decide what's listed.</p>
+"""
+    return render_page("contact", "Contact Mazon Finds", desc, content)
+
+
+def render_privacy():
+    desc = "What data Mazon Finds collects and how it's used."
+    content = f"""
+<h2>What we collect</h2>
+<ul>
+  <li><b>Server logs.</b> Standard web logs (IP, user agent, page requested) used for uptime,
+  abuse prevention and analytics. Logs aren't sold or shared.</li>
+  <li><b>Affiliate cookies.</b> When you click an affiliate link to Amazon, Amazon may set a short
+  cookie that lets them credit the referral. We don't see or store your Amazon account data.</li>
+  <li><b>Search-engine tokens.</b> We submit our pages to search engines (e.g. via IndexNow/Bing).
+  No personal data is involved.</li>
+</ul>
+<h2>What we don't</h2>
+<p>We have no accounts, no logins, no newsletters and no payment processing. We don't build profiles,
+track you across other sites, or use advertising trackers beyond the affiliate relationship above.</p>
+<h2>Third parties</h2>
+<p>Product data and prices come from Amazon; a QR widget may load images from a third-party API.
+Those services have their own privacy terms. Outbound links leave this site.</p>
+<h2>Contact</h2>
+<p>Privacy questions: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a></p>
+"""
+    return render_page("privacy", "Privacy Policy", desc, content)
+
+
+def render_terms():
+    desc = "Terms of service for using Mazon Finds."
+    content = f"""
+<h2>Use of this site</h2>
+<p>Content is provided for personal, non-commercial browsing. You may share individual pages and
+links, but not scrape, mirror or republish our picks at scale.</p>
+<h2>Third-party products and links</h2>
+<p>Product listings, prices, availability and offers originate from Amazon, where purchases happen.
+We're an independent site and not an Amazon seller. Prices shown are indicative and change frequently —
+always confirm price and availability on Amazon before buying.</p>
+<h2>Affiliate relationship</h2>
+<p>Some outbound links are affiliate links. As an Amazon Associate we earn from qualifying purchases,
+at no extra cost to you. See our <a href="/disclosure">Disclosure</a>.</p>
+<h2>No warranty / liability</h2>
+<p>Picks are informational opinions, not professional advice. We work to keep data accurate but can't
+warrant that every price, rating or description is current. To the fullest extent permitted by law,
+Mazon Finds isn't liable for decisions made based on this content.</p>
+<h2>Changes</h2>
+<p>These terms may be updated; the dated version on this page governs. Continued use means you accept
+any updates.</p>
+<h2>Contact</h2>
+<p><a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a></p>
+"""
+    return render_page("terms", "Terms of Service", desc, content)
+
+
+def render_disclosure():
+    desc = "Mazon Finds affiliate disclosure — how recommendations are funded."
+    content = f"""
+<p>Mazon Finds is reader-supported. Some of the links on this site are affiliate links — most notably
+through the <b>Amazon Associates</b> program — and we may earn a small commission, at no extra cost to
+you, when you click through and complete a qualifying purchase.</p>
+<h2>Being upfront</h2>
+<ul>
+  <li>A commission never changes the price you pay.</li>
+  <li>A commission never determines whether (or where) a product appears on this site.</li>
+  <li>Picks are chosen for quality, demand and signal strength — not for affiliate payout.</li>
+</ul>
+<p>"As an Amazon Associate I earn from qualifying purchases."</p>
+<p>This disclosure is required by the U.S. Federal Trade Commission and by the Amazon Associates
+operating agreement, and we're glad to honor both. If you ever see a placement that feels like it
+contradicts this, <a href="/contact">tell us</a>.</p>
+"""
+    return render_page("disclosure", "Affiliate Disclosure", desc, content)
+
+
 def render_landing(saved_niches):
-    """SEO landing page listing saved niches (internal links)."""
+    """Storefront-style home: value prop, how-we-pick, niche index, FAQ."""
     jsonld = {
         "@context": "https://schema.org", "@type": "CollectionPage",
         "name": SITE_NAME, "description": SITE_DESC,
@@ -100,15 +241,46 @@ def render_landing(saved_niches):
     head = _head(SITE_DESC, SITE_DESC, "/", "/", jsonld=jsonld)
     links = "".join(
         f'<div class="product"><h4><a href="/n/{_slugify(n["keyword"])}">{_clean(n["keyword"])}</a></h4></div>'
-        for n in (saved_niches or [])[:50])
+        for n in (saved_niches or [])[:48])
     body = f"""
 <header><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
 <p class="tagline">{_clean(SITE_DESC)}</p></header>
 <main>
-<div class="card"><h2>Explore niches</h2>
+<section class="card"><h1>Find the best <span style="color:var(--accent)">Amazon picks</span>, by niche.</h1>
+<p>Each niche page ranks the strongest products on Amazon for a topic — using live price, rating
+and review signals — so you can compare in minutes, not hours. Pick a niche and go.</p>
+<p class="hint">Honest picks. Live data. Affiliate-tagged links (see our
+<a href="/disclosure">Disclosure</a>).</p></section>
+
+<section class="card"><h2>🌱 How we pick</h2>
+<div class="features">
+  <div class="feature"><h3>⛏️ Niche mining</h3>
+  <p>We expand each topic through Amazon's own autosuggest index to find the terms real shoppers use.</p></div>
+  <div class="feature"><h3>📊 Real signals</h3>
+  <p>Products are ranked on demand and saturation from live listings — price, rating and review volume.</p></div>
+  <div class="feature"><h3>🛒 Shop on Amazon</h3>
+  <p>Every pick links straight to the product on Amazon. Purchases may earn us a commission at no cost to you.</p></div>
+</div></section>
+
+<section class="card"><h2>🛒 Explore niches</h2>
 <p>Every page below is fully crawlable and carries live, affiliate-tagged product links.</p>
 <div class="grid">{links}</div>
-</div>
+</section>
+
+<section class="card"><h2>❓ Quick questions</h2>
+<div class="sub">
+<h3>Do your links cost me anything?</h3>
+<p>No. If you buy after clicking a link, the price is the same — we may earn a small commission
+(see <a href="/disclosure">Disclosure</a>).</p></div>
+<div class="sub">
+<h3>Are prices accurate?</h3>
+<p>Prices are pulled live from Amazon and are indicative. Always confirm the price on Amazon before
+ordering — deals change constantly.</p></div>
+<div class="sub">
+<h3>Can you pick a niche for me?</h3>
+<p>We publish niches continuously. Want one you don't see?
+<a href="/contact">Contact us</a> — we read everything.</p></div>
+</section>
 </main>
 """.encode("utf-8")
     return head + body + _footer()
@@ -153,6 +325,8 @@ def indexable_urls(saved_niches, base_url=None):
     """
     base = (base_url or BASE_URL).rstrip("/")
     urls = [base + "/"]
+    for page in STATIC_PAGES:
+        urls.append(base + "/" + page)
     for n in (saved_niches or []):
         urls.append(base + "/n/" + _slugify(n["keyword"]))
     return urls

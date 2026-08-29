@@ -111,6 +111,9 @@ class Handler(BaseHTTPRequestHandler):
             key_provider = re.match(r"^/keys/([a-z0-9_-]+)$", path)
             if key_provider:
                 return self._keys_provider_page(key_provider.group(1))
+            if path[1:] in seo.STATIC_PAGES:
+                page = getattr(seo, "render_%s" % path[1:])()
+                return self._send(200, page, "text/html; charset=utf-8")
             # owner dashboard (static app UI) — kept off "/" so the root stays crawlable
             if path == "/dashboard" or path == "/index.html":
                 return self._send(200, open(os.path.join(STATIC, "index.html"), "rb").read(), "text/html; charset=utf-8")
@@ -224,6 +227,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _sitemap(self):
         entries = [("/", "2026-08-28")]
+        for page in seo.STATIC_PAGES:
+            entries.append(("/" + page, "2026-08-28"))
         for n in self._all_niches():
             try:
                 kw = seo._slugify(n["keyword"])
