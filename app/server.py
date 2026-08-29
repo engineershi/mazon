@@ -106,6 +106,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._go(go.group(1))
             if path == "/tool":
                 return self._send(200, open(os.path.join(STATIC, "tool.html"), "rb").read(), "text/html; charset=utf-8")
+            if path == "/keys":
+                return self._keys_page()
             # owner dashboard (static app UI) — kept off "/" so the root stays crawlable
             if path == "/dashboard" or path == "/index.html":
                 return self._send(200, open(os.path.join(STATIC, "index.html"), "rb").read(), "text/html; charset=utf-8")
@@ -287,6 +289,39 @@ class Handler(BaseHTTPRequestHandler):
         urls = self._all_urls(body.get("urls") or [])
         ok, message = indexnow.submit_urls(urls)
         return self._send(200, {"ok": ok, "message": message, "submitted": len(urls)})
+
+    def _keys_page(self):
+        """One admin page with every key/endpoint a tool needs."""
+        rows = [
+            ("IndexNow key", indexnow.key()),
+            ("IndexNow key file", indexnow.key_file_path()),
+            ("IndexNow endpoint", indexnow.ENDPOINT),
+            ("Submit all URLs (POST)", seo.BASE_URL.rstrip("/") + "/api/indexnow"),
+            ("Sitemap", seo.BASE_URL.rstrip("/") + "/sitemap.xml"),
+            ("Affiliate tag", amazon.AFFILIATE_TAG or "(none set)"),
+            ("Marketplace", amazon.MARKET),
+            ("Scraper", amazon.scraper_status().get("active", "n/a")),
+        ]
+        cards = "".join(
+            f'<div class="sub"><h3>{k}</h3><p class="key" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent)"
+ title="Click to copy">{v}</p></div>'
+            for k, v in rows)
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keys — Mazon</title><link rel="stylesheet" href="/style.css">
+<style>.key{{font-family:ui-monospace,Menlo,monospace;font-size:13px;background:var(--bg);border:1px solid var(--border);
+border-radius:10px;padding:10px 12px;margin:0;word-break:break-all;cursor:copy}}
+.sub{{padding:8px 0}}.sub h3{{margin:0 0 6px;font-size:13px;color:var(--muted);font-weight:700}}</style>
+</head><body>
+<header><a class="logo" href="/"><span class="mark">M</span><span>Mazon <em>Finds</em></span></a>
+<div class="hero"><h1>Keys & <span>endpoints.</span></h1>
+<p class="tagline">Every key, URL and endpoint the tools need — click a value to copy it.</p></div>
+<nav><a href="/dashboard" class="primary">🌱 Dashboard</a><a href="/tool">🛠 Tools</a><a href="/keys">🔑 Keys</a></nav>
+</header>
+<main><section class="card"><h2>🔑 Keys & endpoints</h2>{cards}</section></main>
+<footer><p>Keep the IndexNow key secret — it proves who owns the site to the search engines.</p></footer>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
     def _best_for_tools(self, q):
         items = []

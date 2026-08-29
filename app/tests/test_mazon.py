@@ -453,6 +453,15 @@ class TestRoutes(unittest.TestCase):
         self.assertIn('/tool', html)
         self.assertIn("Mine a niche", html)
 
+    def test_keys_page_lists_every_credential(self):
+        st, ctype, body = self._get("/keys")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn(indexnow.key(), html)
+        self.assertIn("IndexNow endpoint", html)
+        self.assertIn("/api/indexnow", html)
+        self.assertIn("/sitemap.xml", html)
+
 
 if __name__ == "__main__":
     unittest.main()
