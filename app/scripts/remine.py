@@ -3,7 +3,7 @@
 """Nightly niche re-miner: refresh the products of seeded niches inside the
 shipped sqlite DB.
 
-Usage: python app/scripts/remine.py [seeds.txt] [app/mazon.db] [max-niches]
+Usage: python app/scripts/remine.py [seeds.txt] [app/pstore.db] [max-niches]
 
 Behaviour
   * Reads broad seeds (one per line from the seeds file).
@@ -14,7 +14,7 @@ Behaviour
   * Leaves the DB byte-identical when nothing changed -> the workflow's
     `git diff --cached --quiet` check then skips the commit.
 
-Env: MAZON_MARKET (com), MAZON_TAG (affiliate tag), MAZON_TOP (products/niche).
+Env: PSTORE_MARKET (com), PSTORE_TAG (affiliate tag), PSTORE_TOP (products/niche).
 """
 import json
 import os
@@ -57,13 +57,13 @@ def upsert(conn, keyword, market, score, saturation, products):
 
 def main():
     seeds_file = sys.argv[1] if len(sys.argv) > 1 else "app/seeds.txt"
-    db_path = sys.argv[2] if len(sys.argv) > 2 else "app/mazon.db"
+    db_path = sys.argv[2] if len(sys.argv) > 2 else "app/pstore.db"
     max_niches = int(sys.argv[3]) if len(sys.argv) > 3 else 4
-    top = int(os.environ.get("MAZON_TOP", "6"))
-    market = os.environ.get("MAZON_MARKET", "com")
+    top = int(os.environ.get("PSTORE_TOP", "6"))
+    market = os.environ.get("PSTORE_MARKET", "com")
 
     amazon.set_market(market)
-    amazon.set_tag(os.environ.get("MAZON_TAG", ""))
+    amazon.set_tag(os.environ.get("PSTORE_TAG", ""))
     amazon.MIN_INTERVAL = 1.0        # be polite to Amazon's public pages
     amazon.CACHE_TTL = 0             # always hit live data
     amazon.MAX_ATTEMPTS = 2

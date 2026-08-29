@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Offline tests for Mazon (no live network). Stub amazon._urlopen."""
+"""Offline tests for pstore (no live network). Stub amazon._urlopen."""
 import json
 import os
 import sys
@@ -176,7 +176,7 @@ class TestSalesFunnel(unittest.TestCase):
 
     def test_build_landing_page(self):
         h = market_engine.build_landing_page("keto snacks", self.items,
-                                             site_url="https://mazon.example")
+                                             site_url="https://pstore.example")
         self.assertTrue(h.startswith("<!DOCTYPE html>"))
         self.assertIn("Get it on Amazon", h)
         self.assertNotIn("/go/", h)
@@ -222,7 +222,7 @@ class TestSalesFunnel(unittest.TestCase):
 
     def test_build_funnel_payload(self):
         f = market_engine.build_funnel("keto snacks", self.items,
-                                       site_url="https://mazon.example",
+                                       site_url="https://pstore.example",
                                        affiliate_tag="yourname-20")
         self.assertEqual(f["landing_url"], "/lp/keto-snacks")
         self.assertEqual(len(f["email_sequence"]), 5)
@@ -339,7 +339,7 @@ class TestSEO(unittest.TestCase):
             "source": "amazon"},
             saved_niches=[{"keyword": "keto snacks"}, {"keyword": "yoga mats"}],
         ).decode("utf-8")
-        for section in ("Best overall", "How we pick", "Why trust Mazon Finds",
+        for section in ("Best overall", "How we pick", "Why trust pstore",
                         "Compare the shortlist", "details class=\"faq\"",
                         "By the", "Updated", "yoga mats", "yoga-mats",
                         "\"@type\": \"FAQPage\"", "\"@type\": \"BreadcrumbList\"",
@@ -432,41 +432,41 @@ class TestIndexNow(unittest.TestCase):
 
     def setUp(self):
         indexnow._DEFAULT_KEY = self.KEY
-        seo.BASE_URL = "https://mazon.example"
+        seo.BASE_URL = "https://pstore.example"
 
     def test_key_and_file_route(self):
         self.assertEqual(indexnow.key(), self.KEY)
         self.assertEqual(
             indexnow.key_file_path(),
-            "https://mazon.example/%s.txt" % self.KEY)
+            "https://pstore.example/%s.txt" % self.KEY)
         self.assertEqual(indexnow.serve_key("/%s.txt" % self.KEY), self.KEY)
         self.assertIsNone(indexnow.serve_key("/other.txt"))
 
     def test_submit_urls_success(self):
         indexnow._post = lambda url, payload, timeout=20: 200
         ok, msg = indexnow.submit_urls(
-            ["https://mazon.example/", "https://mazon.example/n/keto-snacks"],
-            base_url="https://mazon.example")
+            ["https://pstore.example/", "https://pstore.example/n/keto-snacks"],
+            base_url="https://pstore.example")
         self.assertTrue(ok)
         self.assertIn("accepted", msg)
 
     def test_submit_urls_accepts_202(self):
         indexnow._post = lambda url, payload, timeout=20: 202
-        ok, _ = indexnow.submit_urls(["https://mazon.example/"],
-                                     base_url="https://mazon.example")
+        ok, _ = indexnow.submit_urls(["https://pstore.example/"],
+                                     base_url="https://pstore.example")
         self.assertTrue(ok)
 
     def test_submit_urls_rejects_foreign_urls(self):
         indexnow._post = lambda url, payload, timeout=20: 200
         ok, msg = indexnow.submit_urls(["https://evil.example/x"],
-                                       base_url="https://mazon.example")
+                                       base_url="https://pstore.example")
         self.assertFalse(ok)
         self.assertIn("no urls", msg)
 
     def test_submit_urls_invalid_key(self):
         indexnow._DEFAULT_KEY = "xyz"
-        ok, msg = indexnow.submit_urls(["https://mazon.example/"],
-                                       base_url="https://mazon.example")
+        ok, msg = indexnow.submit_urls(["https://pstore.example/"],
+                                       base_url="https://pstore.example")
         self.assertFalse(ok)
         self.assertIn("invalid key", msg)
 
@@ -484,10 +484,10 @@ class TestRoutes(unittest.TestCase):
         import uuid
         from http.server import ThreadingHTTPServer
 
-        cls.db = "/tmp/mazon_test_route_%s.db" % uuid.uuid4().hex[:8]
+        cls.db = "/tmp/pstore_test_route_%s.db" % uuid.uuid4().hex[:8]
         shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "..", "mazon.db"), cls.db)
-        os.environ["MAZON_DB"] = cls.db
+                                 "..", "pstore.db"), cls.db)
+        os.environ["PSTORE_DB"] = cls.db
         import server
         importlib.reload(server)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)

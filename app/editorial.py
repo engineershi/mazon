@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Mazon editorial layer: the human voice and trust machinery that turns a bare
+"""pstore editorial layer: the human voice and trust machinery that turns a bare
 product grid into an answer-first, E-E-A-T-friendly review page.
 
 Everything here is generated from data we actually hold (live listings: price,
@@ -17,7 +17,7 @@ import re
 
 import amazon
 
-BASE_URL = os.environ.get("MAZON_URL", "https://example.com").rstrip("/")
+BASE_URL = os.environ.get("PSTORE_URL", "https://pstore.onrender.com").rstrip("/")
 
 
 def _clean(s):
@@ -252,7 +252,7 @@ def reading_minutes(keyword, items, best):
 def byline_html(keyword, items, best):
     today = datetime.date.today().strftime("%b %d, %Y")
     mins = reading_minutes(keyword, items, best)
-    return ('<p class="byline">By the <a href="/about">Mazon Finds</a> '
+    return ('<p class="byline">By the <a href="/about">pstore</a> '
             'editorial team · Updated %s · %d min read</p>' % (today, mins))
 
 
@@ -272,7 +272,7 @@ def methodology_html():
 
 
 def trust_block_html():
-    return ('<div class="trust"><h3>Why trust Mazon Finds</h3>'
+    return ('<div class="trust"><h3>Why trust pstore</h3>'
             '<p>We\'re an independent picks site — not an Amazon seller and '
             'not paid to place products. Rankings come from the same data you '
             'can see on this page: rating, review volume and live price. Some '

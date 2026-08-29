@@ -3,7 +3,7 @@ primary_region = "iad"
 
 [env]
   PORT = "8765"
-  MAZON_DB = "/data/mazon.db"
+  PSTORE_DB = "/data/pstore.db"
 
 [http_service]
   internal_port = 8765
@@ -26,5 +26,5 @@ primary_region = "iad"
   memory = "256mb"
 
 [mounts]
-  source = "mazon_data"
+  source = "pstore_data"
   destination = "/data"

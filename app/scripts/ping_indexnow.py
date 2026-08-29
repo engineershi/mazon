@@ -4,7 +4,7 @@
 so fresh content is crawled within minutes instead of days.
 
 Used by .github/workflows/remine.yml every night and safe to run manually:
-    MAZON_URL=https://mazon.onrender.com python app/scripts/ping_indexnow.py
+    PSTORE_URL=https://pstore.onrender.com python app/scripts/ping_indexnow.py
 
 Exit code 1 on any failure so CI surfaces problems.
 """
@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import seo
 import indexnow
 
-BASE = os.environ.get("MAZON_URL", "https://mazon.onrender.com").rstrip("/")
+BASE = os.environ.get("PSTORE_URL", "https://pstore.onrender.com").rstrip("/")
 
 
 def saved_niches(db_path):
@@ -31,7 +31,7 @@ def saved_niches(db_path):
 
 
 def main():
-    db_path = os.environ.get("MAZON_DB", "app/mazon.db")
+    db_path = os.environ.get("PSTORE_DB", "app/pstore.db")
     if not os.path.exists(db_path):
         print("no db at %s -- skipping ping (exit 0)" % db_path)
         return 0

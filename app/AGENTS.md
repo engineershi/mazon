@@ -1,4 +1,4 @@
-# Mazon
+# pstore
 
 ## App root
 `/root/projects/mazon/app` — Amazon affiliate niche-finder. Backend is stdlib
@@ -16,7 +16,7 @@ operate normally from `/root/projects/mazon` (git auto-reads the gitfile).
 
 ## Run
 - Server: `python3 server.py` (serves `static/` + `/api/*` on port 8765).
-- Env: `MAZON_TAG=<your-tag>-NN`, `MAZON_MARKET=com` (default).
+- Env: `PSTORE_TAG=<your-tag>-NN`, `PSTORE_MARKET=com` (default).
 
 ## Tests
 ```

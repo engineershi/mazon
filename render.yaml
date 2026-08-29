@@ -1,15 +1,15 @@
 services:
   - type: web
-    name: mazon
+    name: pstore
     runtime: docker
-    repo: https://github.com/engineershi/mazon
+    repo: https://github.com/engineershi/pstore
     plan: free
     dockerfilePath: ./Dockerfile
     healthCheckPath: /
     envVars:
       - key: PORT
         value: "8765"
-      - key: MAZON_TAG
+      - key: PSTORE_TAG
         value: ""
-      - key: MAZON_MARKET
+      - key: PSTORE_MARKET
         value: com

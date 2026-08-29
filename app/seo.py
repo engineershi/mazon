@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Mazon SEO layer: fully server-rendered, crawlable pages + search-engine
+"""pstore SEO layer: fully server-rendered, crawlable pages + search-engine
 packaging (meta, OpenGraph, Twitter cards, JSON-LD, canonical, sitemap,
 robots). Every niche/search page is plain static HTML so Google can index it
 without JavaScript.
@@ -16,9 +16,9 @@ import urllib.parse
 import amazon
 import editorial
 
-SITE_NAME = "Mazon Finds"
+SITE_NAME = "pstore"
 SITE_DESC = "Hand-picked Amazon product picks by niche."
-BASE_URL = os.environ.get("MAZON_URL", "https://example.com").rstrip("/")
+BASE_URL = os.environ.get("PSTORE_URL", "https://pstore.onrender.com").rstrip("/")
 
 
 def _clean(s):
@@ -84,7 +84,7 @@ def _head(title, desc, canonical, path, jsonld=None):
 
 def _footer():
     return f"""<footer style="padding:24px;border-top:1px solid var(--border);color:var(--muted);font-size:13px">
-  <p>Mazon Finds — comparison picks. Prices are indicative; check Amazon for the live price.</p>
+  <p>pstore — comparison picks. Prices are indicative; check Amazon for the live price.</p>
   <p>As an Amazon Associate we earn from qualifying purchases.</p>
   <p>
     <a href="/">Home</a> · <a href="/about">About</a> · <a href="/contact">Contact</a> ·
@@ -99,7 +99,7 @@ def _footer():
 
 # ------------------------------------------------------------------ info pages
 STATIC_PAGES = ["about", "contact", "privacy", "terms", "disclosure"]
-CONTACT_EMAIL = os.environ.get("MAZON_CONTACT", "hello@mazon.onrender.com")
+CONTACT_EMAIL = os.environ.get("PSTORE_CONTACT", "hello@pstore.onrender.com")
 
 
 def _page_header():
@@ -121,9 +121,9 @@ def render_page(slug, title, desc, content_html):
 
 
 def render_about():
-    desc = "What Mazon Finds is — independent, niche-by-niche Amazon product picks and how we make them."
+    desc = "What pstore is — independent, niche-by-niche Amazon product picks and how we make them."
     content = f"""
-<p>Mazon Finds is an independent product-discovery site. We research Amazon's own catalog by niche,
+<p>pstore is an independent product-discovery site. We research Amazon's own catalog by niche,
 then rank products by demand, rating and saturation so shoppers can compare the strongest picks in
 one place instead of dredging through pages of results.</p>
 <h2>How picks are made</h2>
@@ -142,11 +142,11 @@ clicking them — at no extra cost to you. Affiliate relationships never affect 
 or their ranking.</p>
 <p>Questions or corrections? <a href="/contact">Contact us</a>.</p>
 """
-    return render_page("about", "About Mazon Finds", desc, content)
+    return render_page("about", "About pstore", desc, content)
 
 
 def render_contact():
-    desc = "How to reach Mazon Finds — corrections, questions and feedback."
+    desc = "How to reach pstore — corrections, questions and feedback."
     content = f"""
 <p>We read and answer every message. Whether it's a price correction, a niche you'd love to see,
 or a general question, drop us a line:</p>
@@ -160,11 +160,11 @@ or a general question, drop us a line:</p>
 <p class="hint">We reply within 1–2 business days. Please don't send unsolicited marketing or
 partnership pitches — see <a href="/about">About</a> for how we decide what's listed.</p>
 """
-    return render_page("contact", "Contact Mazon Finds", desc, content)
+    return render_page("contact", "Contact pstore", desc, content)
 
 
 def render_privacy():
-    desc = "What data Mazon Finds collects and how it's used."
+    desc = "What data pstore collects and how it's used."
     content = f"""
 <h2>What we collect</h2>
 <ul>
@@ -188,7 +188,7 @@ Those services have their own privacy terms. Outbound links leave this site.</p>
 
 
 def render_terms():
-    desc = "Terms of service for using Mazon Finds."
+    desc = "Terms of service for using pstore."
     content = f"""
 <h2>Use of this site</h2>
 <p>Content is provided for personal, non-commercial browsing. You may share individual pages and
@@ -203,7 +203,7 @@ at no extra cost to you. See our <a href="/disclosure">Disclosure</a>.</p>
 <h2>No warranty / liability</h2>
 <p>Picks are informational opinions, not professional advice. We work to keep data accurate but can't
 warrant that every price, rating or description is current. To the fullest extent permitted by law,
-Mazon Finds isn't liable for decisions made based on this content.</p>
+pstore isn't liable for decisions made based on this content.</p>
 <h2>Changes</h2>
 <p>These terms may be updated; the dated version on this page governs. Continued use means you accept
 any updates.</p>
@@ -214,9 +214,9 @@ any updates.</p>
 
 
 def render_disclosure():
-    desc = "Mazon Finds affiliate disclosure — how recommendations are funded."
+    desc = "pstore affiliate disclosure — how recommendations are funded."
     content = f"""
-<p>Mazon Finds is reader-supported. Some of the links on this site are affiliate links — most notably
+<p>pstore is reader-supported. Some of the links on this site are affiliate links — most notably
 through the <b>Amazon Associates</b> program — and we may earn a small commission, at no extra cost to
 you, when you click through and complete a qualifying purchase.</p>
 <h2>Being upfront</h2>

@@ -7,8 +7,8 @@ name: nightly-remine
 # Optional secrets (add in repo Settings > Secrets) to enable auto-deploy:
 #   RENDER_API_KEY          (Render dashboard -> Account -> API keys)
 #   RENDER_SERVICE_ID       (e.g. srv-da99ijtg1s2s739mqgj0)
-#   MAZON_URL               (defaults to https://mazon.onrender.com)
-#   MAZON_TAG / INDEXNOW_KEY (overrides; the committed defaults work too)
+#   PSTORE_URL               (defaults to https://pstore.onrender.com)
+#   PSTORE_TAG / INDEXNOW_KEY (overrides; the committed defaults work too)
 
 on:
   schedule:
@@ -37,16 +37,16 @@ jobs:
 
       - name: Re-mine seeds and rebuild DB
         env:
-          MAZON_MARKET: com
-          MAZON_TAG: ${{ secrets.MAZON_TAG }}
-          MAZON_TOP: "6"
-        run: python app/scripts/remine.py app/seeds.txt app/mazon.db 4
+          PSTORE_MARKET: com
+          PSTORE_TAG: ${{ secrets.PSTORE_TAG }}
+          PSTORE_TOP: "6"
+        run: python app/scripts/remine.py app/seeds.txt app/pstore.db 4
 
       - name: Commit and push fresh data (if changed)
         run: |
-          git config user.name "mazon-bot"
-          git config user.email "mazon-bot@users.noreply.github.com"
-          git add app/mazon.db
+          git config user.name "pstore-bot"
+          git config user.email "pstore-bot@users.noreply.github.com"
+          git add app/pstore.db
           git diff --cached --quiet && { echo "no changes"; exit 0; }
           git commit -m "chore(deps): nightly re-mine of seeded niches"
           git push
@@ -60,5 +60,5 @@ jobs:
 
       - name: Ping IndexNow for fresh URLs
         env:
-          MAZON_URL: ${{ secrets.MAZON_URL || 'https://mazon.onrender.com' }}
+          PSTORE_URL: ${{ secrets.PSTORE_URL || 'https://pstore.onrender.com' }}
         run: python app/scripts/ping_indexnow.py

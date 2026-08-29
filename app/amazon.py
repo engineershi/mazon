@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Mazon: keyless multi-marketplace Amazon product data + affiliate link builder.
+"""pstore: keyless multi-marketplace Amazon product data + affiliate link builder.
 
 Everything here is designed to work with NO Amazon API key, so a beginner can
 ship and earn immediately. Two live sources are tried in order for product

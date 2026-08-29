@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Mazon marketing engine: tools to push direct buyers to Amazon fast.
+"""pstore marketing engine: tools to push direct buyers to Amazon fast.
 
 Everything is keyless and produces affiliate-tagged, copy-paste-ready output:
 

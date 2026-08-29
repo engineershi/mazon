@@ -1,4 +1,4 @@
-// Mazon frontend — talks to the stdlib Python HTTP API.
+// pstore frontend — talks to the stdlib Python HTTP API.
 "use strict";
 
 let markets = null;

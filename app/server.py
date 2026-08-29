@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Mazon HTTP server: serves the static UI + JSON API on http.server (stdlib).
+"""pstore HTTP server: serves the static UI + JSON API on http.server (stdlib).
 
 Endpoints
   GET  /                  -> static/index.html
@@ -30,7 +30,7 @@ import seo
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
-DB = os.environ.get("MAZON_DB", os.path.join(ROOT, "mazon.db"))
+DB = os.environ.get("PSTORE_DB", os.path.join(ROOT, "pstore.db"))
 PORT = int(os.environ.get("PORT", "8765"))
 
 _lock = threading.Lock()
@@ -327,12 +327,12 @@ class Handler(BaseHTTPRequestHandler):
             for pid, pv in prov.items())
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Keys — Mazon</title><link rel="stylesheet" href="/style.css">
+<title>Keys — pstore</title><link rel="stylesheet" href="/style.css">
 <style>.key{{font-family:ui-monospace,Menlo,monospace;font-size:13px;background:var(--bg);border:1px solid var(--border);
 border-radius:10px;padding:10px 12px;margin:0;word-break:break-all;cursor:copy}}
 .sub{{padding:8px 0}}.sub h3{{margin:0 0 6px;font-size:13px;color:var(--muted);font-weight:700}}</style>
 </head><body>
-<header><a class="logo" href="/"><span class="mark">M</span><span>Mazon <em>Finds</em></span></a>
+<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <div class="hero"><h1>Keys & <span>endpoints.</span></h1>
 <p class="tagline">Every key, URL and endpoint the tools need — click a value to copy it.</p></div>
 <nav><a href="/dashboard" class="primary">🌱 Dashboard</a><a href="/tool">🛠 Tools</a><a href="/keys">🔑 Keys</a></nav>
@@ -360,12 +360,12 @@ border-radius:10px;padding:10px 12px;margin:0;word-break:break-all;cursor:copy}}
                  (" · from environment %s" % meta["env_var"] if has_env else "")
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{meta['name']} key — Mazon</title><link rel="stylesheet" href="/style.css">
+<title>{meta['name']} key — pstore</title><link rel="stylesheet" href="/style.css">
 <style>.key{{font-family:ui-monospace,Menlo,monospace;font-size:13px;background:var(--bg);border:1px solid var(--border);
 border-radius:10px;padding:10px 12px;margin:0;word-break:break-all}}
 .masked{{font-size:18px;font-weight:700;letter-spacing:1px}}</style>
 </head><body>
-<header><a class="logo" href="/"><span class="mark">M</span><span>Mazon <em>Finds</em></span></a>
+<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <div class="hero"><h1>{meta['name']} <span>API key.</span></h1>
 <p class="tagline">Paste your {meta['name']} API key below, or grab a new one at their dashboard.</p></div>
 <nav><a href="/dashboard" class="primary">🌱 Dashboard</a><a href="/tool">🛠 Tools</a><a href="/keys">🔑 Keys</a></nav>
@@ -442,10 +442,10 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
 
 def main():
     _init()
-    amazon.set_market(os.environ.get("MAZON_MARKET", amazon.DEFAULT_MARKET))
-    amazon.set_tag(os.environ.get("MAZON_TAG", ""))
+    amazon.set_market(os.environ.get("PSTORE_MARKET", amazon.DEFAULT_MARKET))
+    amazon.set_tag(os.environ.get("PSTORE_TAG", ""))
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print("Mazon running on http://localhost:%d" % PORT)
+    print("pstore running on http://localhost:%d" % PORT)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

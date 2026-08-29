@@ -1,4 +1,4 @@
-# Mazon — Amazon Affiliate Niche Finder
+# pstore — Amazon Affiliate Niche Finder
 
 Keyless Amazon affiliate marketing: find niches, display products, push buyers.
 No Amazon API key required to start — you earn from day one with `?tag=` links.
@@ -14,7 +14,7 @@ No Amazon API key required to start — you earn from day one with `?tag=` links
 cd app
 python3 server.py            # serves http://localhost:8765
 ```
-Set env: `MAZON_TAG=youraffiliate-20`, `MAZON_MARKET=com` (or co.uk/de/ca/in/...).
+Set env: `PSTORE_TAG=youraffiliate-20`, `PSTORE_MARKET=com` (or co.uk/de/ca/in/...).
 
 ## What it does
 - **Product search / display** — keyless: direct Amazon page parse, or plug in

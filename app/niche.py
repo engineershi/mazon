@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Mazon niche mining: turn a broad seed into a scored product niche.
+"""pstore niche mining: turn a broad seed into a scored product niche.
 
 Uses only KEYLESS signals so a beginner can mine niches with no Amazon API:
 
