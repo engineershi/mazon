@@ -29,7 +29,7 @@ import seo
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
-DB = os.path.join(ROOT, "mazon.db")
+DB = os.environ.get("MAZON_DB", os.path.join(ROOT, "mazon.db"))
 PORT = int(os.environ.get("PORT", "8765"))
 
 _lock = threading.Lock()
@@ -154,7 +154,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _mine(self, q):
         seed = (q.get("seed") or [""])[0].strip()
+        market = (q.get("market") or [""])[0].strip()
         top = int((q.get("top") or ["8"])[0])
+        if market:
+            amazon.set_market(market)
         niches, meta = niche.mine_niche(seed, top=top)
         return self._send(200, {"niches": niches, "meta": meta})
 

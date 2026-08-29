@@ -68,8 +68,10 @@ def build_markdown(items, heading=None):
         title = (it.get("title") or "").strip()
         if not it.get("asin"):
             continue
-        lines.append(f"- [{title}]({redirect_url(it.get('asin'))})"
-                     f"{((' - $%0.2f' % it.get('price')) if it.get('price') else '')}")
+        price_txt = ""
+        if it.get("price"):
+            price_txt = " - %s%0.2f" % (amazon.currency_symbol(it.get("currency")), it.get("price"))
+        lines.append(f"- [{title}]({redirect_url(it.get('asin'))}){price_txt}")
     return "\n".join(lines)
 
 

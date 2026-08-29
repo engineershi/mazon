@@ -28,7 +28,7 @@ def _slugify(text):
     return s or "niche"
 
 
-def _product_json_ld(items):
+def _product_graph(items):
     graph = []
     for it in (items or [])[:10]:
         if not it.get("title"):
@@ -50,11 +50,11 @@ def _product_json_ld(items):
                                  "reviewCount": it.get("reviews")}
                                 if it.get("stars") else None),
         })
-    return {"@context": "https://schema.org", "@graph": graph}
+    return graph
 
 
-def _head(title, desc, canonical, path):
-    return f"""<!DOCTYPE html>
+def _head(title, desc, canonical, path, jsonld=None):
+    head = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -71,9 +71,12 @@ def _head(title, desc, canonical, path):
 <meta name="twitter:title" content="{_clean(title)}">
 <meta name="twitter:description" content="{_clean(desc)}">
 <link rel="stylesheet" href="/style.css">
-</head>
-<body>
 """.encode("utf-8")
+    if jsonld:
+        payload = json.dumps(jsonld).replace("</", "<\\/")
+        head += ("<script type=\"application/ld+json\">%s</script>\n" % payload).encode("utf-8")
+    head += b"</head>\n<body>\n"
+    return head
 
 
 def _footer():
@@ -88,7 +91,11 @@ def _footer():
 
 def render_landing(saved_niches):
     """SEO landing page listing saved niches (internal links)."""
-    head = _head(SITE_DESC, SITE_DESC, "/", "/")
+    jsonld = {
+        "@context": "https://schema.org", "@type": "CollectionPage",
+        "name": SITE_NAME, "description": SITE_DESC,
+    }
+    head = _head(SITE_DESC, SITE_DESC, "/", "/", jsonld=jsonld)
     links = "".join(
         f'<div class="product"><h4><a href="/n/{_slugify(n["keyword"])}">{_clean(n["keyword"])}</a></h4></div>'
         for n in (saved_niches or [])[:50])
@@ -102,11 +109,7 @@ def render_landing(saved_niches):
 </div>
 </main>
 """.encode("utf-8")
-    jsonld = json.dumps({
-        "@context": "https://schema.org", "@type": "CollectionPage",
-        "name": SITE_NAME, "description": SITE_DESC,
-    }).encode("utf-8")
-    return head + body + _footer() + jsonld
+    return head + body + _footer()
 
 
 def render_niche(keyword, niche):
@@ -116,13 +119,14 @@ def render_niche(keyword, niche):
     title = f"Best {keyword} to Buy — Top Picks"
     desc = (f"Compare top {keyword} picks, prices and ratings. "
             f"Hand-curated {keyword} products with affiliate links.")
-    head = _head(title, desc, canonical, canonical)
+    jsonld = {"@context": "https://schema.org", "@graph": _product_graph(items)}
+    head = _head(title, desc, canonical, canonical, jsonld=jsonld)
     cards = ""
     for it in items:
         cards += f"""
 <div class="product">
   <h4>{_clean(it.get('title'))}</h4>
-  <div class="price">{it.get('price') and '$%0.2f' % it.get('price') or '—'}</div>
+  <div class="price">{it.get('price') and '%s%0.2f' % (amazon.currency_symbol(it.get("currency")), it.get("price")) or '—'}</div>
   <div class="meta">{"★ " + str(it.get("stars")) if it.get("stars") else ""}{" (" + str(it.get("reviews")) + " reviews)" if it.get("reviews") else ""}</div>
   <a href="{_clean(it.get('url'))}" target="_blank" rel="nofollow sponsored noopener">Check price on Amazon</a>
 </div>"""
@@ -137,7 +141,7 @@ def render_niche(keyword, niche):
 </div>
 </main>
 """.encode("utf-8")
-    return head + body + _footer() + json.dumps(_product_json_ld(items)).encode("utf-8")
+    return head + body + _footer()
 
 
 def render_sitemap(entries):

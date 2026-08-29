@@ -171,6 +171,23 @@ class TestSEO(unittest.TestCase):
         self.assertIn("@type", html)
         self.assertIn("/go/B0KETO1234", html)
 
+    def test_landing_jsonld_not_visible_text(self):
+        html = seo.render_landing([{"keyword": "keto snacks"}]).decode("utf-8")
+        self.assertIn("application/ld+json", html)
+        self.assertLess(html.index("application/ld+json"), html.index("</head>"))
+        self.assertTrue(html.rstrip().endswith("</html>"))
+        tail = html.rsplit("</body>", 1)[1]
+        self.assertNotIn("@type", tail)
+
+    def test_niche_jsonld_in_head(self):
+        html = seo.render_niche("keto snacks", {
+            "products": [{"asin": "B0KETO1234", "title": "Keto Bar",
+                          "price": 12.99, "stars": 4.5, "reviews": 10}],
+            "source": "amazon"}).decode("utf-8")
+        self.assertLess(html.index("application/ld+json"), html.index("</head>"))
+        self.assertIn('"@type": "Product"', html)
+        self.assertTrue(html.rstrip().endswith("</html>"))
+
     def test_sitemap(self):
         s = seo.render_sitemap([("/", "2026-08-28"), ("/n/keto-snacks", "2026-08-28")])
         self.assertIn(b"/n/keto-snacks", s)
@@ -178,6 +195,60 @@ class TestSEO(unittest.TestCase):
 
     def test_robots(self):
         self.assertIn(b"Sitemap:", seo.render_robots())
+
+
+REAL_CARD_HTML = """
+<div class="sg-col-inner"><div role="listitem" data-asin="B0FFZZZ001" data-index="2" data-component-type="s-search-result">
+  <a class="a-link-normal s-line-clamp-3 s-link-style a-text-normal" href="/Keto-Slime/dp/B0FFZZZ001/ref=sr_1_1?foo=1">
+    <span class="a-size-base-plus a-spacing-none a-color-base a-text-normal">Keto Bar Crunch Variety 12-Pack</span>
+  </a>
+  <span class="a-price" data-a-size="xl"><span class="a-offscreen">EUR\xa08.58</span></span>
+  <span class="a-text-price"><span class="a-offscreen">List: EUR 13.61</span></span>
+  <a aria-label="1,597 ratings" class="a-link-normal s-underline-text" href="/Only-Bean-Crunchy-K/dp/B0FFZZZ001"></a>
+  <i data-cy="reviews-ratings-slot" alt="4.2 out of 5 stars"></i>
+  <span class="a-badge-text" data-a-badge-color="white">Overall Pick</span>
+</div>
+<div role="listitem" data-asin="B0GGGG2222" data-component-type="s-search-result">
+  <span class="a-badge-label-inner a-text-ellipsis"><div id="aod-background" class="a-section aok-hidden"></div></span>
+  <a class="a-link-normal s-line-clamp-3 s-link-style a-text-normal" href="/Gammon-Hamper/dp/B0GGGG2222/ref=sr_1_2">
+    <span class="a-size-base-plus a-spacing-none a-color-base a-text-normal">Keto Gammon Pack 2kg</span>
+  </a>
+</div>
+"""
+
+
+class TestRealisticParsing(unittest.TestCase):
+    def test_card_scoped_fields(self):
+        items, total = amazon._parse_search_page(REAL_CARD_HTML, top=8)
+        self.assertEqual([i["asin"] for i in items], ["B0FFZZZ001", "B0GGGG2222"])
+        it = items[0]
+        self.assertEqual(it["title"], "Keto Bar Crunch Variety 12-Pack")
+        self.assertEqual(it["price"], 8.58)
+        self.assertEqual(it["currency"], "EUR")
+        self.assertEqual(it["stars"], 4.2)
+        self.assertEqual(it["reviews"], 1597)
+        self.assertNotIn("Overall Pick", it["title"])
+
+    def test_no_html_noise_in_titles(self):
+        items, _ = amazon._parse_search_page(REAL_CARD_HTML, top=8)
+        self.assertEqual(items[1]["title"], "Keto Gammon Pack 2kg")
+        for it in items:
+            self.assertNotIn("<", it["title"])
+            self.assertNotIn(">", it["title"])
+
+    def test_list_price_ignored_and_currency_symbol(self):
+        self.assertEqual(amazon.currency_symbol("EUR"), "\u20ac")
+        self.assertEqual(amazon.currency_symbol("USD"), "$")
+        self.assertEqual(amazon.currency_symbol(None), "$")
+        self.assertEqual(amazon._split_currency("EUR 8.58"), ("EUR", "8.58"))
+        self.assertEqual(amazon._split_currency("$12.99"), ("USD", "12.99"))
+
+    def test_price_with_currency_in_markdown(self):
+        amazon.AFFILIATE_TAG = "yourname-20"
+        md = market_engine.build_markdown(
+            [{"asin": "B0FFZZZ001", "title": "Keto Bar", "price": 8.58,
+              "currency": "EUR", "reviews": 100}])
+        self.assertIn("\u20ac8.58", md)
 
 
 if __name__ == "__main__":

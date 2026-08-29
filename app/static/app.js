@@ -23,7 +23,9 @@ function esc(s) {
 }
 
 function productCard(p) {
-  const price = p.price != null ? "$" + Number(p.price).toFixed(2) : "—";
+  const sym = {"EUR":"€","GBP":"£","JPY":"¥","INR":"₹","CAD":"C$","AUD":"A$",
+               "SGD":"S$","NZD":"NZ$","MXN":"MX$","CNY":"¥"}[p.currency] || "$";
+  const price = p.price != null ? sym + Number(p.price).toFixed(2) : "—";
   const stars = p.stars != null ? "★ " + p.stars : "";
   const revs = p.reviews != null ? " (" + p.reviews.toLocaleString() + ")" : "";
   return `<div class="product">

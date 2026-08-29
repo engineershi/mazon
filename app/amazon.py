@@ -19,6 +19,7 @@ Every network call bottoms out in the single module-level ``_urlopen`` so
 tests can inject fake responses, and providers never raise on the happy path.
 """
 import copy
+import html
 import json
 import os
 import re
@@ -262,46 +263,154 @@ def _build_item(html, asin):
     """Build one normalized product dict from search-page HTML around an ASIN,
     extracting title/price/rating/reviews/url with best-effort regexes."""
     url = affiliate_url(asin)
-    # Grab a context window near an image/alt containing the ASIN, if present.
-    idx = html.find("dp/" + asin)
-    window = html[max(0, idx - 3000): idx + 6000] if idx != -1 else html
-    title = _first(html, r'<span[^>]*>\s*(.{12,250}?)\s*</span>', window) or asin
-    title = re.sub(r'\s+', ' ', title).strip()
-    price = _first(html, r'class="a-offscreen">\$?([\d.,]+)<', window)
-    try:
-        price = None if not price else float(price.replace(",", ""))
-    except ValueError:
-        price = None
-    stars = _first(html, r'aria-label="([\d.]+) out of 5 stars"', window)
-    try:
-        stars = None if not stars else float(stars)
-    except ValueError:
-        stars = None
-    reviews = _first(html, r'aria-label="[\d.]+ out of 5 stars"[\s\S]{0,400}?([\d,]+)', window)
-    # fallback: next number after the stars aria-label within a card
-    if reviews is None:
-        m = re.search(r'aria-label="(?:\d[.])? out of 5 stars"[^>]*>\s*([\d,.K]+)', window)
-        if m:
-            reviews = m.group(1)
-    try:
-        reviews = None if not reviews else _parse_count(reviews)
-    except (TypeError, ValueError):
-        reviews = None
-    # Rating image alt sometimes carries the value, e.g. "4.3 out of 5 stars"
-    if stars is None:
-        m = re.search(r'(\d(?:\.\d)?) out of 5 stars', window)
-        if m:
-            stars = float(m.group(1))
+    window = _card_window(html, asin)
+    title = _extract_title(window, asin)
+    price, currency = _extract_price(window)
+    stars = _extract_stars(window)
+    reviews = _extract_reviews(window)
     return {"asin": asin, "title": title, "price": price, "stars": stars,
-            "reviews": reviews, "url": url}
+            "reviews": reviews, "url": url, "currency": currency}
 
 
-def _first(html, pattern, window):
-    m = re.search(pattern, window)
+def _card_window(html, asin):
+    """Locate the result-card HTML that contains this ASIN. Modern Amazon uses
+    `<div role="listitem" data-asin="...">` cards; fall back to a bounded window
+    around the `/dp/<ASIN>` link for classic/simple layouts."""
+    i = html.find('role="listitem" data-asin="' + asin + '"')
+    if i != -1:
+        j = html.find('role="listitem"', i + 1)
+        return html[i:j if j != -1 else i + 30000]
+    i = html.find('data-asin="' + asin + '"')
+    if i != -1:
+        j = html.find('data-asin="', i + 1)
+        return html[i:j if j != -1 else i + 30000]
+    i = html.find("/dp/" + asin)
+    if i != -1:
+        j = html.find("/dp/", i + 5)
+        return html[max(0, i - 1200):j if j != -1 else i + 9000]
+    return html
+
+
+def _clean_text(s):
+    return re.sub(r"\s+", " ", html.unescape(s or "")).strip()
+
+
+_STALE_TITLES = {"overall pick", "amazon's choice", "sponsored", "best seller"}
+
+
+def _extract_title(window, asin):
+    # 1. Product image alt tag is the cleanest source in the current layout.
+    for m in re.finditer(r'<img[^>]+\salt=["\']([^"\']{8,500})["\']', window):
+        alt = _clean_text(m.group(1))
+        low = alt.lower()
+        if (" star" in low or "stars" in low or "thumbnail" in low or "image" in low
+                or alt in _STALE_TITLES):
+            continue
+        if len(alt) >= 8:
+            return alt[:200]
+    for pat in (
+        r'data-cy="title-rendering"[^>]*>\s*<[^>]+>([^<]{5,300})<',
+        r'class="[^"]*a-text-normal[^"]*"[^>]*>\s*<[^>]+>([^<]{5,300})<',
+        r'class="[^"]*a-text-normal[^"]*"[^>]*>([^<]{5,300})<',
+        r'<h2[^>]*>(.*?)</h2>',
+    ):
+        m = re.search(pat, window, re.S)
+        if not m:
+            continue
+        t = _clean_text(re.sub(r"<[^>]+>", " ", m.group(1)))
+        if len(t) >= 5 and t.lower() not in _STALE_TITLES:
+            return t[:200]
+    # 3. Layout-agnostic fallback: first readable `<span>` text, tag-stripped.
+    for m in re.finditer(r"<span[^>]*>([^<]{5,300})<", window):
+        t = _clean_text(m.group(1))
+        if len(t) >= 5 and t.lower() not in _STALE_TITLES:
+            return t[:200]
+    return asin
+
+
+def _extract_price(window):
+    """Price + currency from the card. Prefers the primary `a-price` block
+    (skips `/count` unit prices and `List:` strikethroughs). Returns
+    (float or None, currency-id or None)."""
+    m = re.search(r'<span[^>]*class="a-price"[^>]*>\s*<span\s+class="a-offscreen">([^<]{1,60})<', window)
     if m:
-        v = m.group(1).strip()
-        if v:
-            return v
+        value, cur = _price_value(m.group(1))
+        if value is not None:
+            return value, cur
+    for m in re.finditer(r'class="a-offscreen">([^<]{1,60})<', window):
+        value, cur = _price_value(m.group(1))
+        if value is not None:
+            return value, cur
+    return None, None
+
+
+def _price_value(raw):
+    """Parse a single a-offscreen price string -> (float or None, currency)."""
+    text = raw.replace("\xa0", " ").strip()
+    if not text or text.lower().startswith("list:"):
+        return None, None
+    cur, num = _split_currency(text)
+    try:
+        return round(float(num.replace(",", "")), 2), cur
+    except ValueError:
+        return None, None
+
+
+_CURRENCY_TOKENS = (
+    ("EUR", "\u20ac"), ("USD", "$"), ("GBP", "\u00a3"), ("CAD", "C$"),
+    ("AUD", "A$"), ("JPY", "\u00a5"), ("INR", "\u20b9"), ("CNY", "\u00a5"),
+    ("BRL", "R$"), ("MXN", "MX$"), ("NZD", "NZ$"), ("SGD", "S$"),
+)
+
+
+def _split_currency(raw):
+    """Return (currency-id or None, numeric-part) from a price string like
+    'EUR 8.58', '$12.99', '£5.00' or '8.58'."""
+    for cur, _sym in _CURRENCY_TOKENS:
+        if raw.upper().startswith(cur):
+            return cur, raw[len(cur):].strip()
+    if raw[0] in "\u00a3\u20ac\u00a5":
+        return {"\u00a3": "GBP", "\u20ac": "EUR", "\u00a5": "JPY"}.get(raw[0]), raw[1:].strip()
+    if raw[:2].upper() in ("US",):
+        return "USD", raw[2:].strip()
+    if raw.startswith("$"):
+        return "USD", raw[1:].strip()
+    return None, raw.strip()
+
+
+def currency_symbol(code):
+    """Human symbol for a currency id ('USD' -> '$'); defaults to '$'."""
+    return dict(_CURRENCY_TOKENS).get(code or "USD", "$")
+
+
+def _extract_stars(window):
+    if not window:
+        return None
+    m = re.search(r'aria-label="([\d.]+) out of 5 stars(?:[,"][^"]*)?"', window) or \
+        re.search(r'alt="([\d.]+) out of 5 stars"', window)
+    if not m:
+        m = re.search(r'([\d.]+) out of 5 stars', window)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _extract_reviews(window):
+    for pat in (
+        r'aria-label="([\d,]+) ratings?[",]',
+        r's-underline-text[^>]*>\(([\d,]+)\)<',
+        r's-underline-text[^>]*>([\d,]+)[^<]*<',
+        r'out of 5 stars[\s\S]{0,400}?\(([\d,]+)\)<',
+    ):
+        m = re.search(pat, window)
+        if m:
+            try:
+                return _parse_count(m.group(1))
+            except (TypeError, ValueError):
+                continue
     return None
 
 
@@ -436,10 +545,13 @@ def _normalize_json_items(rows):
         if not asin:
             continue
         price = r.get("price") or r.get("price_raw")
+        cur, _num = (None, None)
         try:
             if isinstance(price, (dict,)):
                 price = price.get("value")
-            price = None if price is None else round(float(str(price).replace("$", "").replace(",", "")), 2)
+            if price is not None:
+                cur, _num = _split_currency(str(price))
+            price = None if price is None else round(float(_num or str(price).replace("$", "").replace(",", "")), 2)
         except (TypeError, ValueError):
             price = None
         stars = r.get("rating") or r.get("stars")
@@ -453,5 +565,5 @@ def _normalize_json_items(rows):
         except (TypeError, ValueError):
             reviews = None
         out.append({"asin": asin, "title": title, "price": price, "stars": stars,
-                    "reviews": reviews, "url": affiliate_url(asin)})
+                    "reviews": reviews, "url": affiliate_url(asin), "currency": cur})
     return out

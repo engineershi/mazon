@@ -1,0 +1,30 @@
+app = "mazon-com"
+primary_region = "iad"
+
+[env]
+  PORT = "8765"
+  MAZON_DB = "/data/mazon.db"
+
+[http_service]
+  internal_port = 8765
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.checks]
+    [http_service.checks.healthcheck]
+      interval = "30s"
+      timeout = "5s"
+      grace_period = "10s"
+      method = "GET"
+      path = "/"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[mounts]
+  source = "mazon_data"
+  destination = "/data"
