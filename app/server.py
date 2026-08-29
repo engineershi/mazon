@@ -256,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
                 if slug == seo._slugify(n["keyword"]):
                     html = market_engine.build_landing_page(
                         n["keyword"], n["products"], site_url=seo.BASE_URL)
-                    return self._send(200, html, "text/html; charset=utf-8")
+                    return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             except Exception:
                 continue
         return self._send(404, b"<html><body><p>Landing page not found.</p></body></html>",

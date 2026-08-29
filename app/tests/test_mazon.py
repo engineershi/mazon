@@ -367,5 +367,76 @@ class TestIndexNow(unittest.TestCase):
         self.assertIn("invalid key", msg)
 
 
+class TestRoutes(unittest.TestCase):
+    """Boots the real HTTP server on an ephemeral port against a copy of the
+    shipped DB, then exercises the SEO/IndexNow routes end-to-end."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib
+        import shutil
+        import threading
+        import urllib.request as urlreq
+        import uuid
+        from http.server import ThreadingHTTPServer
+
+        cls.db = "/tmp/mazon_test_route_%s.db" % uuid.uuid4().hex[:8]
+        shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "mazon.db"), cls.db)
+        os.environ["MAZON_DB"] = cls.db
+        import server
+        importlib.reload(server)
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.PORT = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.urlopen = staticmethod(urlreq.urlopen)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        if os.path.exists(cls.db):
+            os.unlink(cls.db)
+
+    def _get(self, path):
+        try:
+            with self.urlopen("http://127.0.0.1:%d%s" % (self.PORT, path),
+                              timeout=5) as r:
+                return r.status, r.headers.get("Content-Type"), r.read()
+        except Exception as exc:
+            return getattr(exc, "code", None), None, b""
+
+    def test_indexnow_key_file_is_raw(self):
+        st, ctype, body = self._get("/%s.txt" % indexnow.key())
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("text/plain"))
+        self.assertEqual(body, indexnow.key().encode("utf-8"))
+
+    def test_indexnow_api(self):
+        st, ctype, body = self._get("/api/indexnow")
+        self.assertEqual(st, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["key"], indexnow.key())
+        self.assertGreaterEqual(payload["url_count"], 1)
+
+    def test_sitemap_xml(self):
+        st, ctype, body = self._get("/sitemap.xml")
+        self.assertEqual(st, 200)
+        self.assertIn(b"<loc>", body)
+
+    def test_landing_page_serves_html_not_json(self):
+        st, ctype, body = self._get("/lp/keto-snacks")
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("text/html"))
+        self.assertTrue(body.startswith(b"<!DOCTYPE html>"))
+
+    def test_landing_page_links_are_direct(self):
+        _, _, body = self._get("/lp/keto-snacks")
+        html = body.decode("utf-8", "replace")
+        self.assertIn("https://www.amazon.com/dp/B0", html)
+        self.assertNotIn("/go/", html)
+
+
 if __name__ == "__main__":
     unittest.main()
