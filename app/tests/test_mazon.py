@@ -396,6 +396,7 @@ class TestRoutes(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
+        cls.httpd.server_close()
         if os.path.exists(cls.db):
             os.unlink(cls.db)
 
@@ -436,6 +437,21 @@ class TestRoutes(unittest.TestCase):
         html = body.decode("utf-8", "replace")
         self.assertIn("https://www.amazon.com/dp/B0", html)
         self.assertNotIn("/go/", html)
+
+    def test_root_stays_crawlable_landing(self):
+        st, ctype, body = self._get("/")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn("Explore niches", html)
+        self.assertNotIn('id="settings"', html)
+
+    def test_dashboard_route_has_admin_menu(self):
+        st, ctype, body = self._get("/dashboard")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn('id="settings"', html)
+        self.assertIn('/tool', html)
+        self.assertIn("Mine a niche", html)
 
 
 if __name__ == "__main__":

@@ -106,8 +106,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._go(go.group(1))
             if path == "/tool":
                 return self._send(200, open(os.path.join(STATIC, "tool.html"), "rb").read(), "text/html; charset=utf-8")
-            # static + API
-            if path == "/" or path == "/index.html":
+            # owner dashboard (static app UI) — kept off "/" so the root stays crawlable
+            if path == "/dashboard" or path == "/index.html":
                 return self._send(200, open(os.path.join(STATIC, "index.html"), "rb").read(), "text/html; charset=utf-8")
             if path == "/app.js":
                 return self._send(200, open(os.path.join(STATIC, "app.js"), "rb").read(), "application/javascript; charset=utf-8")
