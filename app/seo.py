@@ -9,6 +9,7 @@ indexed page is a live direct-buyer link surface.
 """
 import html
 import json
+import os
 import re
 import urllib.parse
 
@@ -16,6 +17,7 @@ import amazon
 
 SITE_NAME = "Mazon Finds"
 SITE_DESC = "Hand-picked Amazon product picks by niche."
+BASE_URL = os.environ.get("MAZON_URL", "https://example.com").rstrip("/")
 
 
 def _clean(s):
@@ -42,7 +44,7 @@ def _product_graph(items):
                 "@type": "Offer",
                 "url": it.get("url"),
                 "price": it.get("price"),
-                "priceCurrency": "USD",
+                "priceCurrency": it.get("currency") or "USD",
                 "availability": "https://schema.org/InStock",
             },
             "aggregateRating": ({"@type": "AggregateRating",
@@ -61,11 +63,11 @@ def _head(title, desc, canonical, path, jsonld=None):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_clean(title)} | {SITE_NAME}</title>
 <meta name="description" content="{_clean(desc)}">
-<link rel="canonical" href="{_clean('https://example.com' + path)}">
+<link rel="canonical" href="{_clean(BASE_URL + path)}">
 <meta property="og:type" content="website">
 <meta property="og:title" content="{_clean(title)}">
 <meta property="og:description" content="{_clean(desc)}">
-<meta property="og:url" content="{_clean('https://example.com' + path)}">
+<meta property="og:url" content="{_clean(BASE_URL + path)}">
 <meta property="og:site_name" content="{SITE_NAME}">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="{_clean(title)}">
@@ -147,11 +149,11 @@ def render_niche(keyword, niche):
 def render_sitemap(entries):
     """entries: list of (url_path, lastmod). Returns sitemap.xml bytes."""
     urls = "".join(
-        f"<url><loc>https://example.com{_clean(p)}</loc><lastmod>{lm}</lastmod></url>\n"
+        f"<url><loc>{BASE_URL}{_clean(p)}</loc><lastmod>{lm}</lastmod></url>\n"
         for p, lm in entries)
     body = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + urls + "</urlset>\n"
     return body.encode("utf-8")
 
 
 def render_robots():
-    return "User-agent: *\nAllow: /\nSitemap: https://example.com/sitemap.xml\n".encode("utf-8")
+    return f"User-agent: *\nAllow: /\nSitemap: {BASE_URL}/sitemap.xml\n".encode("utf-8")
