@@ -103,8 +103,7 @@ def render_landing(saved_niches):
         for n in (saved_niches or [])[:50])
     body = f"""
 <header><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
-<p class="tagline">{_clean(SITE_DESC)}
-<a href="/dashboard" style="color:var(--muted)">· Dashboard</a></p></header>
+<p class="tagline">{_clean(SITE_DESC)}</p></header>
 <main>
 <div class="card"><h2>Explore niches</h2>
 <p>Every page below is fully crawlable and carries live, affiliate-tagged product links.</p>
