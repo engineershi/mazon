@@ -173,6 +173,21 @@ button.warm {
   box-shadow: 0 6px 16px rgba(255, 107, 44, 0.32);
 }
 button.warm:hover { box-shadow: 0 10px 24px rgba(255, 107, 44, 0.4); }
+a.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 0 20px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--accent), #ff873c);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 14px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+a.btn:hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(255, 107, 44, 0.35); }
 .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 10px; }
 .msg { color: var(--muted); font-size: 13px; min-height: 18px; margin: 6px 0 0; }
 

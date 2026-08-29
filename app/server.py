@@ -108,6 +108,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, open(os.path.join(STATIC, "tool.html"), "rb").read(), "text/html; charset=utf-8")
             if path == "/keys":
                 return self._keys_page()
+            key_provider = re.match(r"^/keys/([a-z0-9_-]+)$", path)
+            if key_provider:
+                return self._keys_provider_page(key_provider.group(1))
             # owner dashboard (static app UI) — kept off "/" so the root stays crawlable
             if path == "/dashboard" or path == "/index.html":
                 return self._send(200, open(os.path.join(STATIC, "index.html"), "rb").read(), "text/html; charset=utf-8")
@@ -307,6 +310,13 @@ class Handler(BaseHTTPRequestHandler):
             'onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent)" '
             'title="Click to copy">%s</p></div>' % (k, v)
             for k, v in rows)
+        prov = amazon.scraper_status()["providers"]
+        prov_cards = "".join(
+            '<div class="sub"><h3>%s</h3>'
+            '<p class="key"><a href="/keys/%s">/keys/%s</a> · %s</p></div>'
+            % (pv["name"], pid, pid,
+               "key set" if pv["has_key"] else "no key set")
+            for pid, pv in prov.items())
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Keys — Mazon</title><link rel="stylesheet" href="/style.css">
@@ -319,8 +329,75 @@ border-radius:10px;padding:10px 12px;margin:0;word-break:break-all;cursor:copy}}
 <p class="tagline">Every key, URL and endpoint the tools need — click a value to copy it.</p></div>
 <nav><a href="/dashboard" class="primary">🌱 Dashboard</a><a href="/tool">🛠 Tools</a><a href="/keys">🔑 Keys</a></nav>
 </header>
-<main><section class="card"><h2>🔑 Keys & endpoints</h2>{cards}</section></main>
+<main><section class="card"><h2>🔑 Keys & endpoints</h2>{cards}
+<h2>🛢 Scraper provider keys</h2>
+<p class="hint">One short page per provider — see status, open its dashboard, paste or clear the key:</p>{prov_cards}
+</section></main>
 <footer><p>Keep the IndexNow key secret — it proves who owns the site to the search engines.</p></footer>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _keys_provider_page(self, pid):
+        """Short per-provider page: see key status, open the provider's own
+        dashboard to fetch an API key, and save (or clear) it on this instance."""
+        meta = amazon._SCRAPER_PROVIDERS.get(pid)
+        if not meta:
+            return self._send(
+                404, b"<html><body><p>Unknown provider.</p></body></html>",
+                "text/html; charset=utf-8")
+        key = amazon._scraper_key(pid)
+        has_env = bool(os.environ.get(meta["env_var"]))
+        masked = (("••••" + key[-4:]) if key else "(no key set)")
+        status = ("key set" if key else "no key set") + \
+                 (" · from environment %s" % meta["env_var"] if has_env else "")
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{meta['name']} key — Mazon</title><link rel="stylesheet" href="/style.css">
+<style>.key{{font-family:ui-monospace,Menlo,monospace;font-size:13px;background:var(--bg);border:1px solid var(--border);
+border-radius:10px;padding:10px 12px;margin:0;word-break:break-all}}
+.masked{{font-size:18px;font-weight:700;letter-spacing:1px}}</style>
+</head><body>
+<header><a class="logo" href="/"><span class="mark">M</span><span>Mazon <em>Finds</em></span></a>
+<div class="hero"><h1>{meta['name']} <span>API key.</span></h1>
+<p class="tagline">Paste your {meta['name']} API key below, or grab a new one at their dashboard.</p></div>
+<nav><a href="/dashboard" class="primary">🌱 Dashboard</a><a href="/tool">🛠 Tools</a><a href="/keys">🔑 Keys</a></nav>
+</header>
+<main>
+<section class="card"><h2>🎯 {meta['name']} ({meta['kind']})</h2>
+<div class="sub"><h3>Current status</h3><p class="key masked">{masked}</p><p class="hint">{status}</p></div>
+<div class="sub"><h3>Get an API key</h3>
+<p class="hint">Create / copy your key at the {meta['name']} dashboard, then paste it here:</p>
+<p><a class="btn" href="{meta['key_url']}" target="_blank" rel="noopener">Open {meta['name']} dashboard ↗</a></p>
+</div>
+<div class="row">
+  <label>API key
+    <input id="key" placeholder="paste key…" autocomplete="off" spellcheck="false">
+  </label>
+  <button id="save" class="warm">Save key</button>
+  <button id="clear">Clear key</button>
+</div>
+<p id="msg" class="msg"></p>
+<a href="/keys" class="hint">← all keys</a>
+</section></main>
+<footer><p>Keys are stored in memory for this instance; set {meta['env_var']} as an environment variable to make them permanent.</p></footer>
+<script>
+function $(id){{return document.getElementById(id);}}
+async function post(payload){{
+  const r = await fetch("/api/settings", {{method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify(payload)}});
+  return r.ok;
+}}
+$("save").onclick = async () => {{
+  const v = $("key").value.trim();
+  if (await post({{scraper: {{"{pid}": v}}}})) {{ $("msg").textContent = "Saved ✓"; setTimeout(()=>location.reload(), 700); }}
+  else $("msg").textContent = "Save failed.";
+}};
+$("clear").onclick = async () => {{
+  if (await post({{scraper: {{"{pid}": ""}}}})) {{ $("msg").textContent = "Cleared."; setTimeout(()=>location.reload(), 700); }}
+  else $("msg").textContent = "Clear failed.";
+}};
+$("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").onclick(); }});
+</script>
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 

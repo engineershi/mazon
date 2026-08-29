@@ -461,6 +461,20 @@ class TestRoutes(unittest.TestCase):
         self.assertIn("IndexNow endpoint", html)
         self.assertIn("/api/indexnow", html)
         self.assertIn("/sitemap.xml", html)
+        for pid in ("scraperapi", "outscraper", "serpapi"):
+            self.assertIn("/keys/%s" % pid, html)
+
+    def test_keys_provider_page(self):
+        st, ctype, body = self._get("/keys/outscraper")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn("Outscraper", html)
+        self.assertIn("https://app.outscraper.com/", html)
+        self.assertIn("OUTSCRAPER_API_KEY", html)
+
+    def test_keys_unknown_provider_404(self):
+        st, _, _ = self._get("/keys/nope")
+        self.assertEqual(st, 404)
 
 
 if __name__ == "__main__":
