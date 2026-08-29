@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: mazon
+    runtime: docker
+    repo: https://github.com/engineershi/mazon
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: "8765"
+      - key: MAZON_TAG
+        value: ""
+      - key: MAZON_MARKET
+        value: com
