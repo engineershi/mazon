@@ -37,10 +37,13 @@ DB = os.environ.get("PSTORE_DB", os.path.join(ROOT, "pstore.db"))
 PORT = int(os.environ.get("PORT", "8765"))
 
 # --- admin auth -------------------------------------------------------------
-# Everything under /admin + the owner tools/APIs sits behind an admin password
-# (PSTORE_ADMIN_PASSWORD) with an in-memory session cookie. Public pages keep
-# serving without a cookie: /, /n/*, /lp/*, about/legal, robots, sitemap, key.
-_ADMIN_PW = os.environ.get("PSTORE_ADMIN_PASSWORD") or "pstore-admin"
+# Everything under /admin + the owner tools/APIs sits behind an admin email +
+# password (PSTORE_ADMIN_EMAIL / PSTORE_ADMIN_PASSWORD) with an in-memory
+# session cookie. Public pages keep serving without a cookie: /, /n/*, /lp/*,
+# about/legal, robots, sitemap, key.
+_ADMIN_EMAIL = os.environ.get("PSTORE_ADMIN_EMAIL", "salahuddinhabibisah@gmail.com")
+_ADMIN_PW = os.environ.get("PSTORE_ADMIN_PASSWORD", "$_Salahu1991")
+_ADMIN_EMAIL_FROM_ENV = bool(os.environ.get("PSTORE_ADMIN_EMAIL"))
 _ADMIN_PW_FROM_ENV = bool(os.environ.get("PSTORE_ADMIN_PASSWORD"))
 _COOKIE = "pstore_admin"
 _SESSION_TTL = 12 * 60 * 60  # seconds
@@ -162,9 +165,11 @@ class Handler(BaseHTTPRequestHandler):
 <main class="login-wrap"><div class="login-card">
 <section class="card">
 <h1>🔐 Admin <span style="color:var(--accent)">login</span></h1>
-<p class="tagline" style="margin:0">Owner section — pages, tools and keys are locked behind the admin password.</p>
+<p class="tagline" style="margin:0">Owner section — pages, tools and keys are locked behind the admin email &amp; password.</p>
 {err}
-<label style="display:block;text-align:left;font-size:12.5px;color:var(--muted);font-weight:700">Admin password
+<label style="display:block;text-align:left;font-size:12.5px;color:var(--muted);font-weight:700">Admin email
+<input id="em" type="email" placeholder="you@example.com" autocomplete="username"></label>
+<label style="display:block;text-align:left;font-size:12.5px;color:var(--muted);font-weight:700">Password
 <input id="pw" type="password" placeholder="password" autocomplete="current-password"></label>
 <button id="go" class="warm">Unlock admin</button>
 <p id="msg" class="msg"></p>
@@ -175,7 +180,7 @@ function $(id){{return document.getElementById(id);}}
 $("go").onclick = async () => {{
   const next = new URLSearchParams(location.search).get("next") || "/dashboard";
   const r = await fetch("/admin/login", {{method:"POST", headers:{{"Content-Type":"application/json"}},
-    body: JSON.stringify({{password: $("pw").value, next: next}})}});
+    body: JSON.stringify({{email: $("em").value.trim(), password: $("pw").value, next: next}})}});
   const d = await r.json().catch(()=>({{ok:false, error:"bad response"}}));
   if (d.ok) location.href = d.next;
   else $("msg").textContent = d.error || "Login failed.";
@@ -187,12 +192,14 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 
     def _login_post(self):
         body = self._body()
+        email = str(body.get("email") or "").strip().lower()
         pw = str(body.get("password") or "")
         next_path = str(body.get("next") or "/dashboard")
         if not next_path.startswith("/") or next_path.startswith("//"):
             next_path = "/dashboard"
-        if not hmac.compare_digest(pw.encode("utf-8"), _ADMIN_PW.encode("utf-8")):
-            return self._send(200, {"ok": False, "error": "Wrong password"})
+        if (not hmac.compare_digest(email.encode("utf-8"), _ADMIN_EMAIL.encode("utf-8"))
+                or not hmac.compare_digest(pw.encode("utf-8"), _ADMIN_PW.encode("utf-8"))):
+            return self._send(200, {"ok": False, "error": "Wrong email or password"})
         tok = self._new_session()
         data = json.dumps({"ok": True, "next": next_path}).encode("utf-8")
         self.send_response(200)
@@ -685,9 +692,9 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
 
 def main():
     _init()
-    if not _ADMIN_PW_FROM_ENV:
-        print("WARNING: PSTORE_ADMIN_PASSWORD not set — using the default admin password. "
-              "Set it in Render/env before going public.")
+    if not _ADMIN_EMAIL_FROM_ENV or not _ADMIN_PW_FROM_ENV:
+        print("WARNING: PSTORE_ADMIN_EMAIL / PSTORE_ADMIN_PASSWORD not both set — "
+              "using the default admin credentials. Set them in Render/env before going public.")
     amazon.set_market(os.environ.get("PSTORE_MARKET", amazon.DEFAULT_MARKET))
     amazon.set_tag(os.environ.get("PSTORE_TAG", ""))
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

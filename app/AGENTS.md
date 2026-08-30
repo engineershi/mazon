@@ -17,8 +17,9 @@ operate normally from `/root/projects/mazon` (git auto-reads the gitfile).
 ## Run
 - Server: `python3 server.py` (serves `static/` + `/api/*` on port 8765).
 - Env: `PSTORE_TAG=<your-tag>-NN`, `PSTORE_MARKET=com` (default),
-  `PSTORE_ADMIN_PASSWORD=<pw>` (gates /admin, /dashboard, /tool, /keys, /api/*;
-  defaults to `pstore-admin` with a startup warning when unset).
+  `PSTORE_ADMIN_EMAIL=<email>` + `PSTORE_ADMIN_PASSWORD=<pw>` (gates /admin,
+  /dashboard, /tool, /keys, /api/*; falls back to a default with a startup
+  warning when either is unset).
 
 ## Tests
 ```

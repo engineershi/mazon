@@ -488,7 +488,9 @@ class TestRoutes(unittest.TestCase):
         shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "..", "pstore.db"), cls.db)
         os.environ["PSTORE_DB"] = cls.db
+        os.environ["PSTORE_ADMIN_EMAIL"] = "owner@test.example"
         os.environ["PSTORE_ADMIN_PASSWORD"] = "test-pass-123"
+        cls.email = "owner@test.example"
         cls.password = "test-pass-123"
         import server
         importlib.reload(server)
@@ -497,8 +499,9 @@ class TestRoutes(unittest.TestCase):
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.thread.start()
         cls.urlopen = staticmethod(urlreq.urlopen)
-        status, location, set_cookie, body = cls._raw("/admin/login", "POST",
-                                                      body=b"password=%s" % cls.password.encode())
+        status, location, set_cookie, body = cls._raw(
+            "/admin/login", "POST",
+            body=b"email=%s&password=%s" % (cls.email.encode(), cls.password.encode()))
         assert status == 200, (status, body)
         cls.cookie = set_cookie.split(";")[0] if set_cookie else ""
 
@@ -634,15 +637,23 @@ class TestRoutes(unittest.TestCase):
 
     def test_login_wrong_password(self):
         st, _, set_cookie, body = self._raw(
-            "/admin/login", "POST", body=b"password=nope")
+            "/admin/login", "POST", body=b"email=owner@test.example&password=nope")
         self.assertEqual(st, 200)
         payload = json.loads(body)
         self.assertFalse(payload["ok"])
         self.assertIsNone(set_cookie)
 
+    def test_login_wrong_email(self):
+        st, _, set_cookie, body = self._raw(
+            "/admin/login", "POST", body=b"email=bad@test.example&password=test-pass-123")
+        self.assertEqual(st, 200)
+        self.assertFalse(json.loads(body)["ok"])
+        self.assertIsNone(set_cookie)
+
     def test_login_success_sets_cookie(self):
         st, _, set_cookie, body = self._raw(
-            "/admin/login", "POST", body=b"password=test-pass-123")
+            "/admin/login", "POST",
+            body=b"email=owner@test.example&password=test-pass-123")
         self.assertEqual(st, 200)
         self.assertTrue(json.loads(body)["ok"])
         self.assertTrue(set_cookie.startswith("pstore_admin="))
@@ -653,7 +664,8 @@ class TestRoutes(unittest.TestCase):
     def test_login_supports_json_next_route(self):
         req = urllib.request.Request(
             "http://127.0.0.1:%d/admin/login" % self.PORT,
-            data=json.dumps({"password": "test-pass-123", "next": "/tool"}).encode("utf-8"),
+            data=json.dumps({"email": "owner@test.example",
+                             "password": "test-pass-123", "next": "/tool"}).encode("utf-8"),
             headers={"Content-Type": "application/json"}, method="POST")
         with self.urlopen(req, timeout=5) as r:
             self.assertEqual(r.status, 200)
@@ -673,7 +685,8 @@ class TestRoutes(unittest.TestCase):
 
     def test_logout_invalidates_session(self):
         st, _, set_cookie, body = self._raw(
-            "/admin/login", "POST", body=b"password=test-pass-123")
+            "/admin/login", "POST",
+            body=b"email=owner@test.example&password=test-pass-123")
         cookie = set_cookie.split(";")[0]
         st_dash, _, _, _ = self._raw("/dashboard", cookie=cookie)
         self.assertEqual(st_dash, 200)
