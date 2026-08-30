@@ -105,8 +105,14 @@ def _db():
         source TEXT,
         ip TEXT,
         referrer TEXT,
+        asin TEXT,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
+    try:
+        conn.execute("ALTER TABLE clicks ADD COLUMN asin TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        conn.rollback()
     return conn
 
 
@@ -767,7 +773,19 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             conn.commit()
             nid = cur.lastrowid
             conn.close()
+        self._push_indexnow(body.get("keyword"))
         return self._send(200, {"id": nid})
+
+    def _push_indexnow(self, keyword):
+        """Fire-and-forget IndexNow submit so a brand-new /n/ page is crawled
+        in minutes instead of waiting for a sitemap re-crawl. Never blocks the
+        save response and never raises."""
+        try:
+            slug = seo._slugify(keyword)
+        except Exception:
+            slug = "niche"
+        url = seo.BASE_URL.rstrip("/") + "/n/" + slug
+        threading.Thread(target=lambda: indexnow.submit_urls([url]), daemon=True).start()
 
     def _list_niches(self):
         with _lock:
@@ -1007,13 +1025,13 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
 
 
 # ------------------------------------------------------------------ email suite
-    def _record_click(self, slug, source="page", referrer=""):
+    def _record_click(self, slug, source="page", referrer="", asin=""):
         ip = security.ip_token(self._client_ip())
         with _lock:
             conn = _db()
             conn.execute(
-                "INSERT INTO clicks (slug, source, ip, referrer) VALUES (?,?,?,?)",
-                (slug, source, ip, referrer))
+                "INSERT INTO clicks (slug, source, ip, referrer, asin) VALUES (?,?,?,?,?)",
+                (slug, source, ip, referrer, asin))
             conn.commit()
             conn.close()
 
@@ -1088,7 +1106,8 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
         slug = str(body.get("slug") or (q.get("slug") or ["page"])[0]).strip().lower()[:120] or "page"
         source = str(body.get("source") or (q.get("source") or ["page"])[0]).strip()[:40] or "page"
         referrer = str(body.get("referrer") or (q.get("referrer") or [""])[0]).strip()[:250]
-        self._record_click(slug, source, referrer)
+        asin = str(body.get("asin") or (q.get("asin") or [""])[0]).strip().upper()[:40]
+        self._record_click(slug, source, referrer, asin)
         return self._send(200, {"ok": True})
 
     def _subs_stats(self, conn):
@@ -1429,6 +1448,9 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
                 "SELECT slug, COUNT(*) c FROM clicks GROUP BY slug ORDER BY c DESC LIMIT 12").fetchall()
             top_sources = conn.execute(
                 "SELECT source, COUNT(*) c FROM clicks GROUP BY source ORDER BY c DESC LIMIT 8").fetchall()
+            top_products = conn.execute(
+                "SELECT asin, slug, COUNT(*) c FROM clicks WHERE asin != '' "
+                "GROUP BY asin, slug ORDER BY c DESC LIMIT 10").fetchall()
             recent = conn.execute("SELECT * FROM clicks ORDER BY id DESC LIMIT 15").fetchall()
             conn.close()
         slug_rows = "".join(
@@ -1437,6 +1459,10 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
         src_rows = "".join(
             "<tr><td>%s</td><td>%d</td></tr>" % (seo._clean(r["source"]), r["c"])
             for r in top_sources)
+        product_rows = "".join(
+            "<tr><td>%s</td><td>%s</td><td class='ct'>%s</td></tr>"
+            % (seo._clean(r["asin"]), seo._clean(r["slug"]), r["c"])
+            for r in top_products) or "<tr><td colspan='3' class='hint'>No product clicks yet — they appear as soon as a pick gets tapped (data-asin beacon).</td></tr>"
         recent_rows = "".join(
             "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
             % (seo._clean(r["slug"]), seo._clean(r["source"]), seo._clean(r["referrer"] or "—"),
@@ -1462,6 +1488,9 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
 </div></section>
 <section class="card"><h2>🛒 Top clicked pages</h2>
 <table class="plain"><thead><tr><th>Niche</th><th>Clicks</th></tr></thead><tbody>{slug_rows}</tbody></table></section>
+<section class="card"><h2>🏆 Most-clicked products</h2>
+<p class="hint">Which ASIN earns the taps, per niche — use it to pick which products to push in emails and which pages deserve more variants.</p>
+<table class="plain"><thead><tr><th>ASIN</th><th>Niche</th><th>Clicks</th></tr></thead><tbody>{product_rows}</tbody></table></section>
 <section class="card"><h2>📥 By source</h2>
 <table class="plain"><thead><tr><th>Source</th><th>Clicks</th></tr></thead><tbody>{src_rows}</tbody></table></section>
 <section class="card"><h2>🧾 Recent clicks</h2>

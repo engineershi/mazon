@@ -325,6 +325,7 @@ class TestSEO(unittest.TestCase):
         self.assertIn("<title>", html)
         self.assertIn('rel="canonical"', html)
         self.assertIn("@type", html)
+        self.assertIn("data-asin=\"B0KETO1234\"", html)
         self.assertIn("https://www.amazon.com/dp/B0KETO1234?tag=yourname-20", html)
         self.assertNotIn("/go/", html)
 
@@ -501,6 +502,8 @@ class TestRoutes(unittest.TestCase):
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.thread.start()
         cls.urlopen = staticmethod(urlreq.urlopen)
+        cls._saved_indexnow_post = indexnow._post
+        indexnow._post = lambda url, payload, timeout=20: None
         status, location, set_cookie, body = cls._raw(
             "/admin/login", "POST",
             body=b"email=%s&password=%s" % (cls.email.encode(), cls.password.encode()))
@@ -509,6 +512,7 @@ class TestRoutes(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        indexnow._post = cls._saved_indexnow_post
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
         cls.httpd.server_close()

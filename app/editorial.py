@@ -295,8 +295,8 @@ def pick_html(keyword, item, idx, items):
     cta = ""
     if item.get("url"):
         label = "Check price on Amazon" + (" — %s" % price if price else "")
-        cta = '<a class="btn" href="%s" target="_blank" rel="nofollow sponsored noopener">%s</a>' \
-              % (_clean(item["url"]), label)
+        cta = '<a class="btn" href="%s" data-asin="%s" target="_blank" rel="nofollow sponsored noopener">%s</a>' \
+              % (_clean(item["url"]), _clean(item.get("asin") or ""), label)
     return ('<div class="pick%s">'
             '<div class="pick-head"><span class="rank">#%d</span>'
             '<h3>%s</h3><span class="badge">%s</span></div>'
@@ -313,10 +313,10 @@ def pick_html(keyword, item, idx, items):
 def comparison_html(items):
     rows = comparison_rows(items, top_asin=(best_pick(items) or {}).get("asin"))
     body = "".join(
-        "<tr%s><td>%s</td><td class='ct'><a href='%s'>%s</a></td><td>%s</td>"
+        "<tr%s><td>%s</td><td class='ct'><a href='%s' data-asin='%s'>%s</a></td><td>%s</td>"
         "<td>%s</td><td>%s</td><td>%s</td></tr>" % (
             " class='top'" if r["top"] else "", r["rank"],
-            _clean(r["url"]), _clean(r["title"]),
+            _clean(r["url"]), _clean(r["asin"]), _clean(r["title"]),
             r["price"], r["stars"], r["reviews"], r["badge"])
         for r in rows)
     return ('<div class="table-wrap"><table class="cgrid"><caption>Compare the '

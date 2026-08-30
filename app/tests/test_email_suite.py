@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ai
 import ebook
+import indexnow
 import mailer
 import market_engine
 import security
@@ -47,6 +48,8 @@ class TestEmailSuite(unittest.TestCase):
         cls._saved_send = mailer._send
         cls.sent = []
         mailer._send = cls._fake_send
+        cls._saved_indexnow_post = indexnow._post
+        indexnow._post = cls._fake_indexnow_post
         cls.cookie = cls._login()
 
     @classmethod
@@ -55,8 +58,13 @@ class TestEmailSuite(unittest.TestCase):
         return True
 
     @classmethod
+    def _fake_indexnow_post(cls, url, payload, timeout=20):
+        return None
+
+    @classmethod
     def tearDownClass(cls):
         mailer._send = cls._saved_send
+        indexnow._post = cls._saved_indexnow_post
         security.SUBSCRIBE_LIMITER.clear("sub|" + cls.IPKEY)
         security.TRACK_LIMITER.clear("trk|" + cls.IPKEY)
         cls.httpd.shutdown()
@@ -199,13 +207,14 @@ class TestEmailSuite(unittest.TestCase):
     def test_track_click_records_hashed_ip(self):
         st, _, _, data = self._raw(
             "/api/track", "POST",
-            body="slug=keto-snacks&source=niche&referrer=https%3A%2F%2Fexample.com%2Fx")
+            body="slug=keto-snacks&source=niche&referrer=https%3A%2F%2Fexample.com%2Fx&asin=b0keto1234")
         self.assertEqual(st, 200)
         self.assertTrue(json.loads(data)["ok"])
         rows = self._clicks()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["slug"], "keto-snacks")
         self.assertEqual(rows[0]["source"], "niche")
+        self.assertEqual(rows[0]["asin"], "B0KETO1234")
         self.assertNotEqual(rows[0]["ip"], "127.0.0.1")
         self.assertEqual(len(rows[0]["ip"]), 16)
         self.assertIn("example.com", rows[0]["referrer"])
@@ -215,6 +224,18 @@ class TestEmailSuite(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertTrue(json.loads(data)["ok"])
         self.assertTrue(any(r["slug"] == "home" for r in self._clicks()))
+
+    def test_analytics_reports_most_clicked_products(self):
+        for asin in ("B0WINNER", "B0WINNER", "B0LOSER"):
+            self._raw("/api/track", "POST",
+                      body="slug=keto-snacks&source=niche&asin=%s" % asin)
+        st, _, _, html = self._raw("/admin/analytics", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        body = html.decode("utf-8", "replace")
+        self.assertIn("Most-clicked products", body)
+        self.assertIn("B0WINNER", body)
+        self.assertIn("B0LOSER", body)
+        self.assertIn("<td>B0WINNER</td><td>keto-snacks</td><td class='ct'>2</td>", body)
 
     # ----------------------------------------------------------------- admin api
 

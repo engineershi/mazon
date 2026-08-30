@@ -43,10 +43,12 @@
     var href = a.getAttribute("href") || "";
     if (href.indexOf("amazon.") === -1) return;
     var source = a.getAttribute("data-beacon") || "page";
+    var asin = a.getAttribute("data-asin") || "";
     var payload = {
       slug: slug,
       source: source,
-      referrer: (document.referrer || "").slice(0, 200)
+      referrer: (document.referrer || "").slice(0, 200),
+      asin: asin
     };
     if (navigator.sendBeacon) {
       navigator.sendBeacon("/api/track",
@@ -55,7 +57,8 @@
       var img = new Image();
       img.src = "/api/track?slug=" + encodeURIComponent(payload.slug) +
                 "&source=" + encodeURIComponent(payload.source) +
-                "&referrer=" + encodeURIComponent(payload.referrer);
+                "&referrer=" + encodeURIComponent(payload.referrer) +
+                "&asin=" + encodeURIComponent(payload.asin);
     }
   });
 })();
