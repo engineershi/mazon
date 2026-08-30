@@ -17,7 +17,11 @@ python3 server.py            # serves http://localhost:8765
 Set env: `PSTORE_TAG=youraffiliate-20`, `PSTORE_MARKET=com` (or co.uk/de/ca/in/...).
 Set `PSTORE_ADMIN_EMAIL` + `PSTORE_ADMIN_PASSWORD` to lock the owner section
 (dashboard, tools, keys, APIs). Without them the server falls back to the
-default credentials and warns.
+default credentials and warns. Optional Google/Facebook login: set
+`OAUTH_GOOGLE_CLIENT_ID`/`OAUTH_GOOGLE_CLIENT_SECRET` or
+`OAUTH_FACEBOOK_APP_ID`/`OAUTH_FACEBOOK_APP_SECRET` (with `PSTORE_URL`) to add
+"Continue with Google/Facebook" buttons on the login page; only the admin email
+wins a session.
 
 ## Two parts
 - **Public site** — fully crawlable, no login: `/` landing, `/n/<niche>`
@@ -36,6 +40,14 @@ default credentials and warns.
   OpenGraph, JSON-LD, canonical; `sitemap.xml` + `robots.txt` auto-generated.
 - **Buyer-push tools** (`/tool`) — copy-paste affiliate text links, Markdown,
   email draft, social post; `/go/<ASIN>` short redirects to tagged Amazon.
+
+## Security
+- Rate limiting (per client login/API/global), a concurrency cap, 413/414 size
+  limits, cross-origin POST rejection, and HMAC-signed OAuth state tokens.
+- CSP, clickjacking, MIME-sniffing, referrer and HSTS headers on every response;
+  HttpOnly/SameSite/Secure cookies. All SQL is parameterized.
+- Hardened by design, but no software is invulnerable — keep Render free-tier
+  instances current (stale instances intermittently time out).
 
 ## Tests
 ```

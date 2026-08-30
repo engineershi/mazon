@@ -20,6 +20,22 @@ operate normally from `/root/projects/mazon` (git auto-reads the gitfile).
   `PSTORE_ADMIN_EMAIL=<email>` + `PSTORE_ADMIN_PASSWORD=<pw>` (gates /admin,
   /dashboard, /tool, /keys, /api/*; falls back to a default with a startup
   warning when either is unset).
+- Optional social login: set `OAUTH_GOOGLE_CLIENT_ID`/`OAUTH_GOOGLE_CLIENT_SECRET`
+  and/or `OAUTH_FACEBOOK_APP_ID`/`OAUTH_FACEBOOK_APP_SECRET` (with `PSTORE_URL`
+  set to the live origin). Redirect URIs are `<PSTORE_URL>/admin/oauth/google/callback`
+  and `<PSTORE_URL>/admin/oauth/fb/callback`; only the admin email is granted.
+  Unset providers get no button on the login page.
+
+## Security model
+- `security.py` = per-client rate limiters (login 5/15min, /api 240/min, global
+  720/min), concurrency semaphore (503), 413 body / 414 URI caps, HMAC-signed
+  state tokens for OAuth + CSRF. `oauth.py` = stdlib OAuth2 (urllib) for Google
+  and Facebook.
+- Every response carries CSP, X-Frame-Options, nosniff, Referrer-Policy,
+  Permissions-Policy (and HSTS behind TLS). Cookies are HttpOnly + SameSite=Lax
+  (+Secure over HTTPS). State-changing POSTs reject cross-origin Origin headers.
+- All SQL is parameterized (`?` placeholders) — keep it that way; never build
+  queries with string interpolation.
 
 ## Tests
 ```

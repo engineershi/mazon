@@ -14,6 +14,8 @@ import market_engine
 import niche
 import seo
 import indexnow
+import security
+import server
 
 amazon.CACHE_TTL = 0
 amazon.MIN_INTERVAL = 0.0
@@ -702,6 +704,232 @@ class TestRoutes(unittest.TestCase):
                       "/lp/keto-snacks"):
             st, _, _ = self._get(route, cookie="")
             self.assertEqual(st, 200, route)
+
+
+class TestSecurityAndOAuth(unittest.TestCase):
+    """Hardening: rate limits, 413, CSRF origin check, 405s, security headers,
+    SQLi literals stored verbatim, and HMAC-signed OAuth state round-trips."""
+
+    IPKEY = "login|127.0.0.1|127.0.0.1"
+    APIKEY = "api|127.0.0.1|127.0.0.1"
+    HTTPKEY = "127.0.0.1|127.0.0.1"
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib
+        import shutil
+        import threading
+        import uuid
+        from http.server import ThreadingHTTPServer
+
+        import security
+        security.LOGIN_LIMITER.clear(cls.IPKEY)
+        security.API_LIMITER.clear(cls.APIKEY)
+        security.HTTP_LIMITER.clear(cls.HTTPKEY)
+
+        cls.db = "/tmp/pstore_test_sec_%s.db" % uuid.uuid4().hex[:8]
+        shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "pstore.db"), cls.db)
+        os.environ["PSTORE_DB"] = cls.db
+        os.environ["PSTORE_ADMIN_EMAIL"] = "owner@test.example"
+        os.environ["PSTORE_ADMIN_PASSWORD"] = "test-pass-123"
+        cls.email = "owner@test.example"
+        cls.password = "test-pass-123"
+        import server
+        importlib.reload(server)
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.PORT = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls._raw("/admin/login", "POST",
+                 body=b"email=owner@test.example&password=test-pass-123")
+        cls.cookie = None  # per-test login, to keep the brute-force limiter fresh
+
+    @classmethod
+    def tearDownClass(cls):
+        import security
+        security.LOGIN_LIMITER.clear(cls.IPKEY)
+        security.API_LIMITER.clear(cls.APIKEY)
+        security.HTTP_LIMITER.clear(cls.HTTPKEY)
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        cls.httpd.server_close()
+        if os.path.exists(cls.db):
+            os.unlink(cls.db)
+
+    @classmethod
+    def _raw(cls, path, method="GET", body=None, cookie=None, headers=None):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", cls.PORT, timeout=5)
+        hdrs = dict(headers or {})
+        if cookie:
+            hdrs["Cookie"] = cookie
+        if body is not None:
+            hdrs["Content-Type"] = "application/x-www-form-urlencoded"
+        conn.request(method, path, body=body, headers=hdrs)
+        resp = conn.getresponse()
+        out = (resp.status, resp.getheader("Location"), resp.getheader("Set-Cookie"),
+               resp.getheader("Content-Type"), resp.read())
+        conn.close()
+        return out
+
+    def _login(self):
+        st, loc, sc, _, body = self._raw(
+            "/admin/login", "POST",
+            body=b"email=owner@test.example&password=test-pass-123")
+        self.assertEqual(st, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        return sc.split(";")[0]
+
+    # ------------------------------------------------------------------ core
+
+    def test_security_headers_present_everywhere(self):
+        st, _, _, ctype, body = self._raw("/")
+        self.assertEqual(st, 200)
+        self.assertIn("html", ctype)
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.PORT, timeout=5)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        self.assertEqual(resp.getheader("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(resp.getheader("X-Frame-Options"), "DENY")
+        self.assertIn("default-src 'self'", resp.getheader("Content-Security-Policy"))
+        self.assertEqual(resp.getheader("Referrer-Policy"), "strict-origin-when-cross-origin")
+        resp.read()
+        conn.close()
+
+    def test_state_token_roundtrip_and_tamper(self):
+        import security
+        good = security.make_token("oauth:google", 600)
+        self.assertEqual(security.verify_token(good), "oauth:google")
+        self.assertIsNone(security.verify_token(good + "x"))
+        self.assertIsNone(security.verify_token("forged"))
+        expired = security.make_token("oauth:google", -1)
+        self.assertIsNone(security.verify_token(expired))
+
+    # ------------------------------------------------------------------ rate / size
+
+    def test_uri_too_long(self):
+        st, _, _, _, _ = self._raw("/" + "a" * (security.MAX_URL + 10))
+        self.assertEqual(st, 414)
+
+    def test_oversized_body_rejected(self):
+        st, _, _, _, _ = self._raw("/admin/login", "POST",
+                                   body=b"x" * (security.MAX_BODY + 10))
+        self.assertEqual(st, 413)
+
+    def test_login_brute_force_locked_out(self):
+        import security
+        security.LOGIN_LIMITER.clear(self.IPKEY)
+        for _ in range(security.LOGIN_LIMITER.limit):
+            st, _, _, _, body = self._raw(
+                "/admin/login", "POST", body=b"email=x@test.example&password=wrong")
+            self.assertEqual(st, 200)
+            self.assertFalse(json.loads(body)["ok"])
+        st, _, _, _, _ = self._raw(
+            "/admin/login", "POST", body=b"email=x@test.example&password=wrong")
+        self.assertEqual(st, 429)
+        security.LOGIN_LIMITER.clear(self.IPKEY)
+
+    def test_cross_origin_post_blocked(self):
+        st, _, _, _, _ = self._raw("/admin/login", "POST",
+                                   body=b"email=owner@test.example&password=test-pass-123",
+                                   headers={"Origin": "https://evil.example"})
+        self.assertEqual(st, 403)
+
+    def test_unsupported_methods_rejected(self):
+        st, _, _, _, _ = self._raw("/dashboard", "PUT")
+        self.assertEqual(st, 405)
+        st, _, _, _, _ = self._raw("/dashboard", "DELETE")
+        self.assertEqual(st, 405)
+
+    # ------------------------------------------------------------------ SQL hardening
+
+    def test_sql_injection_literal_stored_verbatim(self):
+        cookie = self._login()
+        evil = "drop table niches; -- ' OR '1'='1"
+        st, _, _, _, _ = self._raw(
+            "/api/niches", "POST", cookie=cookie,
+            body=("keyword=%s&score=5&saturation=1&products=[]"
+                  % urllib.request.quote(evil)).encode("utf-8"))
+        self.assertEqual(st, 200)
+        st, _, _, _, body = self._raw("/api/niches", cookie=cookie)
+        self.assertEqual(st, 200)
+        self.assertIn(evil, body.decode("utf-8", "replace"))
+
+    # ------------------------------------------------------------------ OAuth
+
+    def test_oauth_buttons_hidden_when_unconfigured(self):
+        st, _, _, _, body = self._raw("/admin/login")
+        html = body.decode("utf-8", "replace")
+        self.assertEqual(st, 200)
+        self.assertNotIn("Continue with Google", html)
+        self.assertNotIn("/admin/oauth/", html)
+
+    def test_oauth_authorize_redirect_and_callback(self):
+        import unittest.mock as mock
+        import oauth
+        with mock.patch.object(oauth, "providers_configured",
+                               return_value=[("google", "Google", "Continue with Google")]):
+            st, loc, sc, _, _ = self._raw("/admin/oauth/google")
+        self.assertEqual(st, 302)
+        self.assertTrue(loc.startswith("https://accounts.google.com/o/oauth2/v2/auth"))
+        self.assertIn("redirect_uri", loc)
+        self.assertIn("state=", loc)
+        state = urllib.request.unquote(loc.split("state=")[1].split("&")[0])
+        self.assertEqual(security.verify_token(state), "oauth:google")
+        self.assertTrue(sc.startswith("pstore_oauth="))
+
+        def fake(req, timeout=None):
+            url = req.full_url if isinstance(req, urllib.request.Request) else req
+            if url.startswith("https://oauth2.googleapis.com/token"):
+                return FakeResponse(b'{"access_token":"tok-1"}')
+            return FakeResponse(b'{"email":"owner@test.example","name":"Owner"}')
+
+        with mock.patch.object(oauth, "providers_configured",
+                               return_value=[("google", "Google", "Continue with Google")]), \
+             mock.patch.object(oauth, "_urlopen", fake):
+            st, loc, sc, _, _ = self._raw(
+                "/admin/oauth/google/callback?code=abc&state=%s" % urllib.request.quote(state),
+                cookie=sc.split(";")[0])
+        self.assertEqual(st, 302)
+        self.assertEqual(loc, "/dashboard")
+        self.assertTrue(sc.startswith("pstore_admin="))
+
+    def test_oauth_callback_rejects_foreign_email(self):
+        import unittest.mock as mock
+        import oauth
+        with mock.patch.object(oauth, "providers_configured",
+                               return_value=[("google", "Google", "Continue with Google")]):
+            st, loc, sc, _, _ = self._raw("/admin/oauth/google")
+        self.assertEqual(st, 302)
+        state = urllib.request.unquote(loc.split("state=")[1].split("&")[0])
+        cookie = sc.split(";")[0]
+
+        def fake(req, timeout=None):
+            url = req.full_url if isinstance(req, urllib.request.Request) else req
+            if url.startswith("https://oauth2.googleapis.com/token"):
+                return FakeResponse(b'{"access_token":"tok-1"}')
+            return FakeResponse(b'{"email":"someone-else@example.com","name":"X"}')
+
+        with mock.patch.object(oauth, "providers_configured",
+                               return_value=[("google", "Google", "Continue with Google")]), \
+             mock.patch.object(oauth, "_urlopen", fake):
+            st, _, _, _, body = self._raw(
+                "/admin/oauth/google/callback?code=abc&state=%s" % urllib.request.quote(state),
+                cookie=cookie)
+        self.assertEqual(st, 200)
+        self.assertIn("not authorized", body.decode("utf-8", "replace"))
+
+    def test_oauth_callback_rejects_forged_state(self):
+        import unittest.mock as mock
+        import oauth
+        with mock.patch.object(oauth, "providers_configured",
+                               return_value=[("google", "Google", "Continue with Google")]):
+            st, _, _, _, body = self._raw(
+                "/admin/oauth/google/callback", cookie="pstore_oauth=forgedstate")
+        self.assertEqual(st, 200)
+        self.assertIn("stale or tampered", body.decode("utf-8", "replace"))
 
 
 if __name__ == "__main__":

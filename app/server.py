@@ -13,23 +13,28 @@ Endpoints
   POST /api/settings      -> set marketplace / affiliate tag / scraper keys
 """
 import datetime
+import hashlib
 import hmac
 import json
 import os
 import re
 import secrets
+import socket
 import sqlite3
 import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import amazon
 import indexnow
 import market_engine
 import niche
+import oauth
 import seo
+import security
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
@@ -46,6 +51,7 @@ _ADMIN_PW = os.environ.get("PSTORE_ADMIN_PASSWORD", "$_Salahu1991")
 _ADMIN_EMAIL_FROM_ENV = bool(os.environ.get("PSTORE_ADMIN_EMAIL"))
 _ADMIN_PW_FROM_ENV = bool(os.environ.get("PSTORE_ADMIN_PASSWORD"))
 _COOKIE = "pstore_admin"
+_OAUTH_COOKIE = "pstore_oauth"
 _SESSION_TTL = 12 * 60 * 60  # seconds
 _SESSIONS = {}  # token -> monotonic expiry
 
@@ -76,8 +82,76 @@ def _init():
 
 
 class Handler(BaseHTTPRequestHandler):
+    server_version = "pstore"
+    sys_version = ""
+
     def log_message(self, *a):
         pass
+
+    def send_header(self, key, value):
+        """Defer headers until the status line is written, so callers may set
+        cookies before send_response() without corrupting the response."""
+        if not getattr(self, "_resp_started", False):
+            if not hasattr(self, "_resp_early"):
+                self._resp_early = []
+            self._resp_early.append((key, value))
+            return
+        super().send_header(key, value)
+
+    def send_response(self, code, message=None):
+        if not getattr(self, "_resp_started", False):
+            self._resp_started = True
+            super().send_response(code, message)
+            for k, v in getattr(self, "_resp_early", []):
+                super().send_header(k, v)
+            self._resp_early = []
+            return
+        super().send_response(code, message)
+
+    def _is_secure(self):
+        return (self.headers.get("X-Forwarded-Proto") or "http").lower() == "https"
+
+    def end_headers(self):
+        """Security headers on every response: clickjacking, MIME sniffing,
+        referrer + CSP, permissions and HSTS behind the TLS proxy."""
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                         "style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; "
+                         "font-src 'self'; connect-src 'self'; object-src 'none'; "
+                         "base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+        self.send_header("Permissions-Policy",
+                         "geolocation=(), microphone=(), camera=(), payment=()")
+        if self._is_secure():
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        super().end_headers()
+
+    def _client_ip(self):
+        try:
+            return self.client_address[0] or ""
+        except Exception:
+            return ""
+
+    def _same_origin(self):
+        """CSRF defense for state-changing requests: when a browser sends
+        Origin, its host must match where the request actually landed."""
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True  # curl / server-to-server
+        host = (self.headers.get("Host") or "").lower()
+
+        def norm(h):
+            if h.endswith(":443"):
+                return h[:-4]
+            if h.endswith(":80"):
+                return h[:-3]
+            return h
+        try:
+            return norm(urllib.parse.urlsplit(origin).netloc.lower()) == norm(host.split(" ")[0])
+        except Exception:
+            return False
 
     def _send(self, code, body, ctype="application/json; charset=utf-8"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
@@ -97,12 +171,12 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     # ------------------------------------------------------------------ admin auth
-    def _cookie_token(self):
+    def _cookie_token(self, cookie=_COOKIE):
         raw = self.headers.get("Cookie") or ""
         for part in raw.split(";"):
             part = part.strip()
-            if part.startswith(_COOKIE + "="):
-                return part[len(_COOKIE) + 1:]
+            if part.startswith(cookie + "="):
+                return part[len(cookie) + 1:]
         return None
 
     def _authed(self):
@@ -132,9 +206,26 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 _SESSIONS.pop(tok, None)
 
-    def _set_cookie(self, tok, max_age=_SESSION_TTL):
-        self.send_header("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d"
-                         % (_COOKIE, tok, max_age))
+    def _set_cookie(self, tok, max_age=_SESSION_TTL, cookie=_COOKIE, path="/", secure=None):
+        if secure is None:
+            secure = self._is_secure()
+        self.send_header("Set-Cookie", "%s=%s; Path=%s; HttpOnly; SameSite=Lax; Max-Age=%d%s"
+                         % (cookie, tok, path, max_age, "; Secure" if secure else ""))
+
+    def _prelim_guard(self):
+        """Flood/DoS pre-checks shared by every request. Returns the client key
+        when the request may proceed, else sends the rejection and returns None."""
+        if len(self.path) > security.MAX_URL:
+            self._send(414, {"error": "URI too long"})
+            return None
+        key = security.client_key(self.headers, self._client_ip())
+        if not security.HTTP_LIMITER.hit(key):
+            self._send(429, {"error": "too many requests"})
+            return None
+        if self.path.startswith("/api/") and not security.API_LIMITER.hit("api|" + key):
+            self._send(429, {"error": "too many requests"})
+            return None
+        return key
 
     def _needs_admin(self, path):
         return (path.startswith("/api/") or path.startswith("/keys/") or
@@ -148,18 +239,31 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         return None
 
-    def _login_page(self, error=None):
-        err = ('<p class="msg" style="color:#d64545">%s</p>' % seo._clean(error)) if error else ""
+    def _login_page(self, error=None, oauth_error=None):
+        err = ('<p class="msg" style="color:#d64545">%s</p>' % seo._clean(error or oauth_error)) if (error or oauth_error) else ""
+        route = {"google": "google", "facebook": "fb"}
+        prov = oauth.providers_configured()
+        if prov:
+            oauth_html = ('<div class="oauth">%s</div><p class="divider">— or sign in with email —</p>'
+                          % "".join(
+                              '<a class="btn oauth-btn" href="/admin/oauth/%s">%s ↗</a>'
+                              % (route[p], desc) for p, _name, desc in prov))
+        else:
+            oauth_html = ""
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>Admin login — pstore</title><link rel="stylesheet" href="/style.css">
 <style>.login-wrap{{min-height:78vh;display:flex;align-items:center;justify-content:center;padding:24px}}
 .login-card{{width:100%;max-width:380px;text-align:center}}
 .login-card h1{{font-size:26px;letter-spacing:-.4px}}
-.login-card input{{width:100%;padding:13px 16px;border:1px solid var(--border);border-radius:14px;font-size:15px;margin:16px 0 8px;background:#fff}}
-.login-card button{{width:100%}}
+.login-card input{{width:100%;padding:13px 16px;border:1px solid var(--border);border-radius:14px;font-size:15px;margin:8px 0 12px;background:#fff}}
+.login-card button{{width:100%;margin-top:4px}}
 .login-hint{{font-size:12.5px;color:var(--muted);margin-top:14px}}
-.login-hint a{{color:var(--accent)}}</style>
+.login-hint a{{color:var(--accent)}}
+.oauth{{display:flex;flex-direction:column;gap:8px;margin:14px 0 4px}}
+.oauth-btn{{background:#fff;color:var(--text);border:1px solid var(--border);box-shadow:none}}
+.oauth-btn:hover{{transform:translateY(-2px);box-shadow:var(--shadow)}}
+.divider{{color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.3px}}</style>
 </head><body>
 <header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a></header>
 <main class="login-wrap"><div class="login-card">
@@ -167,6 +271,7 @@ class Handler(BaseHTTPRequestHandler):
 <h1>🔐 Admin <span style="color:var(--accent)">login</span></h1>
 <p class="tagline" style="margin:0">Owner section — pages, tools and keys are locked behind the admin email &amp; password.</p>
 {err}
+{oauth_html}
 <label style="display:block;text-align:left;font-size:12.5px;color:var(--muted);font-weight:700">Admin email
 <input id="em" type="email" placeholder="you@example.com" autocomplete="username"></label>
 <label style="display:block;text-align:left;font-size:12.5px;color:var(--muted);font-weight:700">Password
@@ -191,6 +296,9 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
     def _login_post(self):
+        key = "login|" + security.client_key(self.headers, self._client_ip())
+        if not security.LOGIN_LIMITER.hit(key):
+            return self._send(429, {"error": "too many login attempts, try again later"})
         body = self._body()
         email = str(body.get("email") or "").strip().lower()
         pw = str(body.get("password") or "")
@@ -200,6 +308,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
         if (not hmac.compare_digest(email.encode("utf-8"), _ADMIN_EMAIL.encode("utf-8"))
                 or not hmac.compare_digest(pw.encode("utf-8"), _ADMIN_PW.encode("utf-8"))):
             return self._send(200, {"ok": False, "error": "Wrong email or password"})
+        security.LOGIN_LIMITER.clear(key)
         tok = self._new_session()
         data = json.dumps({"ok": True, "next": next_path}).encode("utf-8")
         self.send_response(200)
@@ -306,18 +415,72 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
+    def _oauth(self, provider, callback, q):
+        configured = {p for p, _n, _d in oauth.providers_configured()}
+        if provider not in configured:
+            return self._send(404, {"error": "oauth provider not configured"})
+        if not callback:
+            # Start: sign a short-lived state token, stash it, bounce to provider.
+            state = security.make_token("oauth:" + provider, 600)
+            url = oauth.authorize_url(provider, state)
+            if not url:
+                return self._send(404, {"error": "oauth provider not configured"})
+            self.send_response(302)
+            self._set_cookie(state, max_age=600, cookie=_OAUTH_COOKIE, path="/admin/oauth")
+            self.send_header("Location", url)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return None
+        # Callback: verify state, exchange the code, grant only to the admin mail.
+        code = (q.get("code") or [""])[0]
+        state = (q.get("state") or [""])[0]
+        expect = self._cookie_token(_OAUTH_COOKIE)
+        scope = security.verify_token(expect) if expect else None
+        if not code or not expect or not hmac.compare_digest(expect, state) or scope != "oauth:" + provider:
+            self._set_cookie("x", max_age=0, cookie=_OAUTH_COOKIE, path="/admin/oauth")
+            return self._login_page(oauth_error="Sign-in link was stale or tampered with — try again.")
+        try:
+            email, _name = oauth.exchange(provider, code)
+        except Exception:
+            return self._login_page(oauth_error="OAuth sign-in failed, please try again.")
+        if not email or email != _ADMIN_EMAIL.lower():
+            return self._login_page(oauth_error="This account is not authorized to administer pstore.")
+        tok = self._new_session()
+        self.send_response(302)
+        self._set_cookie(tok)
+        self.send_header("Location", "/dashboard")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        return None
+
     def do_GET(self):
+        if self._prelim_guard() is None:
+            return
+        acquired = security.CONCURRENCY.acquire(timeout=0.05)
+        try:
+            if not acquired:
+                return self._send(503, {"error": "busy, retry shortly"})
+            return self._dispatch_get()
+        finally:
+            if acquired:
+                security.CONCURRENCY.release()
+
+    def _dispatch_get(self):
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path
         q = urllib.parse.parse_qs(parsed.query)
         try:
-            # public auth flow — login/logout never need a session
+            # public auth flow — login/logout/oauth never need a session
             if path == "/admin/login":
                 if self._authed():
                     return self._redirect_login("/dashboard")
                 return self._login_page()
             if path == "/admin/logout":
                 return self._logout()
+            oauth_route = re.match(r"^/admin/oauth/(google|fb)(/callback)?$", path)
+            if oauth_route:
+                provider = "google" if oauth_route.group(1) == "google" else "facebook"
+                return self._oauth(provider, callback=bool(oauth_route.group(2)), q=q)
             if self._needs_admin(path) and not self._authed():
                 if path.startswith("/api/"):
                     return self._send(401, {"error": "unauthorized", "auth": False})
@@ -379,6 +542,26 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             self._send(500, {"error": str(e)})
 
     def do_POST(self):
+        if self._prelim_guard() is None:
+            return
+        if not self._same_origin():
+            return self._send(403, {"error": "cross-origin request blocked"})
+        try:
+            cl = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            cl = 0
+        if cl > security.MAX_BODY:
+            return self._send(413, {"error": "payload too large"})
+        acquired = security.CONCURRENCY.acquire(timeout=0.05)
+        try:
+            if not acquired:
+                return self._send(503, {"error": "busy, retry shortly"})
+            return self._dispatch_post()
+        finally:
+            if acquired:
+                security.CONCURRENCY.release()
+
+    def _dispatch_post(self):
         parsed = urllib.parse.urlsplit(self.path)
         try:
             if parsed.path == "/admin/login":
@@ -395,8 +578,22 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
         except Exception as e:
             self._send(500, {"error": str(e)})
 
+    def do_PUT(self):
+        self._send(405, {"error": "method not allowed"})
+
+    def do_DELETE(self):
+        self._send(405, {"error": "method not allowed"})
+
+    def do_PATCH(self):
+        self._send(405, {"error": "method not allowed"})
+
     def _body(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n > security.MAX_BODY:
+            raise ValueError("payload too large")
         raw = self.rfile.read(n).decode("utf-8", "replace") if n else ""
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
         if ctype == "application/x-www-form-urlencoded":
@@ -695,6 +892,9 @@ def main():
     if not _ADMIN_EMAIL_FROM_ENV or not _ADMIN_PW_FROM_ENV:
         print("WARNING: PSTORE_ADMIN_EMAIL / PSTORE_ADMIN_PASSWORD not both set — "
               "using the default admin credentials. Set them in Render/env before going public.")
+    if not oauth.providers_configured():
+        print("NOTE: Google/Facebook OAuth login disabled — set OAUTH_GOOGLE_CLIENT_ID/SECRET "
+              "or OAUTH_FACEBOOK_APP_ID/APP_SECRET to enable it.")
     amazon.set_market(os.environ.get("PSTORE_MARKET", amazon.DEFAULT_MARKET))
     amazon.set_tag(os.environ.get("PSTORE_TAG", ""))
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
