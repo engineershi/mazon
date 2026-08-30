@@ -7,10 +7,14 @@ Endpoints
   GET  /api/autosuggest?q -> real Amazon keyword ideas
   GET  /api/search?q      -> products for a query (+market, +top, +category)
   GET  /api/mine?seed=    -> niche mining (niches + meta + signals)
-  GET  /api/niches        -> list saved niches from sqlite
-  POST /api/niches        -> save a mined niche shortlist
-  GET  /api/settings      -> marketplace + affiliate tag + scraper status
-  POST /api/settings      -> set marketplace / affiliate tag / scraper keys
+GET  /api/niches        -> list saved niches from sqlite
+   POST /api/niches        -> save a mined niche shortlist
+   GET  /api/settings      -> marketplace + affiliate tag + scraper status
+   POST /api/settings      -> set marketplace / affiliate tag / scraper keys
+   GET  /api/ai/providers  -> AI provider status (admin)
+   POST /api/ai/test       -> one-shot key test (admin)
+   POST /api/ai/models     -> list provider models (admin)
+   POST /api/ai/config     -> activate a provider runtime (admin)
 """
 import datetime
 import hashlib
@@ -208,10 +212,40 @@ class Handler(BaseHTTPRequestHandler):
             },
             "ai": {
                 "configured": ai.configured(),
-                "model": ai.MODEL if ai.configured() else "",
-                "note": "AI-generated headlines + ebook when configured; template fallback otherwise.",
+                "provider": ai.active_provider(),
+                "model": ai.model_for(ai.active_provider() or "openai") if ai.configured() else "",
+                "providers": ai.providers(),
+                "note": "Ebook/headline copy uses the active AI provider; template fallback otherwise.",
             },
         }
+
+    # ------------------------------------------------------------------ AI panel
+    def _ai_providers(self):
+        return self._send(200, {"providers": ai.providers(),
+                                "active": ai.active_provider()})
+
+    def _ai_test(self):
+        body = self._body()
+        return self._send(200, ai.test(
+            body.get("provider"), body.get("api_key") or body.get("key"),
+            body.get("model"), body.get("base_url") or body.get("base")))
+
+    def _ai_models(self):
+        body = self._body()
+        models = ai.list_models(
+            body.get("provider"), body.get("api_key") or body.get("key"),
+            body.get("base_url") or body.get("base"))
+        return self._send(200, {"provider": body.get("provider"), "models": models})
+
+    def _ai_config(self):
+        body = self._body()
+        out = ai.configure_runtime(
+            body.get("provider"), body.get("api_key") or body.get("key"),
+            body.get("model"), body.get("base_url") or body.get("base"))
+        if out.get("ok"):
+            with _lock:
+                _EBOOKS.clear()
+        return self._send(200, out)
 
     # ------------------------------------------------------------------ admin auth
     def _cookie_token(self, cookie=_COOKIE):
@@ -593,6 +627,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                                       "application/javascript; charset=utf-8")
             if path == "/api/settings":
                 return self._send(200, self._settings())
+            if path == "/api/ai/providers":
+                return self._ai_providers()
             if path == "/api/autosuggest":
                 qq = (q.get("q") or [""])[0].strip()
                 return self._send(200, {"ideas": amazon.autosuggest(qq, limit=10)})
@@ -651,6 +687,12 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._sequence_send()
             if parsed.path == "/api/subscribers":
                 return self._subscribers_json()
+            if parsed.path == "/api/ai/test":
+                return self._ai_test()
+            if parsed.path == "/api/ai/models":
+                return self._ai_models()
+            if parsed.path == "/api/ai/config":
+                return self._ai_config()
             self._send(404, {"error": "not found"})
         except Exception as e:
             self._send(500, {"error": str(e)})
@@ -1253,6 +1295,24 @@ $("send").onclick = async () => {{
             content = '<p class="hint">Choose a niche and generate its free guide PDF.</p>'
         cached = "".join('<a class="chip" href="/admin/ebooks?keyword=%s">%s</a>'
                          % (urllib.parse.quote(k), seo._clean(k)) for k in _EBOOKS)
+        _providers = ai.providers()
+        _active = ai.active_provider()
+        prov_opts = "".join(
+            '<option value="%s"%s>%s%s</option>'
+            % (p["name"], ' selected' if p["name"] == _active else "",
+               seo._clean(p["label"]), " · in use" if p["active"] else "")
+            for p in _providers)
+        if _active:
+            for p in _providers:
+                if p["name"] == _active:
+                    ai_status_line = ('<span style="color:#1e8e3e"><b>%s</b> (%s)</span> — %s'
+                                      % (seo._clean(p["label"]), seo._clean(p["model"]),
+                                         "runtime key (resets on redeploy)"
+                                         if p["source"] == "runtime" else "server env key"))
+                    break
+        else:
+            ai_status_line = ('<span style="color:#d64545">not configured</span> — templates '
+                              + "are being used. Add a key below to enable AI copy.")
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ebooks — pstore</title><link rel="stylesheet" href="/style.css">
@@ -1271,13 +1331,77 @@ $("send").onclick = async () => {{
 </form>
 {content}
 </section>
+<section class="card"><h2>🤖 AI provider</h2>
+<p class="hint" style="margin-top:-4px">Free models: OpenCode Zen, Mistral Experiment tier and NVIDIA NIM — plus your OpenAI key. Paste a key, hit <b>Test</b>, then <b>Use</b> to generate with it.</p>
+<form class="ai-form" onsubmit="return false">
+  <div class="row">
+    <label>Provider <select id="ai-provider" name="provider" style="min-width:230px">{prov_opts}</select></label>
+    <label>API key <input id="ai-key" name="api_key" type="password" autocomplete="off" placeholder="paste key — never stored on disk"></label>
+  </div>
+  <div class="row">
+    <label>Model <input id="ai-model" name="model" list="ai-models" placeholder="e.g. kimi-k2.5-free"></label>
+    <label>Base URL <input id="ai-base" name="base_url" placeholder="optional override"></label>
+  </div>
+  <datalist id="ai-models"></datalist>
+  <div class="row" style="gap:8px">
+    <button class="warm" type="button" id="ai-test">Test key ✓</button>
+    <button type="button" id="ai-models-btn">Load models</button>
+    <button type="button" id="ai-use">Use this provider</button>
+  </div>
+  <p class="ai-msg" id="ai-out" style="margin-top:10px">Status: {ai_status_line}</p>
+  <p class="hint" style="margin-top:8px">Keys live in this running process only and reset on redeploy. For permanence set the matching env var instead: <code>AI_API_KEY</code> / <code>OPENCODE_API_KEY</code> / <code>MISTRAL_API_KEY</code> / <code>NVIDIA_API_KEY</code>.</p>
+</form>
+</section>
 <section class="card"><h2>🗂 Recently generated</h2>
 <div class="chips">{cached if cached else '<span class="hint">Nothing generated yet.</span>'}</div>
 <p class="hint" style="margin-top:10px">
-AI status: {"<b>configured</b> (%s)" % seo._clean(ai.MODEL) if ai.configured() else "not configured — using the deterministic template copy."}
+AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai.model_for(_active))) if _active else "not configured — using the deterministic template copy."}
 </p></section>
 </main>
 <footer><p>PDFs are generated server-side and never contain affiliate links — plain honest guide content that pairs with your review pages.</p></footer>
+<script>
+(function(){{
+  var sel=document.getElementById('ai-provider'), key=document.getElementById('ai-key'),
+      model=document.getElementById('ai-model'), base=document.getElementById('ai-base'),
+      dl=document.getElementById('ai-models'), out=document.getElementById('ai-out');
+  function say(t, ok){{ out.textContent=t; out.style.color = ok ? '#1e8e3e' : '#d64545'; }}
+  function str(v){{ return (v==null ? '' : String(v)).trim(); }}
+  function payload(){{
+    return {{provider: sel.value, api_key: str(key.value), model: str(model.value), base_url: str(base.value)}};
+  }}
+  async function post(path, extra){{
+    var body = payload(); for (var k in (extra||{{}})) body[k]=extra[k];
+    var r = await fetch(path, {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(body)}});
+    return r.json();
+  }}
+  document.getElementById('ai-test').onclick = async function(){{
+    if(!str(key.value)){{ say('✗ Paste a key first.', false); return; }}
+    out.textContent='Testing…'; out.style.color='#666';
+    var d = await post('/api/ai/test');
+    if(d.ok) say('✓ Valid — '+d.provider+' / '+d.model+' replied "'+d.reply+'" in '+d.latency_ms+'ms', true);
+    else say('✗ Failed: '+(d.error||'unknown error'), false);
+  }};
+  document.getElementById('ai-models-btn').onclick = async function(){{
+    if(!str(key.value)){{ say('✗ Paste a key first, then load models.', false); return; }}
+    out.textContent='Loading models…'; out.style.color='#666';
+    var d = await post('/api/ai/models');
+    dl.innerHTML='';
+    var ids = d.models||[];
+    if(!ids.length){{ say('No models returned — check the key.', false); return; }}
+    ids.forEach(function(id){{ var o=document.createElement('option'); o.value=id; dl.appendChild(o); }});
+    model.placeholder='pick from '+ids.length+' models';
+    say('Loaded '+ids.length+' models.', true);
+  }};
+  document.getElementById('ai-use').onclick = async function(){{
+    if(!str(key.value)){{ say('✗ Paste a key first.', false); return; }}
+    out.textContent='Saving…'; out.style.color='#666';
+    var d = await post('/api/ai/config');
+    if(d.ok){{ say('✓ '+d.provider+' is now active ('+d.model+'). Regenerating cache…', true);
+              setTimeout(function(){{location.reload();}}, 1000); }}
+    else say('✗ '+(d.error||'failed'), false);
+  }};
+}})();
+</script>
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
@@ -1361,7 +1485,8 @@ def main():
               "but sequence sends are refused. Set SMTP_HOST/USER/PASSWORD to enable sending.")
     if not ai.configured():
         print("NOTE: AI not configured — ebook/headline copy uses deterministic templates. "
-              "Set AI_API_KEY (+ AI_MODEL/AI_BASE_URL) to enable generation.")
+              "Set AI_API_KEY, OPENCODE_API_KEY, MISTRAL_API_KEY or NVIDIA_API_KEY (or add a "
+              "key in /admin/ebooks) to enable generation.")
     amazon.set_market(os.environ.get("PSTORE_MARKET", amazon.DEFAULT_MARKET))
     amazon.set_tag(os.environ.get("PSTORE_TAG", ""))
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

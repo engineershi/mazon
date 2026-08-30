@@ -329,6 +329,52 @@ class TestEmailSuite(unittest.TestCase):
             "/admin/ebooks/pdf?keyword=no-such-niche", cookie=self.cookie)
         self.assertEqual(st, 404)
 
+    def test_ai_provider_panel_api(self):
+        saved_url = ai._urlopen
+        saved_runtime = dict(ai._RUNTIME)
+
+        def fake(req):
+            if getattr(req, "full_url", "").endswith("/models"):
+                return {"data": [{"id": "m1"}, {"id": "m2"}]}
+            return {"choices": [{"message": {"content": "pstore-ok"}}]}
+
+        ai._urlopen = fake
+        try:
+            st, _, _, data = self._raw("/api/ai/providers", cookie=self.cookie)
+            self.assertEqual(st, 200)
+            names = [p["name"] for p in json.loads(data)["providers"]]
+            self.assertEqual(names, ["openai", "opencode", "mistral", "nvidia"])
+            st, _, _, data = self._raw(
+                "/api/ai/test", "POST",
+                body=json.dumps({"provider": "nvidia", "api_key": "nvapi-x",
+                                 "model": "meta/llama-3.3-70b-instruct"}),
+                cookie=self.cookie,
+                headers={"Content-Type": "application/json"})
+            self.assertEqual(st, 200)
+            self.assertTrue(json.loads(data)["ok"])
+            self.assertEqual(json.loads(data)["reply"], "pstore-ok")
+            st, _, _, data = self._raw(
+                "/api/ai/models", "POST",
+                body=json.dumps({"provider": "opencode", "api_key": "oc-x"}),
+                cookie=self.cookie,
+                headers={"Content-Type": "application/json"})
+            self.assertEqual(st, 200)
+            self.assertEqual(json.loads(data)["models"], ["m1", "m2"])
+            st, _, _, data = self._raw(
+                "/api/ai/config", "POST",
+                body=json.dumps({"provider": "mistral", "api_key": "mk-x",
+                                 "model": "mistral-small-latest"}),
+                cookie=self.cookie,
+                headers={"Content-Type": "application/json"})
+            self.assertEqual(st, 200)
+            self.assertTrue(json.loads(data)["ok"])
+            self.assertEqual(ai.active_provider(), "mistral")
+            self.assertTrue(ai.configured())
+        finally:
+            ai._RUNTIME.clear()
+            ai._RUNTIME.update(saved_runtime)
+            ai._urlopen = saved_url
+
     def test_admin_analytics_page(self):
         self._raw("/api/track", "POST", body="slug=keto-snacks&source=niche")
         st, _, _, data = self._raw("/admin/analytics", cookie=self.cookie)
@@ -397,6 +443,102 @@ class TestEbookModule(unittest.TestCase):
             self.assertTrue(pair["headline"] and pair["subheadline"])
         finally:
             ai._urlopen = saved
+
+
+class TestAiProviders(unittest.TestCase):
+    """Provider registry + runtime key tests (offline)."""
+
+    def setUp(self):
+        self._saved = {"API_KEY": ai.API_KEY, "BASE_URL": ai.BASE_URL, "MODEL": ai.MODEL}
+        ai.API_KEY = ""
+        ai.BASE_URL = "https://api.openai.com/v1"
+        ai.MODEL = "gpt-4o-mini"
+        self._env_saved = {}
+        for k in ("AI_PROVIDER", "AI_BASE_URL", "AI_MODEL", "OPENCODE_API_KEY",
+                  "MISTRAL_API_KEY", "NVIDIA_API_KEY", "OPENCODE_MODEL",
+                  "MISTRAL_MODEL", "NVIDIA_MODEL"):
+            if k in os.environ:
+                self._env_saved[k] = os.environ[k]
+                del os.environ[k]
+        self._runtime = dict(ai._RUNTIME)
+        ai._RUNTIME.clear()
+        self._urlopen = ai._urlopen
+        ai._urlopen = None
+        self._env_keys = ("AI_PROVIDER", "AI_BASE_URL", "AI_MODEL", "OPENCODE_API_KEY",
+                          "MISTRAL_API_KEY", "NVIDIA_API_KEY", "OPENCODE_MODEL",
+                          "MISTRAL_MODEL", "NVIDIA_MODEL")
+
+    def tearDown(self):
+        ai._RUNTIME.clear()
+        ai._RUNTIME.update(self._runtime)
+        ai.API_KEY = self._saved["API_KEY"]
+        ai.BASE_URL = self._saved["BASE_URL"]
+        ai.MODEL = self._saved["MODEL"]
+        for k in self._env_keys:
+            if k in self._env_saved:
+                os.environ[k] = self._env_saved[k]
+            else:
+                os.environ.pop(k, None)
+        ai._urlopen = self._urlopen
+
+    def test_no_keys_means_unconfigured(self):
+        self.assertIsNone(ai.active_provider())
+        self.assertFalse(ai.configured())
+        self.assertEqual(ai.generate("headline", "keto"), [])
+
+    def test_openai_env_is_autodetected(self):
+        ai.API_KEY = "sk-test"
+        self.assertEqual(ai.active_provider(), "openai")
+        self.assertTrue(ai.configured())
+
+    def test_other_provider_env_is_autodetected(self):
+        os.environ["MISTRAL_API_KEY"] = "mk-test"
+        self.assertEqual(ai.active_provider(), "mistral")
+        self.assertTrue(ai.configured())
+
+    def test_ai_provider_env_force(self):
+        os.environ["MISTRAL_API_KEY"] = "mk-test"
+        os.environ["AI_PROVIDER"] = "nvidia"
+        self.assertIsNone(ai.active_provider())  # forced but no nvidia key
+        os.environ["NVIDIA_API_KEY"] = "nv-test"
+        self.assertEqual(ai.active_provider(), "nvidia")
+
+    def test_runtime_key_wins_over_env(self):
+        ai.API_KEY = "sk-test"
+        out = ai.configure_runtime("mistral", "mk-test", "mistral-small-latest")
+        self.assertTrue(out["ok"])
+        self.assertEqual(ai.active_provider(), "mistral")
+        self.assertEqual(ai.model_for("mistral"), "mistral-small-latest")
+
+    def test_configured_with_runtime_only(self):
+        ai.configure_runtime("opencode", "oc-x", "kimi-k2.5-free")
+        self.assertEqual(ai.active_provider(), "opencode")
+        self.assertTrue(ai.configured())
+        self.assertEqual(ai.model_for("opencode"), "kimi-k2.5-free")
+        self.assertIn("opencode.ai", ai.base_for("opencode"))
+
+    def test_generate_uses_stubbed_provider(self):
+        ai.API_KEY = "sk-test"
+        ai._urlopen = lambda req: {"choices": [{"message": {"content": "Buy better keto bites\nTrust reviews"}}]}
+        self.assertEqual(ai.generate("headline", "keto"),
+                         ["Buy better keto bites", "Trust reviews"])
+
+    def test_test_key_ok_and_failure(self):
+        ai._urlopen = lambda req: {"choices": [{"message": {"content": "pstore-ok"}}]}
+        r = ai.test("nvidia", "nvapi-x", "meta/llama-3.3-70b-instruct")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["reply"], "pstore-ok")
+        self.assertIn("latency_ms", r)
+        ai._urlopen = lambda req: (_ for _ in ()).throw(RuntimeError("401 unauthorized"))
+        r = ai.test("openai", "sk-bad", "gpt-4o-mini")
+        self.assertFalse(r["ok"])
+        self.assertIn("401", r["error"])
+
+    def test_list_models_parses(self):
+        ai._urlopen = lambda req: {"data": [{"id": "b"}, {"id": "a"}]}
+        self.assertEqual(ai.list_models("opencode", "oc-x"), ["a", "b"])
+        ai._urlopen = lambda req: {"error": "bad"}
+        self.assertEqual(ai.list_models("opencode", "oc-x"), [])
 
 
 if __name__ == "__main__":
