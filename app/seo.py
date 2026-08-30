@@ -170,14 +170,24 @@ def render_privacy():
 <ul>
   <li><b>Server logs.</b> Standard web logs (IP, user agent, page requested) used for uptime,
   abuse prevention and analytics. Logs aren't sold or shared.</li>
+  <li><b>Opt-in emails.</b> If you join our niche-update list, we keep the email address and the
+  niche you signed up for, so we can send the updates you asked for. You can unsubscribe from any
+  email we send, or hit the unsubscribe link on any email, and we stop immediately.</li>
+  <li><b>Click analytics.</b> When you click an affiliate link on our pages, we record a hashed
+  fingerprint of your visit (never a raw address) to see which picks get clicked. We do not build
+  cross-site profiles.</li>
   <li><b>Affiliate cookies.</b> When you click an affiliate link to Amazon, Amazon may set a short
   cookie that lets them credit the referral. We don't see or store your Amazon account data.</li>
   <li><b>Search-engine tokens.</b> We submit our pages to search engines (e.g. via IndexNow/Bing).
   No personal data is involved.</li>
 </ul>
 <h2>What we don't</h2>
-<p>We have no accounts, no logins, no newsletters and no payment processing. We don't build profiles,
-track you across other sites, or use advertising trackers beyond the affiliate relationship above.</p>
+<p>We have no accounts and no payment processing. We don't sell or rent email addresses, we don't
+build profiles, track you across other sites, or use advertising trackers beyond the affiliate
+relationship above.</p>
+<h2>Emails</h2>
+<p>Email addresses are only used to send the niche updates you opted into. Every email includes a
+working unsubscribe link, and unsubscribing removes you from future sends.</p>
 <h2>Third parties</h2>
 <p>Product data and prices come from Amazon; a QR widget may load images from a third-party API.
 Those services have their own privacy terms. Outbound links leave this site.</p>
@@ -233,6 +243,29 @@ contradicts this, <a href="/contact">tell us</a>.</p>
     return render_page("disclosure", "Affiliate Disclosure", desc, content)
 
 
+def optin_html(keyword, source="niche"):
+    """Email-capture widget: freq 0->1 niche updates. Hooks rendered by courier.js."""
+    kw = _clean(keyword or "picks")
+    label = ("Updates when these %s picks change" % keyword) if keyword else "The pstore picks note"
+    sub = ("One honest email when this page's picks move — price drops, sold-out swaps, "
+           "new top-rated options. Unsubscribe any time.")
+    return f"""<form class="courier card" action="/subscribe" method="post">
+  <h3>{label}</h3>
+  <p class="hint">{sub}</p>
+  <div class="courier-row">
+    <input type="email" name="email" placeholder="you@example.com" required autocomplete="email">
+    <input type="hidden" name="keyword" value="{kw}">
+    <button type="submit" class="warm">Notify me</button>
+  </div>
+  <p class="courier-msg"></p>
+  <noscript><p class="hint">Email us a note at {CONTACT_EMAIL} to be notified when this page updates.</p></noscript>
+</form>"""
+
+
+def courier_script():
+    return '<script src="/courier.js" defer></script>'.encode("utf-8")
+
+
 def render_landing(saved_niches):
     """Storefront-style home: value prop, how-we-pick, niche index, FAQ."""
     jsonld = {
@@ -246,12 +279,13 @@ def render_landing(saved_niches):
     body = f"""
 <header><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
 <p class="tagline">{_clean(SITE_DESC)}</p></header>
-<main>
+<main data-niche="home" data-source="home">
 <section class="card"><h1>Find the best <span style="color:var(--accent)">Amazon picks</span>, by niche.</h1>
 <p>Each niche page ranks the strongest products on Amazon for a topic — using live price, rating
 and review signals — so you can compare in minutes, not hours. Pick a niche and go.</p>
 <p class="hint">Honest picks. Live data. Affiliate-tagged links (see our
 <a href="/disclosure">Disclosure</a>).</p></section>
+{optin_html("", "home")}
 
 {editorial.featured_html(saved_niches)}
 
@@ -284,6 +318,7 @@ ordering — deals change constantly.</p></div>
 <p>We publish niches continuously. Want one you don't see?
 <a href="/contact">Contact us</a> — we read everything.</p></div>
 </section>
+<script src="/courier.js" defer></script>
 </main>
 """.encode("utf-8")
     return head + body + _footer()
@@ -312,7 +347,7 @@ def render_niche(keyword, niche, saved_niches=None):
     body = f"""
 <header><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
 <nav><a href="/">🏠 Home</a><a href="/about">About</a><a href="/disclosure">Disclosure</a></nav></header>
-<main>
+<main data-niche="{_clean(_slugify(keyword))}" data-source="niche">
 <div class="card">
   {editorial.breadcrumbs_html(keyword)}
   <h1>Best {_clean(keyword)}: ranked picks</h1>
@@ -326,6 +361,8 @@ def render_niche(keyword, niche, saved_niches=None):
   {editorial.methodology_html()}
   {editorial.related_html(keyword, saved_niches) if saved_niches else ""}
 </div>
+{optin_html(keyword, "niche")}
+<script src="/courier.js" defer></script>
 </main>
 """.encode("utf-8")
     return head + body + _footer()

@@ -29,7 +29,10 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import amazon
+import ai
+import ebook as ebook_mod
 import indexnow
+import mailer
 import market_engine
 import niche
 import oauth
@@ -55,6 +58,10 @@ _OAUTH_COOKIE = "pstore_oauth"
 _SESSION_TTL = 12 * 60 * 60  # seconds
 _SESSIONS = {}  # token -> monotonic expiry
 
+_EBOOKS = {}  # keyword -> build_ebook() dict, LRU-ish (capped below)
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
+
 _lock = threading.Lock()
 
 
@@ -68,6 +75,32 @@ def _db():
         score REAL,
         saturation REAL,
         products TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS subscribers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL,
+        source TEXT,
+        keyword TEXT,
+        first_name TEXT,
+        confirmed INTEGER DEFAULT 1,
+        unsubscribed INTEGER DEFAULT 0,
+        sent_index INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS sent_emails (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subscriber_id INTEGER NOT NULL,
+        email_index INTEGER NOT NULL,
+        subject TEXT,
+        sent_at TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS clicks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT,
+        source TEXT,
+        ip TEXT,
+        referrer TEXT,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
     return conn
@@ -168,6 +201,16 @@ class Handler(BaseHTTPRequestHandler):
             "affiliate_tag": amazon.AFFILIATE_TAG,
             "scraper": amazon.scraper_status(),
             "marketing": market_engine.status_blurb(),
+            "mailer": {
+                "configured": mailer.configured(),
+                "host": mailer.SMTP_HOST or "",
+                "max_per_run": mailer.MAX_EMAILS_PER_RUN,
+            },
+            "ai": {
+                "configured": ai.configured(),
+                "model": ai.MODEL if ai.configured() else "",
+                "note": "AI-generated headlines + ebook when configured; template fallback otherwise.",
+            },
         }
 
     # ------------------------------------------------------------------ admin auth
@@ -229,6 +272,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _needs_admin(self, path):
         return (path.startswith("/api/") or path.startswith("/keys/") or
+                path.startswith("/admin/") or
                 path in ("/admin", "/dashboard", "/index.html", "/tool", "/keys"))
 
     def _redirect_login(self, next_path):
@@ -337,6 +381,9 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 {chip('/dashboard', '🧭 Dashboard', 'dashboard')}
 {chip('/tool', '🛠 Tools', 'tool')}
 {chip('/keys', '🔑 Keys', 'keys')}
+{chip('/admin/emails', '📧 Emails', 'emails')}
+{chip('/admin/ebooks', '📕 Ebooks', 'ebooks')}
+{chip('/admin/analytics', '📊 Analytics', 'analytics')}
 {chip('/admin', '🗺 All pages', 'admin', accent=True)}
 {chip('/admin/logout', '⎋ Logout', 'logout')}
 </nav>"""
@@ -352,7 +399,10 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 
         tools = [btn("/dashboard", "🧭 Niche finder dashboard", "admin"),
                  btn("/tool", "🛠 Marketing suite", "admin"),
-                 btn("/keys", "🔑 Keys & endpoints", "admin")]
+                 btn("/keys", "🔑 Keys & endpoints", "admin"),
+                 btn("/admin/emails", "📧 Email capture & auto-send", "opt-in"),
+                 btn("/admin/ebooks", "📕 AI ebook generator", "PDF lead magnet"),
+                 btn("/admin/analytics", "📊 Click tracking & analytics", "beacons")]
         for pid, meta in amazon._SCRAPER_PROVIDERS.items():
             tools.append(btn("/keys/" + seo._clean(pid), meta["name"] + " key", pid))
         tools.append(btn("/admin/logout", "⎋ Log out", "session"))
@@ -382,7 +432,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
         api_html = "".join('<a class="pill" href="%s">%s</a>' % (seo._clean(e), seo._clean(e))
                            for e in ("/api/settings", "/api/niches", "/api/tools",
                                      "/api/mine", "/api/search", "/api/autosuggest",
-                                     "/api/indexnow"))
+                                     "/api/indexnow", "/api/subscribers", "/api/sequence/send"))
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>Admin — all pages · pstore</title>
@@ -481,6 +531,11 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             if oauth_route:
                 provider = "google" if oauth_route.group(1) == "google" else "facebook"
                 return self._oauth(provider, callback=bool(oauth_route.group(2)), q=q)
+            # public opt-out + click beacons never need a session
+            if path.startswith("/unsubscribe"):
+                return self._unsubscribe(q)
+            if path == "/api/track":
+                return self._track_click()
             if self._needs_admin(path) and not self._authed():
                 if path.startswith("/api/"):
                     return self._send(401, {"error": "unauthorized", "auth": False})
@@ -508,6 +563,14 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._send(200, open(os.path.join(STATIC, "tool.html"), "rb").read(), "text/html; charset=utf-8")
             if path == "/admin":
                 return self._admin_page()
+            if path == "/admin/ebooks/pdf":
+                return self._ebook_pdf(q)
+            if path == "/admin/ebooks":
+                return self._admin_ebooks(q)
+            if path == "/admin/emails":
+                return self._admin_emails(q)
+            if path == "/admin/analytics":
+                return self._admin_analytics()
             if path == "/keys":
                 return self._keys_page()
             key_provider = re.match(r"^/keys/([a-z0-9_-]+)$", path)
@@ -524,6 +587,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._send(200, open(os.path.join(STATIC, "app.js"), "rb").read(), "application/javascript; charset=utf-8")
             if path == "/style.css":
                 return self._send(200, open(os.path.join(STATIC, "style.css"), "rb").read(), "text/css; charset=utf-8")
+            if path == "/courier.js":
+                with open(os.path.join(STATIC, "courier.js"), "rb") as fh:
+                    return self._send(200, fh.read(),
+                                      "application/javascript; charset=utf-8")
             if path == "/api/settings":
                 return self._send(200, self._settings())
             if path == "/api/autosuggest":
@@ -535,6 +602,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._mine(q)
             if path == "/api/niches":
                 return self._list_niches()
+            if path == "/api/subscribers":
+                return self._subscribers_json()
             if path == "/api/tools":
                 return self._tools(q)
             self._send(404, {"error": "not found"})
@@ -566,6 +635,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
         try:
             if parsed.path == "/admin/login":
                 return self._login_post()
+            if parsed.path == "/subscribe":
+                return self._subscribe()
+            if parsed.path == "/api/track":
+                return self._track_click()
             if parsed.path.startswith("/api/") and not self._authed():
                 return self._send(401, {"error": "unauthorized", "auth": False})
             if parsed.path == "/api/niches":
@@ -574,6 +647,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._save_settings()
             if parsed.path == "/api/indexnow":
                 return self._indexnow_post()
+            if parsed.path == "/api/sequence/send":
+                return self._sequence_send()
+            if parsed.path == "/api/subscribers":
+                return self._subscribers_json()
             self._send(404, {"error": "not found"})
         except Exception as e:
             self._send(500, {"error": str(e)})
@@ -887,6 +964,390 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
         })
 
 
+# ------------------------------------------------------------------ email suite
+    def _record_click(self, slug, source="page", referrer=""):
+        ip = security.ip_token(self._client_ip())
+        with _lock:
+            conn = _db()
+            conn.execute(
+                "INSERT INTO clicks (slug, source, ip, referrer) VALUES (?,?,?,?)",
+                (slug, source, ip, referrer))
+            conn.commit()
+            conn.close()
+
+    def _subscribe(self):
+        key = "sub|" + security.client_key(self.headers, self._client_ip())
+        if not security.SUBSCRIBE_LIMITER.hit(key):
+            return self._send(429, {"ok": False, "error": "Too many signups from this device — try again later."})
+        body = self._body()
+        email = str(body.get("email") or "").strip().lower()
+        if not _EMAIL_RE.match(email):
+            return self._send(200, {"ok": False, "error": "That email doesn't look right."})
+        if len(email) > 200:
+            return self._send(200, {"ok": False, "error": "Email too long."})
+        keyword = str(body.get("keyword") or "").strip()[:120]
+        first_name = str(body.get("first_name") or "").strip()[:80]
+        source = (str(body.get("source") or "niche").strip()[:40]) or "niche"
+        with _lock:
+            conn = _db()
+            row = conn.execute("SELECT id, unsubscribed FROM subscribers WHERE email=?",
+                               (email,)).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE subscribers SET unsubscribed=0, confirmed=1, source=?, keyword=?, first_name=? "
+                    "WHERE id=?", (source, keyword, first_name, row["id"]))
+                sid = row["id"]
+                msg = "You're subscribed again — the next update will find its way to your inbox."
+            else:
+                cur = conn.execute(
+                    "INSERT INTO subscribers (email, source, keyword, first_name, confirmed) "
+                    "VALUES (?,?,?,?,1)", (email, source, keyword, first_name))
+                sid = cur.lastrowid
+                msg = "Done — you'll only hear from us when these picks change, and you can unsubscribe any time."
+            conn.commit()
+            conn.close()
+        return self._send(200, {"ok": True, "id": sid, "message": msg})
+
+    def _unsubscribe(self, q):
+        email = (q.get("e") or [""])[0].strip().lower()
+        token = (q.get("t") or [""])[0].strip()
+        ok = False
+        if email and token and security.verify_token(token) == "unsub:" + email:
+            with _lock:
+                conn = _db()
+                conn.execute("UPDATE subscribers SET unsubscribed=1, confirmed=0 WHERE email=?", (email,))
+                conn.commit()
+                conn.close()
+            ok = True
+        title = "You're unsubscribed · pstore" if ok else "Unsubscribe link problem · pstore"
+        heading = ("<h1>You're unsubscribed.</h1><p>We've stopped keeping your email for these "
+                   "updates. No hard feelings — if you ever want the picks again, just sign up "
+                   "again on any niche page.</p>") if ok else \
+            ("<h1>That link didn't work.</h1><p>It may have expired, or the address doesn't match "
+             "what we have on file. Want out anyway? Email us at %s and we'll fix it by hand.</p>"
+             % seo._clean(seo.CONTACT_EMAIL))
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>{seo._clean(title)}</title>
+<link rel="stylesheet" href="/style.css"></head><body>
+<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a></header>
+<main><section class="card">{heading}
+<p class="hint" style="margin-top:14px"><a href="/">← back to pstore</a></p></section></main>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _track_click(self):
+        key = "trk|" + security.client_key(self.headers, self._client_ip())
+        if not security.TRACK_LIMITER.hit(key):
+            return self._send(200, {"ok": True})  # silently drop once throttled
+        parsed = urllib.parse.urlsplit(self.path)
+        q = urllib.parse.parse_qs(parsed.query)
+        body = self._body()
+        slug = str(body.get("slug") or (q.get("slug") or ["page"])[0]).strip().lower()[:120] or "page"
+        source = str(body.get("source") or (q.get("source") or ["page"])[0]).strip()[:40] or "page"
+        referrer = str(body.get("referrer") or (q.get("referrer") or [""])[0]).strip()[:250]
+        self._record_click(slug, source, referrer)
+        return self._send(200, {"ok": True})
+
+    def _subs_stats(self, conn):
+        return {
+            "total": conn.execute("SELECT COUNT(*) c FROM subscribers").fetchone()["c"],
+            "active": conn.execute(
+                "SELECT COUNT(*) c FROM subscribers WHERE confirmed=1 AND unsubscribed=0").fetchone()["c"],
+            "unsubscribed": conn.execute(
+                "SELECT COUNT(*) c FROM subscribers WHERE unsubscribed=1").fetchone()["c"],
+            "emails_sent": conn.execute("SELECT COUNT(*) c FROM sent_emails").fetchone()["c"],
+        }
+
+    def _subscribers_json(self):
+        with _lock:
+            conn = _db()
+            stats = self._subs_stats(conn)
+            rows = conn.execute("SELECT * FROM subscribers ORDER BY id DESC LIMIT 200").fetchall()
+            conn.close()
+        return self._send(200, {"stats": stats, "subscribers": [dict(r) for r in rows]})
+
+    def _sequence_send(self):
+        body = self._body()
+        dry = bool(body.get("dry_run"))
+        if not mailer.configured():
+            return self._send(200, {"ok": False, "error": "SMTP is not configured — set SMTP_HOST/USER/PASSWORD.",
+                                    "sent": 0, "errors": 0, "ready": 0, "skipped": 0, "limit": 0})
+        with _lock:
+            conn = _db()
+            subs = conn.execute(
+                "SELECT * FROM subscribers WHERE unsubscribed=0 AND confirmed=1 "
+                "AND sent_index < ? ORDER BY id", (mailer.SEQUENCE_LENGTH,)).fetchall()
+            niche_map = {r["keyword"].strip().lower(): r
+                         for r in conn.execute("SELECT keyword, products FROM niches")}
+            conn.close()
+        ready = []
+        unready = 0
+        for sub in subs:
+            kw = (sub["keyword"] or "").strip()
+            item_row = niche_map.get(kw.lower())
+            items = json.loads(item_row["products"] or "[]") if item_row else []
+            idx = (sub["sent_index"] or 0) + 1
+            mail = mailer.next_email(kw, items, idx)
+            if not mail:
+                unready += 1
+                continue
+            ready.append((sub["id"], idx, mail, sub["email"], sub["first_name"] or "there"))
+        if dry:
+            return self._send(200, {"ok": True, "dry_run": True, "sent": 0, "errors": 0,
+                                    "ready": len(ready), "skipped": unready,
+                                    "limit": mailer.MAX_EMAILS_PER_RUN})
+        sent = errors = 0
+        for sid, idx, mail, to, to_name in ready:
+            if sent + errors >= mailer.MAX_EMAILS_PER_RUN:
+                break
+            text = mailer.render_body(mail, to_name=to_name, email=to)
+            if mailer.send(mail["subject"], text, to):
+                sent += 1
+                with _lock:
+                    conn = _db()
+                    conn.execute("UPDATE subscribers SET sent_index=? WHERE id=?", (idx, sid))
+                    conn.execute("INSERT INTO sent_emails (subscriber_id, email_index, subject) "
+                                 "VALUES (?,?,?)", (sid, idx, mail["subject"]))
+                    conn.commit()
+                    conn.close()
+            else:
+                errors += 1
+        return self._send(200, {"ok": True, "sent": sent, "errors": errors,
+                                "ready": len(ready), "skipped": unready,
+                                "limit": mailer.MAX_EMAILS_PER_RUN})
+
+    def _subs_table(self, rows):
+        def state(r):
+            if r["unsubscribed"]:
+                return "<span class='badge'>out</span>"
+            if not r["confirmed"]:
+                return "<span class='badge'>unconfirmed</span>"
+            return "<span class='badge'>active</span>"
+        trs = "".join(
+            "<tr><td>%s</td><td>%s</td><td>%d / %d</td><td>%s</td><td>%s</td></tr>"
+            % (seo._clean(r["email"]), seo._clean(r["keyword"] or "—"),
+               r["sent_index"] or 0, mailer.SEQUENCE_LENGTH,
+               state(r), seo._clean(r["created_at"] or ""))
+            for r in rows)
+        return trs
+
+    def _email_sequence_preview(self, keyword):
+        for n in self._all_niches():
+            if n["keyword"].lower() == keyword.lower():
+                items = n["products"]
+                break
+        else:
+            return '<p class="hint">No saved products for that niche yet — mine one on the dashboard first.</p>'
+        seq = market_engine.build_email_sequence(keyword, items)
+        if not seq:
+            return '<p class="hint">No sequence for this niche right now (needs at least one product).</p>'
+        cards = "".join(
+            '<div class="sub"><h3>%s</h3><p class="key" style="white-space:pre-wrap">%s</p></div>'
+            % (seo._clean(m["name"]), seo._clean(mailer.render_body(m, email="you@example.com"))[:1600])
+            for m in seq)
+        return cards
+
+    def _admin_emails(self, q):
+        with _lock:
+            conn = _db()
+            stats = self._subs_stats(conn)
+            rows = conn.execute("SELECT * FROM subscribers ORDER BY id DESC LIMIT 200").fetchall()
+            conn.close()
+        niches = [n["keyword"] for n in self._all_niches()]
+        seq_kw = (q.get("keyword") or [""])[0].strip() or (niches[0] if niches else "")
+        seq_html = self._email_sequence_preview(seq_kw) if seq_kw else \
+            '<p class="hint">No saved niches yet — mine one on the dashboard to preview the sequence.</p>'
+        opts = "".join('<option value="%s"%s>%s</option>' % (urllib.parse.quote(k),
+                        ' selected' if k == seq_kw else "", seo._clean(k)) for k in niches)
+        smtp_state = ("Configured · %s" % seo._clean(mailer.SMTP_HOST)) if mailer.configured() \
+            else ("<b>Not configured.</b> Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD (and optionally "
+                  "SMTP_PORT / SMTP_FROM / SMTP_STARTTLS) in the environment to actually send.")
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emails — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+</head><body>
+<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Email <span>capture &amp; auto-send.</span></h1>
+<p class="tagline">The opt-in widget on every niche page feeds this list. Send the next email in the 5-step buyer sequence to active subscribers.</p></div>
+{self._admin_nav('emails')}
+</header>
+<main>
+<section class="card"><h2>📨 Sender status</h2>
+<p class="hint" style="margin-top:-4px">{smtp_state}</p>
+<div class="row">
+  <button id="send" class="warm">Send next batch (up to {mailer.MAX_EMAILS_PER_RUN})</button>
+  <label style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="dry" style="width:auto;height:auto" checked> dry run</label>
+</div>
+<p id="out" class="msg"></p></section>
+<section class="card"><h2>👥 Subscribers</h2>
+<p class="hint">{stats['total']} total · {stats['active']} active · {stats['unsubscribed']} unsubscribed · {stats['emails_sent']} emails sent</p>
+<table class="plain"><thead><tr><th>Email</th><th>Niche</th><th>Sequence</th><th>State</th><th>Joined</th></tr></thead>
+<tbody>{self._subs_table(rows)}</tbody></table></section>
+<section class="card"><h2>💌 Sequence preview</h2>
+<form class="row" method="get" action="/admin/emails">
+  <label>Niche <select name="keyword" onchange="this.form.submit()">{opts}</select></label>
+</form>
+{seq_html}</section>
+</main>
+<footer><p>Emails only ever use real scraped data (title, price, stars, reviews) plus {{first_name}} — and always carry an unsubscribe link.</p></footer>
+<script>
+function $(id){{return document.getElementById(id);}}
+$("send").onclick = async () => {{
+  $("out").textContent = "Working…";
+  const r = await fetch("/api/sequence/send", {{method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify({{dry_run: $("dry").checked}})}});
+  const d = await r.json().catch(()=>({{ok:false, error:"bad response"}}));
+  if (d && d.ok) {{
+    if (d.dry_run) $("out").textContent = "Dry run: " + d.ready + " subscriber(s) ready for the next email.";
+    else $("out").textContent = "Sent " + d.sent + " · skipped " + d.skipped + " · errors " + d.errors + " · (ready " + d.ready + ").";
+  }} else $("out").textContent = (d && d.error) || "Send failed.";
+  setTimeout(()=>location.reload(), 1500);
+}};
+</script>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _ebook_for(self, keyword):
+        keyword = (keyword or "").strip()
+        if not keyword:
+            return None
+        if keyword in _EBOOKS:
+            return _EBOOKS[keyword]
+        niche = None
+        for n in self._all_niches():
+            if n["keyword"].lower() == keyword.lower():
+                niche = n
+                break
+        if not niche or not niche.get("products"):
+            return None
+        book = ebook_mod.build_ebook(keyword)
+        if len(_EBOOKS) >= 20:
+            try:
+                _EBOOKS.pop(next(iter(_EBOOKS)))
+            except StopIteration:
+                pass
+        _EBOOKS[keyword] = book
+        return book
+
+    def _admin_ebooks(self, q):
+        niches = [n["keyword"] for n in self._all_niches()]
+        keyword = (q.get("keyword") or [""])[0].strip()
+        book = None
+        if keyword:
+            book = self._ebook_for(keyword)
+        elif niches:
+            keyword = niches[0]
+            book = self._ebook_for(keyword)
+        opts = "".join('<option value="%s"%s>%s</option>' % (seo._clean(k),
+                        ' selected' if k == keyword else "", seo._clean(k)) for k in niches)
+        content = ""
+        if book:
+            content = ('<div class="book-preview"><p class="hint" style="margin-top:-4px">%s</p>'
+                       '%s<p style="margin-top:12px"><a class="btn warm" download '
+                       'href="/admin/ebooks/pdf?keyword=%s">Download PDF ⬇</a></p></div>'
+                       % (seo._clean(book["title"]), book["html_preview"],
+                          urllib.parse.quote(keyword)))
+        else:
+            content = '<p class="hint">Choose a niche and generate its free guide PDF.</p>'
+        cached = "".join('<a class="chip" href="/admin/ebooks?keyword=%s">%s</a>'
+                         % (urllib.parse.quote(k), seo._clean(k)) for k in _EBOOKS)
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ebooks — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+</head><body>
+<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>AI ebook <span>lead magnets.</span></h1>
+<p class="tagline">Turn any saved niche into a designed PDF guide in one click — pure stdlib renderer, template copy (AI when a key is set).</p></div>
+{self._admin_nav('ebooks')}
+</header>
+<main>
+<section class="card"><h2>📕 Generate a guide</h2>
+<form class="row" method="get" action="/admin/ebooks">
+  <label>Niche <select name="keyword">{opts}</select></label>
+  <button class="warm" type="submit">Generate</button>
+</form>
+{content}
+</section>
+<section class="card"><h2>🗂 Recently generated</h2>
+<div class="chips">{cached if cached else '<span class="hint">Nothing generated yet.</span>'}</div>
+<p class="hint" style="margin-top:10px">
+AI status: {"<b>configured</b> (%s)" % seo._clean(ai.MODEL) if ai.configured() else "not configured — using the deterministic template copy."}
+</p></section>
+</main>
+<footer><p>PDFs are generated server-side and never contain affiliate links — plain honest guide content that pairs with your review pages.</p></footer>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _ebook_pdf(self, q):
+        keyword = (q.get("keyword") or [""])[0].strip()
+        book = self._ebook_for(keyword)
+        if not book:
+            return self._send(404, {"error": "ebook not found"})
+        data = book["pdf"]
+        self.send_response(200)
+        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % book["pdf_name"])
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+        return None
+
+    def _admin_analytics(self):
+        with _lock:
+            conn = _db()
+            stats = self._subs_stats(conn)
+            total = conn.execute("SELECT COUNT(*) c FROM clicks").fetchone()["c"]
+            top_slugs = conn.execute(
+                "SELECT slug, COUNT(*) c FROM clicks GROUP BY slug ORDER BY c DESC LIMIT 12").fetchall()
+            top_sources = conn.execute(
+                "SELECT source, COUNT(*) c FROM clicks GROUP BY source ORDER BY c DESC LIMIT 8").fetchall()
+            recent = conn.execute("SELECT * FROM clicks ORDER BY id DESC LIMIT 15").fetchall()
+            conn.close()
+        slug_rows = "".join(
+            "<tr><td>%s</td><td class='ct'>%s</td></tr>" % (seo._clean(r["slug"]), r["c"])
+            for r in top_slugs) or "<tr><td colspan='2' class='hint'>No clicks yet.</td></tr>"
+        src_rows = "".join(
+            "<tr><td>%s</td><td>%d</td></tr>" % (seo._clean(r["source"]), r["c"])
+            for r in top_sources)
+        recent_rows = "".join(
+            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+            % (seo._clean(r["slug"]), seo._clean(r["source"]), seo._clean(r["referrer"] or "—"),
+               seo._clean(r["created_at"] or "—"))
+            for r in recent) or "<tr><td colspan='4' class='hint'>No clicks yet — they're recorded when visitors tap Amazon links on the pages.</td></tr>"
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analytics — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+</head><body>
+<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Click <span>analytics.</span></h1>
+<p class="tagline">Privacy-first: IPs are stored as one-way hashes, never raw. See which niches and sources actually earn clicks.</p></div>
+{self._admin_nav('analytics')}
+</header>
+<main>
+<section class="card"><h2>📊 At a glance</h2>
+<div class="row" style="align-items:stretch">
+  <div class="feature"><h3>{total}</h3><p class="hint">total clicks</p></div>
+  <div class="feature"><h3>{len(top_slugs)}</h3><p class="hint">niches clicked</p></div>
+  <div class="feature"><h3>{stats['active']}</h3><p class="hint">active subscribers</p></div>
+  <div class="feature"><h3>{stats['emails_sent']}</h3><p class="hint">emails sent</p></div>
+</div></section>
+<section class="card"><h2>🛒 Top clicked pages</h2>
+<table class="plain"><thead><tr><th>Niche</th><th>Clicks</th></tr></thead><tbody>{slug_rows}</tbody></table></section>
+<section class="card"><h2>📥 By source</h2>
+<table class="plain"><thead><tr><th>Source</th><th>Clicks</th></tr></thead><tbody>{src_rows}</tbody></table></section>
+<section class="card"><h2>🧾 Recent clicks</h2>
+<table class="plain"><thead><tr><th>Niche</th><th>Source</th><th>Referrer</th><th>When</th></tr></thead><tbody>{recent_rows}</tbody></table></section>
+</main>
+<footer><p>Clicks are counted server-side when a visitor's browser pings /api/track before Amazon loads. Referrers are truncated; raw IPs are never stored.</p></footer>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+
 def main():
     _init()
     if not _ADMIN_EMAIL_FROM_ENV or not _ADMIN_PW_FROM_ENV:
@@ -895,6 +1356,12 @@ def main():
     if not oauth.providers_configured():
         print("NOTE: Google/Facebook OAuth login disabled — set OAUTH_GOOGLE_CLIENT_ID/SECRET "
               "or OAUTH_FACEBOOK_APP_ID/APP_SECRET to enable it.")
+    if not mailer.configured():
+        print("NOTE: SMTP not configured — /subscribe captures and /admin/emails previews work, "
+              "but sequence sends are refused. Set SMTP_HOST/USER/PASSWORD to enable sending.")
+    if not ai.configured():
+        print("NOTE: AI not configured — ebook/headline copy uses deterministic templates. "
+              "Set AI_API_KEY (+ AI_MODEL/AI_BASE_URL) to enable generation.")
     amazon.set_market(os.environ.get("PSTORE_MARKET", amazon.DEFAULT_MARKET))
     amazon.set_tag(os.environ.get("PSTORE_TAG", ""))
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

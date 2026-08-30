@@ -54,6 +54,8 @@ class RateLimiter:
 LOGIN_LIMITER = RateLimiter(limit=5, window_sec=15 * 60)     # 5 attempts / 15 min
 API_LIMITER = RateLimiter(limit=240, window_sec=60)          # /api flood guard
 HTTP_LIMITER = RateLimiter(limit=720, window_sec=60)         # global per-client cap
+SUBSCRIBE_LIMITER = RateLimiter(limit=6, window_sec=10 * 60)  # opt-in abuse guard
+TRACK_LIMITER = RateLimiter(limit=180, window_sec=60)        # click beacons
 
 
 def client_key(headers, peer_ip):
@@ -97,3 +99,11 @@ def verify_token(token):
     if exp < time.time():
         return None
     return scope
+
+
+def ip_token(ip):
+    """One-way, salted fingerprint of a client IP for analytics — records who
+    clicked without ever storing a raw address."""
+    if not ip:
+        return ""
+    return hashlib.sha256((ip + "|" + HASH_SECRET).encode("utf-8")).hexdigest()[:16]

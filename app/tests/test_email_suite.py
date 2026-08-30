@@ -1,0 +1,403 @@
+# -*- coding: utf-8 -*-
+"""Offline tests for the pstore email suite (opt-in, unsubscribe, click
+analytics, sequence auto-send, admin email/ebook/analytics pages)."""
+
+import json
+import os
+import shutil
+import sys
+import threading
+import unittest
+import urllib.parse
+import uuid
+from http.server import ThreadingHTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import ai
+import ebook
+import mailer
+import market_engine
+import security
+import server
+import seo
+
+
+class TestEmailSuite(unittest.TestCase):
+    """Boots a real HTTP server against a copied DB; stubs SMTP so nothing
+    leaves the box. Each test starts from a clean subscriber/click state."""
+
+    IPKEY = "127.0.0.1|127.0.0.1"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = "/tmp/pstore_test_mail_%s.db" % uuid.uuid4().hex[:8]
+        shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "pstore.db"), cls.db)
+        os.environ["PSTORE_DB"] = cls.db
+        os.environ["PSTORE_ADMIN_EMAIL"] = "owner@test.example"
+        os.environ["PSTORE_ADMIN_PASSWORD"] = "test-pass-123"
+        os.environ.pop("PSTORE_URL", None)
+        import importlib
+        importlib.reload(server)
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.PORT = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls._saved_send = mailer._send
+        cls.sent = []
+        mailer._send = cls._fake_send
+        cls.cookie = cls._login()
+
+    @classmethod
+    def _fake_send(cls, subject, body, to, attachments=None):
+        cls.sent.append({"subject": subject, "body": body, "to": to})
+        return True
+
+    @classmethod
+    def tearDownClass(cls):
+        mailer._send = cls._saved_send
+        security.SUBSCRIBE_LIMITER.clear("sub|" + cls.IPKEY)
+        security.TRACK_LIMITER.clear("trk|" + cls.IPKEY)
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        cls.httpd.server_close()
+        if os.path.exists(cls.db):
+            os.unlink(cls.db)
+
+    @classmethod
+    def _login(cls):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", cls.PORT, timeout=5)
+        conn.request("POST", "/admin/login",
+                     body=b"email=owner@test.example&password=test-pass-123",
+                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        resp = conn.getresponse()
+        sc = resp.getheader("Set-Cookie")
+        resp.read()
+        conn.close()
+        assert sc and sc.startswith("pstore_admin="), sc
+        return sc.split(";")[0]
+
+    @classmethod
+    def _raw(cls, path, method="GET", body=None, cookie=None, headers=None):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", cls.PORT, timeout=8)
+        hdrs = dict(headers or {})
+        if cookie:
+            hdrs["Cookie"] = cookie
+        if body is not None:
+            hdrs.setdefault("Content-Type", "application/x-www-form-urlencoded")
+        conn.request(method, path, body=body, headers=hdrs)
+        resp = conn.getresponse()
+        out = (resp.status, resp.getheader("Location"), resp.getheader("Content-Type"),
+               resp.read())
+        conn.close()
+        return out
+
+    def setUp(self):
+        security.SUBSCRIBE_LIMITER.clear("sub|" + self.IPKEY)
+        security.TRACK_LIMITER.clear("trk|" + self.IPKEY)
+        with server._lock:
+            conn = server._db()
+            conn.execute("DELETE FROM subscribers")
+            conn.execute("DELETE FROM sent_emails")
+            conn.execute("DELETE FROM clicks")
+            conn.commit()
+            conn.close()
+        self.sent.clear()
+
+    def _subscribe(self, email, keyword="keto snacks", extra=""):
+        body = "email=%s&keyword=%s%s" % (
+            urllib.parse.quote(email),
+            urllib.parse.quote(keyword),
+            ("&" + extra) if extra else "")
+        return self._raw("/subscribe", "POST", body=body)
+
+    def _sub(self, email):
+        with server._lock:
+            conn = server._db()
+            row = conn.execute("SELECT * FROM subscribers WHERE email=?", (email,)).fetchone()
+            conn.close()
+        return dict(row) if row else None
+
+    def _clicks(self):
+        with server._lock:
+            conn = server._db()
+            rows = conn.execute("SELECT * FROM clicks").fetchall()
+            conn.close()
+        return [dict(r) for r in rows]
+
+    def _bs_items(self, keyword="keto snacks"):
+        with server._lock:
+            conn = server._db()
+            r = conn.execute("SELECT products FROM niches WHERE keyword=?", (keyword,)).fetchone()
+            conn.close()
+        return json.loads(r["products"] or "[]") if r else []
+
+    # ---------------------------------------------------------------- subscribe
+
+    def test_subscribe_public_and_records(self):
+        st, _, _, data = self._subscribe("sub@example.com")
+        self.assertEqual(st, 200)
+        self.assertTrue(json.loads(data)["ok"])
+        row = self._sub("sub@example.com")
+        self.assertEqual(row["keyword"], "keto snacks")
+        self.assertEqual(row["unsubscribed"], 0)
+        self.assertEqual(row["confirmed"], 1)
+
+    def test_subscribe_rejects_bad_email(self):
+        st, _, _, data = self._subscribe("notanemail")
+        self.assertEqual(st, 200)
+        self.assertFalse(json.loads(data)["ok"])
+
+    def test_subscribe_resubscribes_after_unsubscribe(self):
+        mail = "again@example.com"
+        self._subscribe(mail)
+        with server._lock:
+            conn = server._db()
+            conn.execute("UPDATE subscribers SET unsubscribed=1, confirmed=0 WHERE email=?", (mail,))
+            conn.commit()
+            conn.close()
+        self.assertEqual(self._sub(mail)["unsubscribed"], 1)
+        st, _, _, data = self._subscribe(mail, extra="first_name=Ann")
+        self.assertEqual(st, 200)
+        self.assertTrue(json.loads(data)["ok"])
+        row = self._sub(mail)
+        self.assertEqual(row["unsubscribed"], 0)
+        self.assertEqual(row["first_name"], "Ann")
+
+    def test_subscribe_rate_limited(self):
+        base = "rl%d@example.com"
+        last = 200
+        for n in range(security.SUBSCRIBE_LIMITER.limit + 1):
+            st, _, _, _ = self._subscribe(base % n)
+            last = st
+        self.assertEqual(last, 429)
+
+    # -------------------------------------------------------------- unsubscribe
+
+    def test_unsubscribe_with_valid_token(self):
+        self._subscribe("out@example.com")
+        url = mailer.unsubscribe_url("out@example.com").split("://", 1)[-1]
+        path = url.split("/", 1)[1]
+        st, _, ctype, data = self._raw("/" + path)
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("text/html"))
+        self.assertIn("unsubscribed", data.decode("utf-8", "replace").lower())
+        self.assertEqual(self._sub("out@example.com")["unsubscribed"], 1)
+
+    def test_unsubscribe_rejects_bad_token(self):
+        self._subscribe("bad@example.com")
+        st, _, _, data = self._raw("/unsubscribe?e=bad@example.com&t=forged")
+        self.assertEqual(st, 200)
+        self.assertIn("didn't work", data.decode("utf-8", "replace"))
+        self.assertEqual(self._sub("bad@example.com")["unsubscribed"], 0)
+
+    # ------------------------------------------------------------------- beacon
+
+    def test_track_click_records_hashed_ip(self):
+        st, _, _, data = self._raw(
+            "/api/track", "POST",
+            body="slug=keto-snacks&source=niche&referrer=https%3A%2F%2Fexample.com%2Fx")
+        self.assertEqual(st, 200)
+        self.assertTrue(json.loads(data)["ok"])
+        rows = self._clicks()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["slug"], "keto-snacks")
+        self.assertEqual(rows[0]["source"], "niche")
+        self.assertNotEqual(rows[0]["ip"], "127.0.0.1")
+        self.assertEqual(len(rows[0]["ip"]), 16)
+        self.assertIn("example.com", rows[0]["referrer"])
+
+    def test_track_click_get_pixel_alias(self):
+        st, _, _, data = self._raw("/api/track?slug=home&source=home")
+        self.assertEqual(st, 200)
+        self.assertTrue(json.loads(data)["ok"])
+        self.assertTrue(any(r["slug"] == "home" for r in self._clicks()))
+
+    # ----------------------------------------------------------------- admin api
+
+    def test_subscribers_api_requires_auth(self):
+        st, _, _, body = self._raw("/api/subscribers")
+        self.assertEqual(st, 401)
+        self.assertIn(b"unauthorized", body)
+        self._subscribe("api@example.com")
+        st, _, _, data = self._raw("/api/subscribers", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        payload = json.loads(data)
+        self.assertEqual(payload["stats"]["total"], 1)
+        self.assertEqual(payload["stats"]["active"], 1)
+        self.assertEqual(payload["subscribers"][0]["email"], "api@example.com")
+
+    def test_sequence_send_requires_auth(self):
+        st, _, _, _ = self._raw("/api/sequence/send")
+        self.assertEqual(st, 401)
+
+    def test_sequence_send_refuses_when_smtp_unconfigured(self):
+        saved = (mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD)
+        mailer.SMTP_HOST = mailer.SMTP_USER = mailer.SMTP_PASSWORD = ""
+        try:
+            st, _, _, data = self._raw("/api/sequence/send", "POST", body="{}", cookie=self.cookie)
+            self.assertEqual(st, 200)
+            self.assertFalse(json.loads(data)["ok"])
+            self.assertIn("SMTP", json.loads(data)["error"])
+        finally:
+            mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
+
+    def test_sequence_send_smokes_next_emails(self):
+        saved = (mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD)
+        mailer.SMTP_HOST = "smtp.test.local"
+        mailer.SMTP_USER = "u@example.com"
+        mailer.SMTP_PASSWORD = "pw"
+        self._subscribe("seq@example.com")
+        try:
+            for expect_idx in (1, 2):
+                st, _, _, data = self._raw(
+                    "/api/sequence/send", "POST", body="{}", cookie=self.cookie)
+                self.assertEqual(st, 200)
+                self.assertTrue(json.loads(data)["ok"])
+                self.assertEqual(json.loads(data)["sent"], 1)
+                self.assertEqual(self._sub("seq@example.com")["sent_index"], expect_idx)
+            self.assertGreaterEqual(len(self.sent), 2)
+            self.assertTrue(all(s["to"] == "seq@example.com" for s in self.sent[:2]))
+            with server._lock:
+                conn = server._db()
+                cnt = conn.execute("SELECT COUNT(*) c FROM sent_emails").fetchone()["c"]
+                conn.close()
+            self.assertEqual(cnt, 2)
+            self.assertIn("unsubscribe", self.sent[0]["body"].lower())
+        finally:
+            mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
+
+    def test_sequence_send_dry_run_sends_nothing(self):
+        saved = (mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD)
+        mailer.SMTP_HOST = "smtp.test.local"
+        mailer.SMTP_USER = "u@example.com"
+        mailer.SMTP_PASSWORD = "pw"
+        self._subscribe("dry@example.com")
+        try:
+            st, _, _, data = self._raw(
+                "/api/sequence/send", "POST", body='{"dry_run":true}',
+                headers={"Content-Type": "application/json"}, cookie=self.cookie)
+            payload = json.loads(data)
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["dry_run"])
+            self.assertEqual(payload["sent"], 0)
+            self.assertEqual(payload["ready"], 1)
+            self.assertEqual(self.sent, [])
+        finally:
+            mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
+
+    # --------------------------------------------------------------- admin pages
+
+    def test_admin_pages_redirect_unauth(self):
+        for route in ("/admin/emails", "/admin/ebooks", "/admin/analytics",
+                      "/admin/ebooks/pdf?keyword=keto%20snacks", "/api/subscribers"):
+            st, location, _, _ = self._raw(route)
+            status = 401 if route.startswith("/api/") else 302
+            self.assertEqual(st, status, route)
+            if status == 302:
+                self.assertTrue(location.startswith("/admin/login"), (route, location))
+
+    def test_admin_emails_page(self):
+        self._subscribe("page@example.com")
+        st, _, ctype, data = self._raw("/admin/emails", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("text/html"))
+        html = data.decode("utf-8", "replace")
+        self.assertIn("Send next batch", html)
+        self.assertIn("/api/sequence/send", html)
+        self.assertIn("page@example.com", html)
+        self.assertIn("Sequence preview", html)
+        self.assertIn("Email 1", html)
+
+    def test_admin_ebooks_page_and_pdf(self):
+        st, _, _, data = self._raw("/admin/ebooks?keyword=keto+snacks", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        html = data.decode("utf-8", "replace")
+        self.assertIn("Generate a guide", html)
+        self.assertIn("Download PDF", html)
+        st, _, ctype, pdf = self._raw(
+            "/admin/ebooks/pdf?keyword=keto+snacks", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("application/pdf"))
+        self.assertTrue(pdf.startswith(b"%PDF-"))
+
+    def test_admin_ebooks_unknown_keyword_404(self):
+        st, _, _, data = self._raw(
+            "/admin/ebooks/pdf?keyword=no-such-niche", cookie=self.cookie)
+        self.assertEqual(st, 404)
+
+    def test_admin_analytics_page(self):
+        self._raw("/api/track", "POST", body="slug=keto-snacks&source=niche")
+        st, _, _, data = self._raw("/admin/analytics", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        html = data.decode("utf-8", "replace")
+        self.assertIn("analytics", html.lower())
+        self.assertIn("keto-snacks", html)
+        self.assertIn("raw IPs are never stored", html)
+
+    # ---------------------------------------------------------- public surfaces
+
+    def test_niche_page_has_optin_and_beacon(self):
+        st, _, _, data = self._raw("/n/keto-snacks")
+        self.assertEqual(st, 200)
+        html = data.decode("utf-8", "replace")
+        self.assertIn('class="courier card"', html)
+        self.assertIn('data-niche="keto-snacks"', html)
+        self.assertIn('/courier.js', html)
+
+    def test_landing_has_optin_and_beacon(self):
+        st, _, _, data = self._raw("/")
+        self.assertEqual(st, 200)
+        html = data.decode("utf-8", "replace")
+        self.assertIn('class="courier card"', html)
+        self.assertIn('data-niche="home"', html)
+        self.assertIn('/courier.js', html)
+
+    def test_courier_js_served_publicly(self):
+        st, _, ctype, data = self._raw("/courier.js")
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("application/javascript"))
+        self.assertIn("sendBeacon", data.decode("utf-8", "replace"))
+
+    def test_email_sequence_has_unsubscribe_footer(self):
+        items = self._bs_items()
+        seq = market_engine.build_email_sequence("keto snacks", items)
+        self.assertEqual(len(seq), 5)
+        for mail in seq:
+            body = mailer.render_body(mail, email="u@example.com")
+            self.assertIn("unsubscribe", body.lower())
+            self.assertTrue(mail["subject"])
+            self.assertTrue(mailer.unsubscribe_url("u@example.com").startswith(
+                "/unsubscribe?e=") or "unsubscribe" in mailer.unsubscribe_url("u@example.com"))
+
+
+class TestEbookModule(unittest.TestCase):
+    def test_build_ebook_without_ai(self):
+        saved = ai.API_KEY
+        ai.API_KEY = ""
+        try:
+            book = ebook.build_ebook("keto snacks")
+            self.assertTrue(book["pdf"].startswith(b"%PDF-"))
+            self.assertTrue(book["title"])
+            self.assertGreaterEqual(len(book["chapters"]), 3)
+            self.assertTrue(book["pdf_name"].endswith(".pdf"))
+        finally:
+            ai.API_KEY = saved
+
+    def test_ai_fallback_is_offline(self):
+        saved = ai._urlopen
+        ai._urlopen = None
+        ai.API_KEY = ""
+        try:
+            self.assertEqual(ai.generate("headline", "keto"), [])
+            pair = ai.headline_and_subheadline("keto")
+            self.assertTrue(pair["headline"] and pair["subheadline"])
+        finally:
+            ai._urlopen = saved
+
+
+if __name__ == "__main__":
+    unittest.main()
