@@ -13,3 +13,5 @@ services:
         value: ""
       - key: PSTORE_MARKET
         value: com
+      - key: PSTORE_ADMIN_PASSWORD
+        sync: false

@@ -33,7 +33,7 @@
     <p class="tagline">Turn a niche shortlist into a complete sales funnel — landing page, email automation, DM scripts, review pipeline and boost campaigns, all affiliate-tagged.</p>
   </div>
   <nav>
-    <a href="/" class="primary">🌱 Dashboard</a>
+    <a href="/dashboard" class="primary">🧭 Dashboard</a>
     <a href="#funnel">🥧 Funnel</a>
     <a href="#lp">🖥 Landing</a>
     <a href="#emails">✉️ Emails</a>
@@ -41,6 +41,7 @@
     <a href="#dm">💬 DMs</a>
     <a href="#reviews">⭐ Reviews</a>
     <a href="#boosts">🚀 Boosts</a>
+    <a href="/admin">🗺 All pages</a>
   </nav>
 </header>
 
@@ -124,6 +125,14 @@
 
 <script>
 "use strict";
+// Admin tools are session-protected: on a 401 send the browser to the login flow.
+const _fetch = window.fetch.bind(window);
+window.fetch = function (...args) {
+  return _fetch(...args).then((r) => {
+    if (r.status === 401) { window.location.href = "/dashboard"; throw new Error("admin session expired"); }
+    return r;
+  });
+};
 function $(id){return document.getElementById(id);}
 function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
 

@@ -1,6 +1,16 @@
 // pstore frontend — talks to the stdlib Python HTTP API.
 "use strict";
 
+// The admin tools are session-protected: if an API answers 401 the session
+// expired, so bounce back to the login flow.
+const _fetch = window.fetch.bind(window);
+window.fetch = function (...args) {
+  return _fetch(...args).then((r) => {
+    if (r.status === 401) { window.location.href = "/dashboard"; throw new Error("admin session expired"); }
+    return r;
+  });
+};
+
 let markets = null;
 
 function $(id) { return document.getElementById(id); }

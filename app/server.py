@@ -13,12 +13,15 @@ Endpoints
   POST /api/settings      -> set marketplace / affiliate tag / scraper keys
 """
 import datetime
+import hmac
 import json
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -32,6 +35,16 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
 DB = os.environ.get("PSTORE_DB", os.path.join(ROOT, "pstore.db"))
 PORT = int(os.environ.get("PORT", "8765"))
+
+# --- admin auth -------------------------------------------------------------
+# Everything under /admin + the owner tools/APIs sits behind an admin password
+# (PSTORE_ADMIN_PASSWORD) with an in-memory session cookie. Public pages keep
+# serving without a cookie: /, /n/*, /lp/*, about/legal, robots, sitemap, key.
+_ADMIN_PW = os.environ.get("PSTORE_ADMIN_PASSWORD") or "pstore-admin"
+_ADMIN_PW_FROM_ENV = bool(os.environ.get("PSTORE_ADMIN_PASSWORD"))
+_COOKIE = "pstore_admin"
+_SESSION_TTL = 12 * 60 * 60  # seconds
+_SESSIONS = {}  # token -> monotonic expiry
 
 _lock = threading.Lock()
 
@@ -80,11 +93,228 @@ class Handler(BaseHTTPRequestHandler):
             "marketing": market_engine.status_blurb(),
         }
 
+    # ------------------------------------------------------------------ admin auth
+    def _cookie_token(self):
+        raw = self.headers.get("Cookie") or ""
+        for part in raw.split(";"):
+            part = part.strip()
+            if part.startswith(_COOKIE + "="):
+                return part[len(_COOKIE) + 1:]
+        return None
+
+    def _authed(self):
+        tok = self._cookie_token()
+        if not tok:
+            return False
+        with _lock:
+            exp = _SESSIONS.get(tok)
+            if exp is None:
+                return False
+            if exp < time.monotonic():
+                _SESSIONS.pop(tok, None)
+                return False
+            return True
+
+    def _new_session(self):
+        tok = secrets.token_hex(32)
+        with _lock:
+            for old, exp in list(_SESSIONS.items()):
+                if exp < time.monotonic():
+                    _SESSIONS.pop(old, None)
+            _SESSIONS[tok] = time.monotonic() + _SESSION_TTL
+        return tok
+
+    def _drop_session(self, tok):
+        if tok:
+            with _lock:
+                _SESSIONS.pop(tok, None)
+
+    def _set_cookie(self, tok, max_age=_SESSION_TTL):
+        self.send_header("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d"
+                         % (_COOKIE, tok, max_age))
+
+    def _needs_admin(self, path):
+        return (path.startswith("/api/") or path.startswith("/keys/") or
+                path in ("/admin", "/dashboard", "/index.html", "/tool", "/keys"))
+
+    def _redirect_login(self, next_path):
+        loc = "/admin/login?next=" + urllib.parse.quote(next_path or "/dashboard")
+        self.send_response(302)
+        self.send_header("Location", loc)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        return None
+
+    def _login_page(self, error=None):
+        err = ('<p class="msg" style="color:#d64545">%s</p>' % seo._clean(error)) if error else ""
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>Admin login — pstore</title><link rel="stylesheet" href="/style.css">
+<style>.login-wrap{{min-height:78vh;display:flex;align-items:center;justify-content:center;padding:24px}}
+.login-card{{width:100%;max-width:380px;text-align:center}}
+.login-card h1{{font-size:26px;letter-spacing:-.4px}}
+.login-card input{{width:100%;padding:13px 16px;border:1px solid var(--border);border-radius:14px;font-size:15px;margin:16px 0 8px;background:#fff}}
+.login-card button{{width:100%}}
+.login-hint{{font-size:12.5px;color:var(--muted);margin-top:14px}}
+.login-hint a{{color:var(--accent)}}</style>
+</head><body>
+<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a></header>
+<main class="login-wrap"><div class="login-card">
+<section class="card">
+<h1>🔐 Admin <span style="color:var(--accent)">login</span></h1>
+<p class="tagline" style="margin:0">Owner section — pages, tools and keys are locked behind the admin password.</p>
+{err}
+<label style="display:block;text-align:left;font-size:12.5px;color:var(--muted);font-weight:700">Admin password
+<input id="pw" type="password" placeholder="password" autocomplete="current-password"></label>
+<button id="go" class="warm">Unlock admin</button>
+<p id="msg" class="msg"></p>
+<p class="login-hint">Public site: <a href="/">pstore home</a> · no login needed.</p>
+</section></div></main>
+<script>
+function $(id){{return document.getElementById(id);}}
+$("go").onclick = async () => {{
+  const next = new URLSearchParams(location.search).get("next") || "/dashboard";
+  const r = await fetch("/admin/login", {{method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify({{password: $("pw").value, next: next}})}});
+  const d = await r.json().catch(()=>({{ok:false, error:"bad response"}}));
+  if (d.ok) location.href = d.next;
+  else $("msg").textContent = d.error || "Login failed.";
+}};
+$("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").onclick(); }});
+</script>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _login_post(self):
+        body = self._body()
+        pw = str(body.get("password") or "")
+        next_path = str(body.get("next") or "/dashboard")
+        if not next_path.startswith("/") or next_path.startswith("//"):
+            next_path = "/dashboard"
+        if not hmac.compare_digest(pw.encode("utf-8"), _ADMIN_PW.encode("utf-8")):
+            return self._send(200, {"ok": False, "error": "Wrong password"})
+        tok = self._new_session()
+        data = json.dumps({"ok": True, "next": next_path}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self._set_cookie(tok)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+        return None
+
+    def _logout(self):
+        self._drop_session(self._cookie_token())
+        self.send_response(302)
+        self.send_header("Location", "/admin/login")
+        self._set_cookie("x", max_age=0)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        return None
+
+    def _admin_nav(self, active=None):
+        def chip(href, label, key, accent=False):
+            cls = ' class="primary"' if accent else (" class=\"%s\"" % key if key == active else "")
+            return '<a href="%s"%s>%s</a>' % (href, cls, label)
+        return f"""<nav>
+{chip('/dashboard', '🧭 Dashboard', 'dashboard')}
+{chip('/tool', '🛠 Tools', 'tool')}
+{chip('/keys', '🔑 Keys', 'keys')}
+{chip('/admin', '🗺 All pages', 'admin', accent=True)}
+{chip('/admin/logout', '⎋ Logout', 'logout')}
+</nav>"""
+
+    def _admin_page(self):
+        """Admin hub: a button for every page on the site — admin tools, the
+        public site (static + every saved niche + landing page) and the APIs."""
+        def btn(href, label, note=None, ghost=False):
+            note_html = '<span class="n">%s</span>' % seo._clean(note) if note else ""
+            return ('<a href="%s" %s>%s %s</a>'
+                    % (seo._clean(href), ('class="btn ghost" style="width:100%"' if ghost else 'class="btn" style="width:100%"'),
+                       seo._clean(label), note_html))
+
+        tools = [btn("/dashboard", "🧭 Niche finder dashboard", "admin"),
+                 btn("/tool", "🛠 Marketing suite", "admin"),
+                 btn("/keys", "🔑 Keys & endpoints", "admin")]
+        for pid, meta in amazon._SCRAPER_PROVIDERS.items():
+            tools.append(btn("/keys/" + seo._clean(pid), meta["name"] + " key", pid))
+        tools.append(btn("/admin/logout", "⎋ Log out", "session"))
+        tools_html = "".join(tools)
+
+        site = [btn("/", "🏠 Home / landing", "public"),
+                btn("/sitemap.xml", "🗺 Sitemap", "xml"),
+                btn("/robots.txt", "🤖 Robots", "txt")]
+        key_path = "/%s.txt" % indexnow.key()
+        site.append(btn(key_path, "🔑 IndexNow key file", "txt"))
+        for slug in seo.STATIC_PAGES:
+            site.append(btn("/" + slug, slug.title() + " page", slug))
+        site_html = "".join(site)
+
+        niches = []
+        for n in self._all_niches():
+            kw = n["keyword"]
+            try:
+                slug = seo._slugify(kw)
+            except Exception:
+                slug = "niche"
+            niches.append('<div class="pair">%s%s</div>'
+                          % (btn("/n/" + slug, kw, "review"),
+                             btn("/lp/" + slug, "lp", "landing", ghost=True)))
+        niches_html = "".join(niches) if niches else '<p class="hint">No saved niches yet — mine one on the dashboard.</p>'
+
+        api_html = "".join('<a class="pill" href="%s">%s</a>' % (seo._clean(e), seo._clean(e))
+                           for e in ("/api/settings", "/api/niches", "/api/tools",
+                                     "/api/mine", "/api/search", "/api/autosuggest",
+                                     "/api/indexnow"))
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>Admin — all pages · pstore</title>
+<link rel="stylesheet" href="/style.css">
+<style>.page-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:10px;margin:6px 0 2px}}
+.page-grid .pair{{display:contents}}
+.page-grid a{{margin:0}}
+.page-grid a.btn.ghost{{background:transparent;color:var(--accent);border:1px solid var(--accent);box-shadow:none}}
+.pill{{display:inline-block;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--accent);
+border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4px 3px 0;text-decoration:none;background:#fff}}
+.pill:hover{{border-color:var(--accent)}}
+.api-label{{margin-top:16px}}</style>
+</head><body>
+<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>All pages, <span>one hub.</span></h1>
+<p class="tagline">Every button opens a page of pstore — owner tools first, then the full public site and its APIs.</p></div>
+{self._admin_nav('admin')}
+</header>
+<main>
+<section class="card"><h2>🧭 Admin tools</h2><div class="page-grid">{tools_html}</div></section>
+<section class="card"><h2>🌐 Public site — global pages</h2><div class="page-grid">{site_html}</div></section>
+<section class="card"><h2>🛍 Public site — saved niches</h2>
+<p class="hint">One button per saved niche (top = review page, bottom = its landing page). Open in the same tab — use Back to return.</p>
+<div class="page-grid">{niches_html}</div></section>
+<section class="card"><h2>📡 API endpoints</h2>
+<p class="hint">Read-only links; these answer JSON only when this browser holds a valid admin session.</p>
+<div class="api-label">{api_html}</div></section>
+</main>
+<footer><p>Admin hub — never indexed. <a href="/admin/logout">Log out</a> when done.</p></footer>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
     def do_GET(self):
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path
         q = urllib.parse.parse_qs(parsed.query)
         try:
+            # public auth flow — login/logout never need a session
+            if path == "/admin/login":
+                if self._authed():
+                    return self._redirect_login("/dashboard")
+                return self._login_page()
+            if path == "/admin/logout":
+                return self._logout()
+            if self._needs_admin(path) and not self._authed():
+                if path.startswith("/api/"):
+                    return self._send(401, {"error": "unauthorized", "auth": False})
+                return self._redirect_login(path or "/dashboard")
             # SEO + marketing routes first (crawlable + short links)
             if path == "/robots.txt":
                 return self._send(200, seo.render_robots(), "text/plain; charset=utf-8")
@@ -106,6 +336,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._go(go.group(1))
             if path == "/tool":
                 return self._send(200, open(os.path.join(STATIC, "tool.html"), "rb").read(), "text/html; charset=utf-8")
+            if path == "/admin":
+                return self._admin_page()
             if path == "/keys":
                 return self._keys_page()
             key_provider = re.match(r"^/keys/([a-z0-9_-]+)$", path)
@@ -142,6 +374,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlsplit(self.path)
         try:
+            if parsed.path == "/admin/login":
+                return self._login_post()
+            if parsed.path.startswith("/api/") and not self._authed():
+                return self._send(401, {"error": "unauthorized", "auth": False})
             if parsed.path == "/api/niches":
                 return self._save_niche()
             if parsed.path == "/api/settings":
@@ -154,11 +390,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(n) if n else b"{}"
-        try:
-            return json.loads(raw.decode("utf-8"))
-        except Exception:
-            return {}
+        raw = self.rfile.read(n).decode("utf-8", "replace") if n else ""
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        if ctype == "application/x-www-form-urlencoded":
+            return {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
+        if raw:
+            try:
+                return json.loads(raw)
+            except Exception:
+                return {}
+        return {}
 
     def _search(self, q):
         query = (q.get("q") or [""])[0].strip()
@@ -328,6 +569,7 @@ class Handler(BaseHTTPRequestHandler):
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Keys — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
 <style>.key{{font-family:ui-monospace,Menlo,monospace;font-size:13px;background:var(--bg);border:1px solid var(--border);
 border-radius:10px;padding:10px 12px;margin:0;word-break:break-all;cursor:copy}}
 .sub{{padding:8px 0}}.sub h3{{margin:0 0 6px;font-size:13px;color:var(--muted);font-weight:700}}</style>
@@ -335,7 +577,7 @@ border-radius:10px;padding:10px 12px;margin:0;word-break:break-all;cursor:copy}}
 <header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <div class="hero"><h1>Keys & <span>endpoints.</span></h1>
 <p class="tagline">Every key, URL and endpoint the tools need — click a value to copy it.</p></div>
-<nav><a href="/dashboard" class="primary">🌱 Dashboard</a><a href="/tool">🛠 Tools</a><a href="/keys">🔑 Keys</a></nav>
+{self._admin_nav('keys')}
 </header>
 <main><section class="card"><h2>🔑 Keys & endpoints</h2>{cards}
 <h2>🛢 Scraper provider keys</h2>
@@ -361,6 +603,7 @@ border-radius:10px;padding:10px 12px;margin:0;word-break:break-all;cursor:copy}}
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{meta['name']} key — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
 <style>.key{{font-family:ui-monospace,Menlo,monospace;font-size:13px;background:var(--bg);border:1px solid var(--border);
 border-radius:10px;padding:10px 12px;margin:0;word-break:break-all}}
 .masked{{font-size:18px;font-weight:700;letter-spacing:1px}}</style>
@@ -368,7 +611,7 @@ border-radius:10px;padding:10px 12px;margin:0;word-break:break-all}}
 <header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <div class="hero"><h1>{meta['name']} <span>API key.</span></h1>
 <p class="tagline">Paste your {meta['name']} API key below, or grab a new one at their dashboard.</p></div>
-<nav><a href="/dashboard" class="primary">🌱 Dashboard</a><a href="/tool">🛠 Tools</a><a href="/keys">🔑 Keys</a></nav>
+{self._admin_nav('keys')}
 </header>
 <main>
 <section class="card"><h2>🎯 {meta['name']} ({meta['kind']})</h2>
@@ -442,6 +685,9 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
 
 def main():
     _init()
+    if not _ADMIN_PW_FROM_ENV:
+        print("WARNING: PSTORE_ADMIN_PASSWORD not set — using the default admin password. "
+              "Set it in Render/env before going public.")
     amazon.set_market(os.environ.get("PSTORE_MARKET", amazon.DEFAULT_MARKET))
     amazon.set_tag(os.environ.get("PSTORE_TAG", ""))
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

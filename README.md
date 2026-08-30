@@ -15,6 +15,17 @@ cd app
 python3 server.py            # serves http://localhost:8765
 ```
 Set env: `PSTORE_TAG=youraffiliate-20`, `PSTORE_MARKET=com` (or co.uk/de/ca/in/...).
+Set `PSTORE_ADMIN_PASSWORD` to lock the owner section (dashboard, tools, keys,
+APIs). Without it the server falls back to the default `pstore-admin` and warns.
+
+## Two parts
+- **Public site** — fully crawlable, no login: `/` landing, `/n/<niche>`
+  reviews, `/lp/<niche>` sales pages, about/legal, `sitemap.xml`, `robots.txt`.
+- **Admin section** — password-gated owner tools, reachable from `/admin`
+  (login password = `PSTORE_ADMIN_PASSWORD`). `/admin` shows a button to every
+  page on the site (admin tools + every public page + API endpoints); it also
+  houses the niche finder dashboard (`/dashboard`), marketing suite (`/tool`)
+  and keys page (`/keys`). Admin pages are `noindex` and never crawlable.
 
 ## What it does
 - **Product search / display** — keyless: direct Amazon page parse, or plug in

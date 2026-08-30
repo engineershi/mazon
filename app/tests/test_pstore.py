@@ -488,6 +488,8 @@ class TestRoutes(unittest.TestCase):
         shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "..", "pstore.db"), cls.db)
         os.environ["PSTORE_DB"] = cls.db
+        os.environ["PSTORE_ADMIN_PASSWORD"] = "test-pass-123"
+        cls.password = "test-pass-123"
         import server
         importlib.reload(server)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
@@ -495,6 +497,10 @@ class TestRoutes(unittest.TestCase):
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.thread.start()
         cls.urlopen = staticmethod(urlreq.urlopen)
+        status, location, set_cookie, body = cls._raw("/admin/login", "POST",
+                                                      body=b"password=%s" % cls.password.encode())
+        assert status == 200, (status, body)
+        cls.cookie = set_cookie.split(";")[0] if set_cookie else ""
 
     @classmethod
     def tearDownClass(cls):
@@ -504,10 +510,32 @@ class TestRoutes(unittest.TestCase):
         if os.path.exists(cls.db):
             os.unlink(cls.db)
 
-    def _get(self, path):
+    @classmethod
+    def _raw(cls, path, method="GET", body=None, cookie=None):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", cls.PORT, timeout=5)
+        headers = {}
+        if cookie:
+            headers["Cookie"] = cookie
+        if body is not None:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        status = resp.status
+        location = resp.getheader("Location")
+        set_cookie = resp.getheader("Set-Cookie")
+        data = resp.read()
+        conn.close()
+        return status, location, set_cookie, data
+
+    def _get(self, path, cookie=None):
+        if cookie is None:
+            cookie = self.cookie
         try:
-            with self.urlopen("http://127.0.0.1:%d%s" % (self.PORT, path),
-                              timeout=5) as r:
+            req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.PORT, path))
+            if cookie:
+                req.add_header("Cookie", cookie)
+            with self.urlopen(req, timeout=5) as r:
                 return r.status, r.headers.get("Content-Type"), r.read()
         except Exception as exc:
             return getattr(exc, "code", None), None, b""
@@ -529,6 +557,7 @@ class TestRoutes(unittest.TestCase):
         st, ctype, body = self._get("/sitemap.xml")
         self.assertEqual(st, 200)
         self.assertIn(b"<loc>", body)
+        self.assertNotIn(b"/admin</loc>", body)
         for page in seo.STATIC_PAGES:
             self.assertIn(("/%s</loc>" % page).encode(), body)
 
@@ -590,6 +619,76 @@ class TestRoutes(unittest.TestCase):
     def test_keys_unknown_provider_404(self):
         st, _, _ = self._get("/keys/nope")
         self.assertEqual(st, 404)
+
+    def test_admin_pages_redirect_to_login_unauth(self):
+        for route in ("/dashboard", "/tool", "/keys", "/keys/scraperapi", "/admin"):
+            st, location, _, _ = self._raw(route)
+            self.assertEqual(st, 302, route)
+            self.assertTrue(location.startswith("/admin/login"), (route, location))
+
+    def test_admin_apis_reject_unauth(self):
+        for route in ("/api/settings", "/api/niches", "/api/indexnow", "/api/tools"):
+            st, _, _, body = self._raw(route)
+            self.assertEqual(st, 401, route)
+            self.assertIn(b"unauthorized", body)
+
+    def test_login_wrong_password(self):
+        st, _, set_cookie, body = self._raw(
+            "/admin/login", "POST", body=b"password=nope")
+        self.assertEqual(st, 200)
+        payload = json.loads(body)
+        self.assertFalse(payload["ok"])
+        self.assertIsNone(set_cookie)
+
+    def test_login_success_sets_cookie(self):
+        st, _, set_cookie, body = self._raw(
+            "/admin/login", "POST", body=b"password=test-pass-123")
+        self.assertEqual(st, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        self.assertTrue(set_cookie.startswith("pstore_admin="))
+        cookie = set_cookie.split(";")[0]
+        st, _, _ = self._get("/dashboard", cookie=cookie)
+        self.assertEqual(st, 200)
+
+    def test_login_supports_json_next_route(self):
+        req = urllib.request.Request(
+            "http://127.0.0.1:%d/admin/login" % self.PORT,
+            data=json.dumps({"password": "test-pass-123", "next": "/tool"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with self.urlopen(req, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            self.assertTrue(json.loads(r.read())["ok"])
+            self.assertTrue(r.headers.get("Set-Cookie", "").startswith("pstore_admin="))
+
+    def test_admin_page_lists_every_page(self):
+        st, ctype, body = self._get("/admin")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn('name="robots" content="noindex,nofollow"', html)
+        for needle in ("/dashboard", "/tool", "/keys", "/keys/scraperapi",
+                       "/n/keto-snacks", "/lp/keto-snacks", "/about", "/contact",
+                       "/sitemap.xml", "/robots.txt", "/%s.txt" % indexnow.key(),
+                       "/api/settings", "/api/tools", "All pages"):
+            self.assertIn(needle, html, needle)
+
+    def test_logout_invalidates_session(self):
+        st, _, set_cookie, body = self._raw(
+            "/admin/login", "POST", body=b"password=test-pass-123")
+        cookie = set_cookie.split(";")[0]
+        st_dash, _, _, _ = self._raw("/dashboard", cookie=cookie)
+        self.assertEqual(st_dash, 200)
+        st_logout, location, _, _ = self._raw("/admin/logout", cookie=cookie)
+        self.assertEqual(st_logout, 302)
+        self.assertEqual(location, "/admin/login")
+        st_after, _, _, _ = self._raw("/dashboard", cookie=cookie)
+        self.assertEqual(st_after, 302)  # session gone -> back to login
+
+    def test_public_pages_need_no_cookie(self):
+        for route in ("/", "/n/keto-snacks", "/about", "/privacy",
+                      "/sitemap.xml", "/robots.txt", "/%s.txt" % indexnow.key(),
+                      "/lp/keto-snacks"):
+            st, _, _ = self._get(route, cookie="")
+            self.assertEqual(st, 200, route)
 
 
 if __name__ == "__main__":
