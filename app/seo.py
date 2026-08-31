@@ -22,6 +22,33 @@ BASE_URL = os.environ.get("PSTORE_URL", "https://pstore-gxbv.onrender.com").rstr
 
 # Optional Google Search Console ownership token — emits <meta name="google-site-verification">.
 GOOGLE_SITE_VERIFICATION = os.environ.get("PSTORE_GOOGLE_SITE_VERIFICATION", "")
+# Organization identity shown in JSON-LD (schema.org Organization / Person).
+ORG_NAME = SITE_NAME
+ORG_URL = BASE_URL
+CONTACT_URL = BASE_URL + "/contact"
+AUTHOR_NAME = "pstore Editorial Team"
+
+
+def _org_jsonld():
+    """Small Organization node referenced by other graphs (WebSite/Article)."""
+    return {
+        "@type": "Organization", "name": SITE_NAME,
+        "url": ORG_URL, "logo": ORG_URL + "/og/home",
+        "contactPoint": {"@type": "ContactPoint", "url": CONTACT_URL},
+    }
+
+
+def _website_jsonld():
+    return {
+        "@context": "https://schema.org", "@type": "WebSite",
+        "name": SITE_NAME, "url": ORG_URL,
+        "potentialAction": {
+            "@type": "SearchAction",
+            "target": {"@type": "EntryPoint",
+                       "urlTemplate": ORG_URL + "/n/{search_term_string}"},
+            "query-input": "required name=search_term_string",
+        },
+    }
 
 
 def _clean(s):
@@ -59,7 +86,7 @@ def _product_graph(items):
     return graph
 
 
-def _head(title, desc, canonical, path, jsonld=None, og_image=None):
+def _head(title, desc, canonical, path, jsonld=None, og_image=None, noindex=False):
     img_html = ""
     if og_image:
         abs_img = og_image if str(og_image).startswith("http") else BASE_URL + og_image
@@ -67,6 +94,7 @@ def _head(title, desc, canonical, path, jsonld=None, og_image=None):
                     f'<meta name="twitter:image" content="{_clean(abs_img)}">\n')
     gsc = (f'<meta name="google-site-verification" content="{_clean(GOOGLE_SITE_VERIFICATION)}">\n'
            if GOOGLE_SITE_VERIFICATION else "")
+    rob = ('<meta name="robots" content="noindex,nofollow">\n' if noindex else "")
     head = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -74,7 +102,7 @@ def _head(title, desc, canonical, path, jsonld=None, og_image=None):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_clean(title)} | {SITE_NAME}</title>
 <meta name="description" content="{_clean(desc)}">
-<link rel="canonical" href="{_clean(BASE_URL + path)}">
+{rob}<link rel="canonical" href="{_clean(BASE_URL + path)}">
 <meta property="og:type" content="website">
 <meta property="og:title" content="{_clean(title)}">
 <meta property="og:description" content="{_clean(desc)}">
@@ -102,6 +130,10 @@ def _footer():
     <a href="/sitemap.xml">Sitemap</a>
   </p>
 </footer>
+<div class="totop" aria-hidden="false">
+  <a href="#top" aria-label="Back to top">&uarr;</a>
+</div>
+<script src="/ui.js" defer></script>
 </body>
 </html>
 """.encode("utf-8")
@@ -113,7 +145,7 @@ CONTACT_EMAIL = os.environ.get("PSTORE_CONTACT", "hello@pstore-gxbv.onrender.com
 
 
 def _page_header():
-    return f"""<header><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
+    return f"""<header id="top"><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
 <p class="tagline">{_clean(SITE_DESC)}</p>
 <nav><a href="/">🏠 Home</a><a href="/about">About</a><a href="/contact">Contact</a></nav></header>
 """
@@ -279,15 +311,21 @@ def courier_script():
 def render_landing(saved_niches):
     """Storefront-style home: value prop, how-we-pick, niche index, FAQ."""
     jsonld = {
-        "@context": "https://schema.org", "@type": "CollectionPage",
-        "name": SITE_NAME, "description": SITE_DESC,
+        "@context": "https://schema.org", "@graph": [
+            {"@type": "WebSite", "name": SITE_NAME, "url": BASE_URL,
+             "potentialAction": {"@type": "SearchAction",
+                                 "target": {"@type": "EntryPoint",
+                                            "urlTemplate": BASE_URL + "/n/{search_term_string}"},
+                                 "query-input": "required name=search_term_string"}},
+            {"@type": "Organization", "name": SITE_NAME, "url": BASE_URL},
+        ],
     }
     head = _head(SITE_DESC, SITE_DESC, "/", "/", jsonld=jsonld)
     links = "".join(
         f'<div class="product"><h4><a href="/n/{_slugify(n["keyword"])}">{_clean(n["keyword"])}</a></h4></div>'
         for n in (saved_niches or [])[:48])
     body = f"""
-<header><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
+<header id="top"><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
 <p class="tagline">{_clean(SITE_DESC)}</p></header>
 <main data-niche="home" data-source="home">
 <section class="card"><h1>Find the best <span style="color:var(--accent)">Amazon picks</span>, by niche.</h1>
@@ -351,12 +389,14 @@ def render_niche(keyword, niche, saved_niches=None):
     graph = _product_graph(items)
     if best:
         graph.append(editorial.faq_jsonld(keyword, best))
-    graph.append(editorial.breadcrumb_jsonld(keyword))
+        graph.append(editorial.breadcrumb_jsonld(keyword))
+    graph.append(_org_jsonld())
     jsonld = {"@context": "https://schema.org", "@graph": graph}
     og = BASE_URL + "/og/" + _slugify(keyword)
-    head = _head(title, desc, canonical, canonical, jsonld=jsonld, og_image=og)
+    head = _head(title, desc, canonical, canonical, jsonld=jsonld, og_image=og,
+                 noindex=not bool(items))
     body = f"""
-<header><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
+<header id="top"><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
 <nav><a href="/">🏠 Home</a><a href="/about">About</a><a href="/disclosure">Disclosure</a></nav></header>
 <main data-niche="{_clean(_slugify(keyword))}" data-source="niche">
 <div class="card">
@@ -409,3 +449,83 @@ def render_sitemap(entries):
 
 def render_robots():
     return f"User-agent: *\nAllow: /\nSitemap: {BASE_URL}/sitemap.xml\n".encode("utf-8")
+
+
+# ------------------------------------------------------------------ audit
+# Structural, self-serve SEO audit used by /admin/seo and /api/seo-audit.
+# Everything is computed from the actual page a niche would render, so the
+# checkboxes reflect the live site rather than aspirational settings.
+
+def _meta_lengths(items):
+    """Title + description character counts for a niche page (rule of thumb:
+    titles 30–60, descriptions 70–160)."""
+    keyword = (items or {}).get("keyword") or ""
+    title = "Best %s to Buy — Ranked Picks From Live Amazon Data" % keyword
+    desc = (f"See the best {keyword}, ranked. We score live Amazon listings on "
+            f"rating, review volume and price, then show you which to buy and "
+            f"why — with honest pros and cons for each.")
+    return len(title), len(desc)
+
+
+def _words(items):
+    """Rough prose word count for the niche page body (audit only)."""
+    prods = (items or {}).get("products") or []
+    kw = (items or {}).get("keyword") or ""
+    if not prods:
+        return 0
+    n = len(editorial.intro(kw, prods).split()) + 120
+    best = editorial.best_pick(prods)
+    n += editorial.reading_minutes(kw, prods, best) * 190
+    return n
+
+
+def _slugify_safe(text):
+    try:
+        return _slugify(text)
+    except Exception:
+        return "niche"
+
+
+def audit_niche(niche):
+    """One row of the SEO audit for a saved niche (no network)."""
+    kw = niche.get("keyword") or ""
+    slug = _slugify_safe(kw)
+    prods = niche.get("products") or []
+    best = editorial.best_pick(prods) if prods else None
+    tl, dl = _meta_lengths(niche)
+    wc = _words(niche)
+    checks = {
+        "has_products": bool(prods),
+        "title_ok": 30 <= tl <= 60,
+        "desc_ok": 70 <= dl <= 160,
+        "og_image": bool(best),
+        "schema": bool(prods),
+        "word_count": wc >= 300,
+    }
+    return {
+        "keyword": kw, "slug": slug,
+        "url": "/n/" + slug,
+        "products": len(prods),
+        "top_asin": (best or {}).get("asin") or "",
+        "title_len": tl, "desc_len": dl,
+        "words": wc,
+        "checks": checks,
+        "indexable": bool(prods) and checks["title_ok"] and checks["desc_ok"],
+    }
+
+
+def audit_sites(niches):
+    """Global audit summary for the /admin/seo header strip + config status."""
+    rows = [audit_niche(n) for n in (niches or [])]
+    passable = sum(1 for r in rows if r["indexable"])
+    return {
+        "niches": rows,
+        "count": len(rows),
+        "indexable": passable,
+        "needs_work": len(rows) - passable,
+        "site_url": BASE_URL,
+        "google_verification": bool(GOOGLE_SITE_VERIFICATION),
+        "sitemap": "/sitemap.xml",
+        "robots": "/robots.txt",
+        "org": {"name": ORG_NAME, "url": ORG_URL},
+    }

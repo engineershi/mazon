@@ -42,6 +42,7 @@ import niche
 import oauth
 import seo
 import security
+import sem
 import social
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -65,6 +66,9 @@ _SESSIONS = {}  # token -> monotonic expiry
 
 _EBOOKS = {}  # keyword -> build_ebook() dict, LRU-ish (capped below)
 _SOCIAL_WEBHOOK = os.environ.get("SOCIAL_WEBHOOK", "")  # optional real-posting hook
+
+_TOTOP = ('<div class="totop"><a href="#top" aria-label="Back to top">&uarr;</a></div>'
+          '<script src="/ui.js" defer></script>')
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 
@@ -450,6 +454,8 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 {chip('/admin/ebooks', '📕 Ebooks', 'ebooks')}
 {chip('/admin/analytics', '📊 Analytics', 'analytics')}
 {chip('/admin/social', '📣 Social', 'social')}
+{chip('/admin/sem', '🎯 SEM', 'sem')}
+{chip('/admin/seo', '🔍 SEO', 'seo')}
 {chip('/admin', '🗺 All pages', 'admin', accent=True)}
 {chip('/admin/logout', '⎋ Logout', 'logout')}
 </nav>"""
@@ -469,7 +475,9 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
                  btn("/admin/emails", "📧 Email capture & auto-send", "opt-in"),
                  btn("/admin/ebooks", "📕 AI ebook generator", "PDF lead magnet"),
                  btn("/admin/analytics", "📊 Click tracking & analytics", "beacons"),
-                 btn("/admin/social", "📣 Social publishing", "tracked posts")]
+                 btn("/admin/social", "📣 Social publishing", "tracked posts"),
+                 btn("/admin/sem", "🎯 Search funnel (SEM)", "long-tail growth"),
+                 btn("/admin/seo", "🔍 SEO audit", "indexability + schema")]
         for pid, meta in amazon._SCRAPER_PROVIDERS.items():
             tools.append(btn("/keys/" + seo._clean(pid), meta["name"] + " key", pid))
         tools.append(btn("/admin/logout", "⎋ Log out", "session"))
@@ -501,7 +509,8 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
                                      "/api/tools/launch",
                                      "/api/mine", "/api/search", "/api/autosuggest",
                                      "/api/indexnow", "/api/subscribers", "/api/sequence/send",
-                                     "/api/social", "/api/social/publish"))
+                                     "/api/social", "/api/social/publish",
+                                     "/api/sem", "/api/seo-audit"))
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>Admin — all pages · pstore</title>
@@ -515,7 +524,7 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
 .pill:hover{{border-color:var(--accent)}}
 .api-label{{margin-top:16px}}</style>
 </head><body>
-<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <div class="hero"><h1>All pages, <span>one hub.</span></h1>
 <p class="tagline">Every button opens a page of pstore — owner tools first, then the full public site and its APIs.</p></div>
 {self._admin_nav('admin')}
@@ -531,6 +540,7 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
 <div class="api-label">{api_html}</div></section>
 </main>
 <footer><p>Admin hub — never indexed. <a href="/admin/logout">Log out</a> when done.</p></footer>
+{_TOTOP}
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
@@ -632,7 +642,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             if go:
                 return self._go(go.group(1))
             if path == "/tool":
-                return self._send(200, open(os.path.join(STATIC, "tool.html"), "rb").read(), "text/html; charset=utf-8")
+                with open(os.path.join(STATIC, "tool.html"), "rb") as fh:
+                    return self._send(200, fh.read(), "text/html; charset=utf-8")
             if path == "/admin":
                 return self._admin_page()
             if path == "/admin/ebooks/pdf":
@@ -645,6 +656,14 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_analytics()
             if path == "/admin/social":
                 return self._admin_social(q)
+            if path == "/admin/sem":
+                return self._admin_sem(q)
+            if path == "/admin/seo":
+                return self._admin_seo()
+            if path == "/api/sem":
+                return self._sem_api(q)
+            if path == "/api/seo-audit":
+                return self._seo_audit_api()
             if path == "/api/social":
                 return self._social_api(q)
             if path == "/keys":
@@ -669,6 +688,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                                       "application/javascript; charset=utf-8")
             if path == "/table-flow.js":
                 with open(os.path.join(STATIC, "table-flow.js"), "rb") as fh:
+                    return self._send(200, fh.read(),
+                                      "application/javascript; charset=utf-8")
+            if path == "/ui.js":
+                with open(os.path.join(STATIC, "ui.js"), "rb") as fh:
                     return self._send(200, fh.read(),
                                       "application/javascript; charset=utf-8")
             if path == "/api/settings":
@@ -871,12 +894,17 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
         entries = [("/", "2026-08-28")]
         for page in seo.STATIC_PAGES:
             entries.append(("/" + page, "2026-08-28"))
-        for n in self._all_niches():
+        with _lock:
+            conn = _db()
+            rows = conn.execute("SELECT keyword, created_at FROM niches").fetchall()
+            conn.close()
+        for r in rows:
             try:
-                kw = seo._slugify(n["keyword"])
+                kw = seo._slugify(r["keyword"])
             except Exception:
                 kw = "niche"
-            entries.append((f"/n/{kw}", "2026-08-28"))
+            lm = (r["created_at"] or "")[:10] or "2026-08-28"
+            entries.append((f"/n/{kw}", lm))
         return seo.render_sitemap(entries)
 
     def _landing(self):
@@ -974,7 +1002,7 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
 border-radius:10px;padding:10px 12px;margin:0;word-break:break-all;cursor:copy}}
 .sub{{padding:8px 0}}.sub h3{{margin:0 0 6px;font-size:13px;color:var(--muted);font-weight:700}}</style>
 </head><body>
-<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <div class="hero"><h1>Keys & <span>endpoints.</span></h1>
 <p class="tagline">Every key, URL and endpoint the tools need — click a value to copy it.</p></div>
 {self._admin_nav('keys')}
@@ -984,6 +1012,7 @@ border-radius:10px;padding:10px 12px;margin:0;word-break:break-all;cursor:copy}}
 <p class="hint">One short page per provider — see status, open its dashboard, paste or clear the key:</p>{prov_cards}
 </section></main>
 <footer><p>Keep the IndexNow key secret — it proves who owns the site to the search engines.</p></footer>
+{_TOTOP}
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
@@ -1371,7 +1400,7 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
 .soc-kit .key {{ margin:8px 0 0; word-break:break-all; }}
 </style>
 </head><body>
-<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <div class="hero"><h1>One-click <span>social publishing.</span></h1>
 <p class="tagline">Every post is pre-written, UTM-tracked and points back to the niche landing page — publish here, then watch clicks land in Analytics.</p></div>
 {self._admin_nav('social')}
@@ -1392,6 +1421,7 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
 </main>
 <footer><p>Posts only use real scraped data (title, price, stars, reviews) — no fabricated claims. Landing page carries the courier beacon, so every tap is attributed.</p></footer>
 <script src="/table-flow.js" defer></script>
+{_TOTOP}
 <script>
 function $(id){{return document.getElementById(id);}}
 async function pub(btn){{
@@ -1417,6 +1447,184 @@ document.addEventListener("click", (e)=>{{
   }}
 }});
 </script>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+
+# ------------------------------------------------------------------ SEM / SEO suite
+    def _seo_audit_payload(self):
+        """Refresh the audit off the current saved niches (no network)."""
+        return seo.audit_sites(self._all_niches())
+
+    def _admin_seo(self):
+        """SEO audit hub: indexability of every saved niche + site-level config."""
+        audit = self._seo_audit_payload()
+        strip = (
+            '<div class="feature"><h3>%d</h3><p class="hint">niches saved</p></div>'
+            '<div class="feature"><h3>%d</h3><p class="hint">fully indexable</p></div>'
+            '<div class="feature"><h3>%d</h3><p class="hint">need work</p></div>'
+            '<div class="feature"><h3>%s</h3><p class="hint">Search Console token</p></div>'
+            % (audit["count"], audit["indexable"], audit["needs_work"],
+               "✓ set" if audit["google_verification"] else "—"))
+        rows = ""
+        for r in audit["niches"]:
+            c = r["checks"]
+            def mark(ok):
+                return ('<span class="badge" style="background:#e6ffe8;color:#1e8e3e">ok</span>'
+                        if ok else '<span class="badge" style="background:#ffe6e6;color:#c0392b">fix</span>')
+            rows += (
+                "<tr class='%s'>"
+                "<td class='ct'><a href='%s'>%s</a></td>"
+                "<td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                % ("top" if r["indexable"] else "",
+                   seo._clean(r["url"]), seo._clean(r["keyword"]),
+                   r["products"],
+                   mark(c.get("title_ok", False)), mark(c.get("desc_ok", False)),
+                   mark(c.get("schema", False)), mark(c.get("og_image", False)),
+                   mark(c.get("word_count", False)),
+                   ("indexable" if r["indexable"] else "noindex")))
+        if not rows:
+            rows = "<tr><td colspan='8' class='hint'>No saved niches yet — mine one on the dashboard.</td></tr>"
+        gsc_state = ('<span style="color:#1e8e3e">Configured</span> — the site emits your google-site-verification meta.' if audit["google_verification"]
+                     else '<span style="color:#c0392b">Not set</span> — add <code>PSTORE_GOOGLE_SITE_VERIFICATION</code> to prove ownership to Search Console.')
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SEO audit — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+<style>.audit-note{{max-width:720px}}</style>
+</head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>SEO <span>audit.</span></h1>
+<p class="tagline">Every saved niche, checked against the same rules its live page is served with — title/description length, structured data, share image and indexability.</p></div>
+{self._admin_nav('seo')}
+</header>
+<main>
+<section class="card"><h2>🔍 Site health</h2>
+<div class="row" style="align-items:stretch">{strip}</div>
+<p class="hint" style="margin-top:10px">Search Console owner token: {gsc_state}</p>
+<p class="hint" style="margin-top:6px">Sitemap <a href="{seo._clean(audit['sitemap'])}">{seo._clean(audit['sitemap'])}</a> · Robots <a href="{seo._clean(audit['robots'])}">{seo._clean(audit['robots'])}</a> · Canonical base <code>{seo._clean(audit['site_url'])}</code></p>
+</section>
+<section class="card"><h2>📄 Per-niche checks</h2>
+<p class="hint" style="margin-top:-4px">Green = passes the live-page rule. Red = the page is served with that gap today. Titles 30–60 chars, descriptions 70–160.</p>
+<div class="table-wrap"><table class="plain"><thead><tr>
+<th>Niche</th><th>Products</th><th>Title</th><th>Desc</th><th>Schema</th><th>Share img</th><th>Word count</th><th>Status</th>
+</tr></thead><tbody>{rows}</tbody></table></div></section>
+</main>
+<footer><p>Audit reflects the live pages, not aspirational settings. Add PSTORE_GOOGLE_SITE_VERIFICATION to link Search Console ownership.</p></footer>
+<script src="/table-flow.js" defer></script>
+{_TOTOP}
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _seo_audit_api(self):
+        return self._send(200, self._seo_audit_payload())
+
+    def _sem_payload(self, keyword):
+        keyword = (keyword or "").strip()
+        if not keyword:
+            return {"keyword": "", "error": "keyword required", "brief": None}
+        niche = self._saved_niche(keyword)
+        if not niche:
+            return {"keyword": keyword, "error": "no saved niche matches that keyword", "brief": None}
+        audit_row = seo.audit_niche(niche)
+        entries = [seo._slugify(n["keyword"]) for n in self._all_niches()]
+        return sem.brief(keyword, niche, seo.BASE_URL,
+                         audit_row=audit_row, indexnow_key=indexnow.key(),
+                         sitemap_entries=entries)
+
+    def _sem_api(self, q):
+        keyword = (q.get("keyword") or [""])[0].strip()
+        return self._send(200, self._sem_payload(keyword))
+
+    def _admin_sem(self, q):
+        niches = [n["keyword"] for n in self._all_niches()]
+        keyword = (q.get("keyword") or [""])[0].strip() or (niches[0] if niches else "")
+        opts = "".join('<option value="%s"%s>%s</option>' % (seo._clean(k),
+                        ' selected' if k == keyword else "", seo._clean(k)) for k in niches)
+        if not keyword:
+            return self._send(200, ("""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SEM — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow"></head><body>
+<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Search <span>funnel.</span></h1>
+<p class="tagline">Turn a review page into a search funnel — long-tail expansion, intent brief, people-also-ask and a performance checklist.</p></div>
+{self._admin_nav('sem')}</header><main>
+<section class="card"><h2>🎯 Search-engine marketing</h2>
+<p class="hint">No saved niches yet — mine one on the dashboard first.</p></section></main></body></html>""").encode("utf-8"), "text/html; charset=utf-8")
+        brief = self._sem_payload(keyword)
+        info = brief or {}
+        if not info:
+            return self._send(200, ("<h3>%s</h3><p>%s</p>" % (seo._clean(keyword),
+                               seo._clean(brief.get("error") or "no brief"))).encode("utf-8"),
+                              "text/html; charset=utf-8")
+
+        lt = info.get("longtail") or []
+        intent = info.get("intent") or {}
+        paa = info.get("paa") or []
+        perf = info.get("performance") or []
+        page = info.get("page") or {}
+
+        def chip(t, s):
+            return '<span class="badge %s">%s</span>' % (s, t)
+        lt_html = "".join(
+            '<div class="sub"><h3>%s %s</h3>'
+            '<p class="key">/n/%s</p></div>'
+            % (seo._clean(g["phrase"]), chip(g["intent"],
+                 "source" if g["intent"] == "target" else "demand"),
+               seo._clean(g["slug"])) for g in lt) or '<p class="hint">No suggestions yet.</p>'
+        fixes_html = "".join(
+            '<li><b>%s</b> — %s</li>' % (seo._clean(f["label"]), seo._clean(f["detail"]))
+            for f in (intent.get("fixes") or []))
+        paa_html = "".join(
+            ('<details class="faq"><summary>%s</summary>'
+             '<p>%s</p></details>' % (seo._clean(qa["question"]),
+                                      seo._clean(qa["answer"])))
+            for qa in paa) or '<p class="hint">No questions yet.</p>'
+        perf_html = "".join(
+            '<div class="sub"><h3>✓ %s</h3><p class="who">%s</p></div>'
+            % (seo._clean(p["label"]), seo._clean(p["detail"])) for p in perf)
+        page_state = ("<b>in sitemap</b>" if page.get("sitemap") else "not in sitemap") + \
+            (" · <b>IndexNow key ready</b>" if page.get("indexnow_key") else " · IndexNow key missing")
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SEM — {seo._clean(keyword)} · pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+<style>.key{{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin:4px 0 0;word-break:break-all}}</style>
+</head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Search <span>funnel.</span></h1>
+<p class="tagline">Turn the “best {seo._clean(keyword)}” review page into a search funnel — long-tail expansion, intent brief, people-also-ask and a performance checklist.</p></div>
+{self._admin_nav('sem')}
+</header>
+<main>
+<section class="card"><h2>🎯 Choose a niche</h2>
+<form class="row" method="get" action="/admin/sem">
+  <label>Niche <select name="keyword" onchange="this.form.submit()">{opts}</select></label>
+</form></section>
+<section class="card"><h2>🔎 Intent brief</h2>
+<p class="hint">The one job of this page, stated plainly, with concrete copy targets.</p>
+<div class="sub"><h3>Primary question</h3><p class="who">{seo._clean(intent.get('primary_question',''))}</p></div>
+<div class="sub"><h3>Search intent</h3><p class="who">{seo._clean(intent.get('search_intent',''))}</p></div>
+<div class="sub"><h3>H1 target</h3><p class="key">{seo._clean(intent.get('h1_target',''))}</p></div>
+<div class="sub"><h3>Meta target</h3><p class="key">{seo._clean(intent.get('meta_target',''))}</p></div>
+<div class="sub"><h3>Quick wins</h3><ul>{fixes_html}</ul></div></section>
+<section class="card"><h2>🗂 Long-tail expansion</h2>
+<p class="hint">Related searches (from Amazon's autosuggest) the page should ideally cover — view each as its own crawlable URL.</p>
+{lt_html}</section>
+<section class="card"><h2>❓ People also ask</h2>
+<p class="hint">Copy-ready FAQ prompts in SERP phrasing. <code>__blank__</code> answers are yours to fill in with honest copy.</p>
+{paa_html}</section>
+<section class="card"><h2>⚡ Performance checklist</h2>
+{perf_html}</section>
+<section class="card"><h2>🌐 Live URL status</h2>
+<p class="hint" style="margin-top:-4px">Page status: {page_state}</p>
+<div class="sub"><h3>Canonical</h3><p class="key"><a href="{seo._clean(page.get('canonical',''))}">{seo._clean(page.get('canonical',''))}</a></p></div>
+<div class="sub"><h3>Share image</h3><p class="key"><a href="{seo._clean(page.get('og_image',''))}">{seo._clean(page.get('og_image',''))}</a></p></div>
+<div class="sub"><h3>Landing page</h3><p class="key"><a href="{seo._clean(page.get('landing_url',''))}">{seo._clean(page.get('landing_url',''))}</a></p></div></section>
+</main>
+<footer><p>The funnel grows the keyword pool around each review page. All suggestions are honest — we never assert traffic or rankings we can't observe.</p></footer>
+{_TOTOP}
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
@@ -1636,7 +1844,7 @@ document.addEventListener("click", (e)=>{{
 <title>Emails — pstore</title><link rel="stylesheet" href="/style.css">
 <meta name="robots" content="noindex,nofollow">
 </head><body>
-<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <div class="hero"><h1>Email <span>capture &amp; auto-send.</span></h1>
 <p class="tagline">The opt-in widget on every niche page feeds this list. Send the next email in the 5-step buyer sequence to active subscribers.</p></div>
 {self._admin_nav('emails')}
@@ -1661,6 +1869,7 @@ document.addEventListener("click", (e)=>{{
 </main>
 <footer><p>Emails only ever use real scraped data (title, price, stars, reviews) plus {{first_name}} — and always carry an unsubscribe link.</p></footer>
 <script src="/table-flow.js" defer></script>
+{_TOTOP}
 <script>
 function $(id){{return document.getElementById(id);}}
 $("send").onclick = async () => {{
@@ -1745,7 +1954,7 @@ $("send").onclick = async () => {{
 <title>Ebooks — pstore</title><link rel="stylesheet" href="/style.css">
 <meta name="robots" content="noindex,nofollow">
 </head><body>
-<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <div class="hero"><h1>AI ebook <span>lead magnets.</span></h1>
 <p class="tagline">Turn any saved niche into a designed PDF guide in one click — pure stdlib renderer, template copy (AI when a key is set).</p></div>
 {self._admin_nav('ebooks')}
@@ -1829,6 +2038,7 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
   }};
 }})();
 </script>
+{_TOTOP}
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
@@ -1881,7 +2091,7 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
 <title>Analytics — pstore</title><link rel="stylesheet" href="/style.css">
 <meta name="robots" content="noindex,nofollow">
 </head><body>
-<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <div class="hero"><h1>Click <span>analytics.</span></h1>
 <p class="tagline">Privacy-first: IPs are stored as one-way hashes, never raw. See which niches and sources actually earn clicks.</p></div>
 {self._admin_nav('analytics')}
@@ -1906,6 +2116,7 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
 </main>
 <footer><p>Clicks are counted server-side when a visitor's browser pings /api/track before Amazon loads. Referrers are truncated; raw IPs are never stored.</p></footer>
 <script src="/table-flow.js" defer></script>
+{_TOTOP}
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 

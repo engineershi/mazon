@@ -524,6 +524,37 @@ table.plain th { color: var(--muted); font-size: 12px; letter-spacing: 0.3px; wh
 table.plain tr:hover td { background: #fff8f1; }
 .book-preview { margin-top: 10px; }
 .book-preview .card { box-shadow: none; }
+
+/* ---------- scrolling hygiene (clean, professional) ---------- */
+/* One consistent, slim scrollbar across the whole site (public + admin). */
+* { scrollbar-width: thin; scrollbar-color: var(--accent) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(124, 92, 255, 0.45); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--accent); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* Sticky top nav so the toolbar stays reachable while a long list scrolls. */
+nav { position: sticky; top: 0; z-index: 50; background: rgba(255, 247, 236, 0.92); backdrop-filter: blur(6px); padding: 9px 4px; margin-top: 14px; border-radius: 18px; }
+body > header nav { margin-left: 0; margin-right: 0; }
+/* Keep anchor targets clear of the sticky nav on in-page jumps. */
+[id] { scroll-margin-top: 74px; }
+
+/* Back-to-top pill — fixed, unobtrusive, keyboard-friendly. */
+.totop {
+  position: fixed; right: 18px; bottom: 18px; z-index: 60;
+  opacity: 0; transform: translateY(8px); pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.totop a {
+  display: grid; place-items: center;
+  width: 46px; height: 46px; border-radius: 999px;
+  background: linear-gradient(135deg, var(--accent), #ff873c);
+  color: #fff; font-size: 20px; font-weight: 800; line-height: 1;
+  text-decoration: none; box-shadow: 0 8px 20px rgba(255, 107, 44, 0.35);
+}
+.totop.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+body:has(.totop.show) > header:first-of-type { scroll-margin-top: 0; }
+
 @media (max-width: 560px) {
   .pick-head h3 { flex-basis: 100%; }
 }
