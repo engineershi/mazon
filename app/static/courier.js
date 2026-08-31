@@ -19,6 +19,7 @@
     if (!form.classList || !form.classList.contains("courier")) return;
     ev.preventDefault();
     var email = form.querySelector("[name=email]");
+    var first_name = form.querySelector("[name=first_name]");
     var keyword = form.querySelector("[name=keyword]");
     var note = form.querySelector(".courier-msg");
     var val = (email && email.value || "").trim();
@@ -32,6 +33,7 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         email: val,
+        first_name: (first_name && first_name.value || "").trim(),
         keyword: (keyword && keyword.value) || slug,
         source: (main && main.dataset.source) || "niche"
       })

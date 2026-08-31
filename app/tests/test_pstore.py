@@ -595,7 +595,7 @@ class TestRoutes(unittest.TestCase):
         st, ctype, body = self._get("/")
         self.assertEqual(st, 200)
         html = body.decode("utf-8", "replace")
-        self.assertIn("Explore niches", html)
+        self.assertIn("Explore the niches", html)
         self.assertNotIn('id="settings"', html)
 
     def test_dashboard_route_has_admin_menu(self):

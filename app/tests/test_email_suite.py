@@ -347,6 +347,81 @@ class TestEmailSuite(unittest.TestCase):
         finally:
             mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
 
+    def test_sequence_send_honors_limit(self):
+        saved = (mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD)
+        mailer.SMTP_HOST = "smtp.test.local"
+        mailer.SMTP_USER = "u@example.com"
+        mailer.SMTP_PASSWORD = "pw"
+        for i in range(4):
+            self._subscribe("lim%d@example.com" % i)
+        try:
+            st, _, _, data = self._raw(
+                "/api/sequence/send", "POST", body='{"dry_run":true,"limit":2}',
+                headers={"Content-Type": "application/json"}, cookie=self.cookie)
+            p = json.loads(data)
+            self.assertEqual(p["ready"], 2)
+            self.assertEqual(p["limit"], 2)
+            # a real limited send touches exactly the requested count
+            st, _, _, data = self._raw(
+                "/api/sequence/send", "POST", body='{"limit":2}',
+                headers={"Content-Type": "application/json"}, cookie=self.cookie)
+            self.assertEqual(json.loads(data)["sent"], 2)
+            sent_idx = [self._sub("lim%d@example.com" % i)["sent_index"] for i in range(4)]
+            self.assertEqual(sum(1 for s in sent_idx if s == 1), 2)
+        finally:
+            mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
+
+    def test_limit_zero_means_all_up_to_max(self):
+        saved = (mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD)
+        mailer.SMTP_HOST = "smtp.test.local"
+        mailer.SMTP_USER = "u@example.com"
+        mailer.SMTP_PASSWORD = "pw"
+        for i in range(3):
+            self._subscribe("all%d@example.com" % i)
+        try:
+            st, _, _, data = self._raw(
+                "/api/sequence/send", "POST", body='{"dry_run":true,"limit":0}',
+                headers={"Content-Type": "application/json"}, cookie=self.cookie)
+            p = json.loads(data)
+            self.assertEqual(p["ready"], 3)
+        finally:
+            mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
+
+    # --------------------------------------------------------------- personalisation
+
+    def test_render_body_derives_first_name_from_email(self):
+        mail = market_engine.build_email_sequence("keto snacks", self._bs_items())[0]
+        body = mailer.render_body(mail, to_name="", email="jane.doe@example.com")
+        self.assertIn("Hi Jane Doe", body)
+
+    def test_render_body_uses_captured_name_first(self):
+        mail = market_engine.build_email_sequence("keto snacks", self._bs_items())[0]
+        body = mailer.render_body(mail, to_name="Ann", email="jane@example.com")
+        self.assertIn("Hi Ann", body)
+        self.assertNotIn("Hi Jane", body)
+
+    def test_render_body_your_name_signature(self):
+        mail = market_engine.build_email_sequence("keto snacks", self._bs_items())[0]
+        saved = mailer.STORE_NAME
+        mailer.STORE_NAME = "The Pick Crew"
+        try:
+            body = mailer.render_body(mail, email="u@example.com")
+            self.assertIn("The Pick Crew", body)
+            self.assertNotIn("{your_name}", body)
+        finally:
+            mailer.STORE_NAME = saved
+
+    def test_render_body_greets_every_sequence_step(self):
+        for i, mail in enumerate(market_engine.build_email_sequence(
+                "keto snacks", self._bs_items())):
+            body = mailer.render_body(mail, to_name="", email="sam@example.com")
+            self.assertIn("Sam", body, "step %d" % i)
+            self.assertIn("unsubscribe", body.lower(), "step %d" % i)
+
+    def test_optin_widget_captures_first_name(self):
+        html = seo.optin_html("keto snacks")
+        self.assertIn('name="first_name"', html)
+
     # --------------------------------------------------------------- admin pages
 
     def test_admin_pages_redirect_unauth(self):

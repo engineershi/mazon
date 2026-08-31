@@ -17,7 +17,9 @@ from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import amazon
 import indexnow
+import io
 import security
 import seo
 import sem
@@ -39,6 +41,8 @@ class TestSemSeoSite(unittest.TestCase):
         os.environ.pop("PSTORE_URL", None)
         cls._saved_indexnow_post = indexnow._post
         indexnow._post = cls._fake_indexnow_post
+        cls._saved_amazon_urlopen = amazon._urlopen
+        amazon._urlopen = cls._fake_amazon_urlopen
         import importlib
         importlib.reload(server)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
@@ -57,8 +61,18 @@ class TestSemSeoSite(unittest.TestCase):
         return None
 
     @classmethod
+    def _fake_amazon_urlopen(cls, req, timeout):
+        url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
+        if "completion.amazon.com" in url:
+            return io.BytesIO(json.dumps(
+                {"suggestions": [{"value": "keto snacks best"}, {"value": "best keto snacks"}]}
+            ).encode("utf-8"))
+        return io.BytesIO(b"<html><body></body></html>")
+
+    @classmethod
     def tearDownClass(cls):
         indexnow._post = cls._saved_indexnow_post
+        amazon._urlopen = cls._saved_amazon_urlopen
         security.SUBSCRIBE_LIMITER.clear("sub|" + cls.IPKEY)
         security.TRACK_LIMITER.clear("trk|" + cls.IPKEY)
         cls.httpd.shutdown()
@@ -164,6 +178,85 @@ class TestSemSeoSite(unittest.TestCase):
         self.assertIn('id="top"', html)
         self.assertIn('class="totop"', html)
 
+    # --- Niche data refresh -------------------------------------------------
+    def test_refresh_requires_auth(self):
+        st, loc, _, _ = self._raw("GET", "/admin/refresh")
+        self.assertEqual(st, 302)
+        self.assertIn("/admin/login", loc)
+
+    def test_refresh_status_api(self):
+        st, _, ct, body = self._raw("GET", "/api/refresh/status", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        self.assertIn("application/json", ct)
+        d = json.loads(body)
+        self.assertEqual(d["total"], len(self.niches))
+        for k in ("refreshed", "stale", "inflight", "auto_interval_s",
+                  "stale_min", "max_per_cycle"):
+            self.assertIn(k, d)
+
+    def test_refresh_single_niche_sets_updated_at(self):
+        kw = self._pick_niche()
+        st, _, ct, body = self._raw(
+            "POST", "/api/refresh",
+            body=json.dumps({"keyword": kw}),
+            ctype="application/json", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        self.assertIn("application/json", ct)
+        self.assertEqual(json.loads(body)["status"], "ok")
+        with server._lock:
+            conn = server._db()
+            row = conn.execute("SELECT updated_at FROM niches WHERE keyword=?",
+                               (kw,)).fetchone()
+            conn.close()
+        self.assertTrue(row["updated_at"])
+
+    def test_refresh_missing_niche(self):
+        st, _, _, body = self._raw(
+            "POST", "/api/refresh",
+            body=json.dumps({"keyword": "not-a-real-niche-xyz"}),
+            ctype="application/json", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        self.assertEqual(json.loads(body)["status"], "missing")
+
+    def test_refresh_requires_keyword_arg(self):
+        st, _, _, body = self._raw("POST", "/api/refresh",
+                                   body=json.dumps({}), ctype="application/json",
+                                   cookie=self.cookie)
+        self.assertEqual(st, 400)
+
+    def test_z_refresh_all_starts_background(self):
+        st, _, ct, body = self._raw("POST", "/api/refresh-all",
+                                    ctype="application/json", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        d = json.loads(body)
+        self.assertEqual(d["status"], "started")
+        self.assertEqual(d["queued"], len(self.niches))
+        # Wait for the background worker to finish (validates completion and
+        # avoids the daemon leaking into later test modules).
+        import time as _time
+        deadline = _time.time() + 60
+        while _time.time() < deadline:
+            st, _, _, sbody = self._raw("GET", "/api/refresh/status",
+                                        cookie=self.cookie)
+            sd = json.loads(sbody)
+            if not sd.get("inflight"):
+                break
+            _time.sleep(0.25)
+        st, _, _, sbody = self._raw("GET", "/api/refresh/status",
+                                    cookie=self.cookie)
+        sd = json.loads(sbody)
+        self.assertEqual(sd["inflight"], [])
+        self.assertEqual(sd["refreshed"], len(self.niches))
+
+    def test_admin_refresh_page(self):
+        st, _, ct, body = self._raw("GET", "/admin/refresh", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn("Data refresh", html)
+        self.assertIn("/api/refresh-all", html)
+        self.assertIn('data-kw=', html)
+        self.assertIn("stale", html)
+
     def test_admin_pages_require_auth(self):
         st, loc, _, _ = self._raw("GET", "/admin/seo")
         self.assertEqual(st, 302)
@@ -179,6 +272,32 @@ class TestSemSeoSite(unittest.TestCase):
         self.assertIn("Organization", html)
         self.assertIn('class="totop"', html)
         self.assertIn("/ui.js", html)
+
+    def test_homepage_components_render_with_niches(self):
+        st, _, ct, body = self._raw("GET", "/")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        # quick-verdict band above the fold
+        self.assertIn("Quick verdict", html)
+        self.assertIn('class="qpick', html)
+        self.assertIn("Check price", html)
+        # honesty trust strip (the differentiation gap)
+        self.assertIn("trust-strip", html)
+        self.assertIn("Live prices", html)
+        # explore-niches tile grid with live counts
+        self.assertIn("Explore the niches", html)
+        self.assertIn('class="ntile"', html)
+        # comparison preview + courier opt-in w/ first_name
+        self.assertIn("Compare the shortlist", html)
+        self.assertIn('name="first_name"', html)
+
+    def test_homepage_first_name_optin_and_courier(self):
+        st, _, _, body = self._raw("GET", "/")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn('/courier.js', html)
+        self.assertIn('name="email"', html)
+        self.assertIn('name="first_name"', html)
 
     def test_niche_noindex_when_missing(self):
         st, _, _, body = self._raw("GET", "/n/this-niche-does-not-exist")

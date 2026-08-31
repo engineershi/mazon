@@ -93,3 +93,15 @@ def mine_niche(seed, top=8, max_niches=5):
     meta = {"seed": seed, "market": amazon.MARKET, "autosuggest_count": len(ideas),
             "signals": ["amazon-autosuggest", "product-search"]}
     return niches, meta
+
+
+def refresh_keyword(keyword, top=8):
+    """Fresh re-mine of a single saved niche keyword: runs a new autosuggest +
+    product search so prices, ratings and stock reflect current Amazon listings.
+    Returns the same shape as one entry of mine_niche's list."""
+    ideas = amazon.autosuggest(keyword, limit=12)
+    items, source = amazon.search(keyword, top=top)
+    return {"keyword": keyword, "products": items, "source": source,
+            "score": _score_demand(ideas),
+            "saturation": _score_saturation(items),
+            "magnet": _magnet(items) if items else None}

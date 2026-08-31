@@ -74,6 +74,111 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 
 _lock = threading.Lock()
 
+# --- niche data refresh -------------------------------------------------------
+# Manual refresh re-mines one/all saved niches so prices, ratings and stock
+# stay current. An automatic background loop refreshes "stale" niches on a
+# schedule (a niche is stale when it hasn't been refreshed in N minutes) and
+# throttles to a few per cycle so it never hammers Amazon.
+_REFRESH_STALE_MIN = int(os.environ.get("PSTORE_REFRESH_MIN", "1440"))      # 24h
+_REFRESH_INTERVAL_SEC = int(os.environ.get("PSTORE_REFRESH_INTERVAL", "3600"))  # 1h
+_REFRESH_MAX_PER_CYCLE = int(os.environ.get("PSTORE_REFRESH_MAX", "3"))
+_REFRESHING = set()  # keyword -> in-flight guard so a niche isn't double-mined
+_refresh_lock = threading.Lock()
+
+
+def _refresh_stale_candidates(now):
+    """Return keywords of saved niches that are stale (never refreshed or past
+    their staleness window), oldest-first, capped to a small batch."""
+    with _lock:
+        conn = _db()
+        rows = conn.execute(
+            "SELECT keyword, updated_at FROM niches ORDER BY "
+            "CASE WHEN updated_at IS NULL THEN 0 ELSE 1 END, updated_at ASC").fetchall()
+        conn.close()
+    out = []
+    for r in rows:
+        kw = r["keyword"]
+        with _refresh_lock:
+            if kw in _REFRESHING:
+                continue
+        if len(out) >= _REFRESH_MAX_PER_CYCLE:
+            break
+        updated = r["updated_at"]
+        if not updated:
+            out.append(kw)
+            continue
+        try:
+            parsed = time.mktime(time.strptime(updated[:19], "%Y-%m-%d %H:%M:%S"))
+        except (ValueError, TypeError):
+            out.append(kw)
+            continue
+        if now - parsed >= _REFRESH_STALE_MIN * 60:
+            out.append(kw)
+    return out
+
+
+def _refresh_niche(keyword):
+    """Re-mine a single saved niche in place. Returns a dict with the updated
+    data, or None if the keyword isn't a saved niche. Never raises: on failure
+    returns a dict with 'error' set."""
+    with _refresh_lock:
+        if keyword in _REFRESHING:
+            return {"status": "busy", "error": "already refreshing"}
+        _REFRESHING.add(keyword)
+    try:
+        with _lock:
+            conn = _db()
+            row = conn.execute("SELECT keyword FROM niches WHERE keyword=?",
+                               (keyword,)).fetchone()
+            conn.close()
+        if not row:
+            return {"status": "missing", "error": "niche not found"}
+        try:
+            data = niche.refresh_keyword(keyword)
+        except Exception as exc:  # network/provider hiccup — don't crash
+            return {"status": "error", "error": str(exc)}
+        with _lock:
+            conn = _db()
+            conn.execute(
+                "UPDATE niches SET products=?, score=?, saturation=?, updated_at=datetime('now') "
+                "WHERE keyword=?",
+                (json.dumps(data.get("products") or []),
+                 data.get("score"), data.get("saturation"), keyword))
+            conn.commit()
+            conn.close()
+        return {"status": "ok", "keyword": keyword,
+                "products": len(data.get("products") or []),
+                "score": data.get("score"), "saturation": data.get("saturation")}
+    finally:
+        with _refresh_lock:
+            _REFRESHING.discard(keyword)
+
+
+def _auto_refresh_loop():
+    """Daemon that periodically refreshes stale niches in small batches. Runs on
+    an interval; a zero interval disables automatic refreshing."""
+    while True:
+        time.sleep(max(_REFRESH_INTERVAL_SEC, 300))
+        if _REFRESH_INTERVAL_SEC <= 0:
+            continue
+        try:
+            now = time.time()
+            for kw in _refresh_stale_candidates(now):
+                _refresh_niche(kw)
+        except Exception:
+            pass
+
+
+def _refresh_all_worker(kws):
+    """Background worker for a manual 'refresh all' — re-mines every saved
+    niche in place so the request returns immediately and the admin page can
+    poll status. Never raises."""
+    for kw in (kws or []):
+        try:
+            _refresh_niche(kw)
+        except Exception:
+            pass
+
 
 def _db():
     conn = sqlite3.connect(DB)
@@ -134,6 +239,11 @@ def _db():
         conn.rollback()
     try:
         conn.execute("ALTER TABLE clicks ADD COLUMN asin TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        conn.rollback()
+    try:
+        conn.execute("ALTER TABLE niches ADD COLUMN updated_at TEXT")
         conn.commit()
     except sqlite3.OperationalError:
         conn.rollback()
@@ -456,6 +566,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 {chip('/admin/social', '📣 Social', 'social')}
 {chip('/admin/sem', '🎯 SEM', 'sem')}
 {chip('/admin/seo', '🔍 SEO', 'seo')}
+{chip('/admin/refresh', '📡 Refresh', 'refresh')}
 {chip('/admin', '🗺 All pages', 'admin', accent=True)}
 {chip('/admin/logout', '⎋ Logout', 'logout')}
 </nav>"""
@@ -477,7 +588,8 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
                  btn("/admin/analytics", "📊 Click tracking & analytics", "beacons"),
                  btn("/admin/social", "📣 Social publishing", "tracked posts"),
                  btn("/admin/sem", "🎯 Search funnel (SEM)", "long-tail growth"),
-                 btn("/admin/seo", "🔍 SEO audit", "indexability + schema")]
+                 btn("/admin/seo", "🔍 SEO audit", "indexability + schema"),
+                 btn("/admin/refresh", "📡 Data refresh", "manual + auto re-mine")]
         for pid, meta in amazon._SCRAPER_PROVIDERS.items():
             tools.append(btn("/keys/" + seo._clean(pid), meta["name"] + " key", pid))
         tools.append(btn("/admin/logout", "⎋ Log out", "session"))
@@ -660,6 +772,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_sem(q)
             if path == "/admin/seo":
                 return self._admin_seo()
+            if path == "/admin/refresh":
+                return self._admin_refresh(q)
             if path == "/api/sem":
                 return self._sem_api(q)
             if path == "/api/seo-audit":
@@ -707,6 +821,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._mine(q)
             if path == "/api/niches":
                 return self._list_niches()
+            if path == "/api/refresh/status":
+                return self._refresh_status()
             if path == "/api/subscribers":
                 return self._subscribers_json()
             if path == "/api/tools":
@@ -748,6 +864,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._send(401, {"error": "unauthorized", "auth": False})
             if parsed.path == "/api/niches":
                 return self._save_niche()
+            if parsed.path == "/api/refresh":
+                return self._refresh_post()
+            if parsed.path == "/api/refresh-all":
+                return self._refresh_all_post()
             if parsed.path == "/api/settings":
                 return self._save_settings()
             if parsed.path == "/api/indexnow":
@@ -880,6 +1000,53 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 d["slug"] = ""
             out.append(d)
         return self._send(200, {"niches": out})
+
+    # -------------------------------------------------- Niche data refresh
+    def _refresh_status(self):
+        with _lock:
+            conn = _db()
+            total = conn.execute("SELECT COUNT(*) c FROM niches").fetchone()["c"]
+            rows = conn.execute("SELECT updated_at FROM niches").fetchall()
+            conn.close()
+        now = time.time()
+        refreshed = stale = 0
+        for r in rows:
+            u = r["updated_at"]
+            if not u:
+                stale += 1
+                continue
+            refreshed += 1
+            try:
+                parsed = time.mktime(time.strptime(u[:19], "%Y-%m-%d %H:%M:%S"))
+            except (ValueError, TypeError):
+                stale += 1
+                continue
+            if now - parsed >= _REFRESH_STALE_MIN * 60:
+                stale += 1
+        with _refresh_lock:
+            inflight = sorted(_REFRESHING)
+        return self._send(200, {
+            "total": total, "refreshed": refreshed, "stale": stale,
+            "inflight": inflight,
+            "auto_interval_s": _REFRESH_INTERVAL_SEC,
+            "stale_min": _REFRESH_STALE_MIN,
+            "max_per_cycle": _REFRESH_MAX_PER_CYCLE})
+
+    def _refresh_post(self):
+        body = self._body() or {}
+        kw = (body.get("keyword") or "").strip()
+        if not kw:
+            return self._send(400, {"error": "keyword required"})
+        return self._send(200, _refresh_niche(kw))
+
+    def _refresh_all_post(self):
+        with _lock:
+            conn = _db()
+            rows = conn.execute("SELECT keyword FROM niches").fetchall()
+            conn.close()
+        kws = [r["keyword"] for r in rows]
+        threading.Thread(target=_refresh_all_worker, args=(kws,), daemon=True).start()
+        return self._send(200, {"status": "started", "queued": len(kws)})
 
     # ------------------------------------------------------------------ SEO
     def _all_niches(self):
@@ -1516,6 +1683,104 @@ document.addEventListener("click", (e)=>{{
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
+    def _admin_refresh(self, q):
+        """Manual niche data refresh: re-mine one or all saved niches now, and
+        show the auto-refresh schedule so prices/ratings/stock stay current."""
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT keyword, products, updated_at FROM niches "
+                "ORDER BY CASE WHEN updated_at IS NULL THEN 0 ELSE 1 END, updated_at ASC").fetchall()
+            conn.close()
+        now = time.time()
+        rows_html = ""
+        for r in rows:
+            kw = r["keyword"]
+            prods = json.loads(r["products"] or "[]")
+            updated = r["updated_at"]
+            if not updated:
+                when = '<span class="badge" style="background:#ffe9e9;color:#c0392b">never refreshed</span>'
+                stale = True
+            else:
+                try:
+                    parsed = time.mktime(time.strptime(updated[:19], "%Y-%m-%d %H:%M:%S"))
+                    age_min = int((now - parsed) // 60)
+                except (ValueError, TypeError):
+                    age_min = 0
+                stale = age_min >= _REFRESH_STALE_MIN
+                when = ("%s · <b>%d min ago</b>" % (updated, age_min))
+                if stale:
+                    when += ' <span class="badge" style="background:#ffe9e9;color:#c0392b">stale</span>'
+                else:
+                    when += ' <span class="badge" style="background:#e6ffe8;color:#1e8e3e">fresh</span>'
+            rows_html += (
+                "<tr class='%s'><td class='ct'>%s</td><td>%d</td><td>%s</td>"
+                "<td><button class='mini' data-kw=\"%s\">Refresh now</button></td></tr>"
+                % ("top" if stale else "", seo._clean(kw), len(prods), when,
+                   seo._clean(kw)))
+        if not rows_html:
+            rows_html = "<tr><td colspan='4' class='hint'>No saved niches yet — mine one on the dashboard.</td></tr>"
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data refresh — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+</head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Niche data <span>refresh.</span></h1>
+<p class="tagline">Re-mine saved niches so prices, ratings and stock reflect current Amazon listings. Manual here, plus an automatic loop runs on a schedule.</p></div>
+{self._admin_nav('refresh')}
+</header>
+<main>
+<section class="card"><h2>🔄 Schedule &amp; status</h2>
+<div class="row" style="align-items:stretch">
+<div class="feature"><h3>{_REFRESH_INTERVAL_SEC}s</h3><p class="hint">auto-loop interval (0 = off)</p></div>
+<div class="feature"><h3>{_REFRESH_STALE_MIN}m</h3><p class="hint">staleness window</p></div>
+<div class="feature"><h3>{_REFRESH_MAX_PER_CYCLE}</h3><p class="hint">niches per cycle</p></div>
+</div>
+<p id="status" class="hint" style="margin-top:8px">Fetching status…</p>
+</section>
+<section class="card"><h2>🛍 Saved niches</h2>
+<div class="row" style="margin-bottom:8px">
+<button id="refresh-all" class="warm">Refresh all now</button>
+</div>
+<p id="out" class="msg"></p>
+<div class="table-wrap"><table class="plain"><thead><tr>
+<th>Niche</th><th>Products</th><th>Last refreshed</th><th></th>
+</tr></thead><tbody>{rows_html}</tbody></table></div></section>
+</main>
+<footer><p>Each refresh re-runs Amazon autosuggest + product search for that niche. Prices move — refreshing keeps the live prices honest on every page.</p></footer>
+<script src="/table-flow.js" defer></script>
+{_TOTOP}
+<script>
+function $(id){{return document.getElementById(id);}}
+async function fresh() {{
+  try {{
+    const r = await fetch("/api/refresh/status");
+    const d = await r.json();
+    $("status").textContent = d.total + " niches · " + d.refreshed + " refreshed · " + d.stale + " stale · in-flight: " + (d.inflight.length ? d.inflight.join(", ") : "none");
+  }} catch(e) {{ $("status").textContent = "Status unavailable."; }}
+}}
+async function run(path, body, out) {{
+  out.textContent = "Working…";
+  try {{
+    const r = await fetch(path, {{method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify(body)}});
+    const d = await r.json();
+    out.textContent = (d.status === "started")
+      ? "Queued " + (d.queued||0) + " niche(s) — refreshing in the background. Watch the status line / table update."
+      : ((d.status === "ok") ? "Refreshed: " + d.keyword + " (" + d.products + " products) — new score " + d.score + "."
+                              : ("Failed: " + (d.error || d.status || "unknown")));
+  }} catch(e) {{ out.textContent = "Request failed."; }}
+  fresh(); setTimeout(()=>location.reload(), 1200);
+}}
+$("refresh-all").onclick = () => {{ run("/api/refresh-all", {{}}, $("out")); }};
+document.querySelectorAll("button.mini[data-kw]").forEach(b => {{
+  b.onclick = () => {{ run("/api/refresh", {{keyword: b.dataset.kw}}, $("out")); }};
+}});
+fresh();
+</script>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
     def _seo_audit_api(self):
         return self._send(200, self._seo_audit_payload())
 
@@ -1738,6 +2003,10 @@ document.addEventListener("click", (e)=>{{
         body = self._body()
         dry = bool(body.get("dry_run"))
         niche_kw = str(body.get("keyword") or "").strip().lower()
+        try:
+            limit = int(body.get("limit") or 0)
+        except (TypeError, ValueError):
+            limit = 0
         if not mailer.configured():
             return self._send(200, {"ok": False, "error": "SMTP is not configured — set SMTP_HOST/USER/PASSWORD.",
                                     "sent": 0, "errors": 0, "ready": 0, "skipped": 0, "limit": 0})
@@ -1766,14 +2035,17 @@ document.addEventListener("click", (e)=>{{
             if not mail:
                 unready += 1
                 continue
-            ready.append((sub["id"], idx, mail, sub["email"], sub["first_name"] or "there"))
+            ready.append((sub["id"], idx, mail, sub["email"], sub["first_name"] or ""))
+        cap = limit if limit and limit > 0 else mailer.MAX_EMAILS_PER_RUN
+        target = ready[:cap] if limit and limit > 0 else ready[:mailer.MAX_EMAILS_PER_RUN]
+        eff_limit = min(len(ready), cap)
         if dry:
             return self._send(200, {"ok": True, "dry_run": True, "sent": 0, "errors": 0,
-                                    "ready": len(ready), "skipped": unready,
+                                    "ready": eff_limit, "skipped": len(ready) - eff_limit,
                                     "keyword": niche_kw or None,
-                                    "limit": mailer.MAX_EMAILS_PER_RUN})
+                                    "limit": cap})
         sent = errors = 0
-        for sid, idx, mail, to, to_name in ready:
+        for sid, idx, mail, to, to_name in target:
             if sent + errors >= mailer.MAX_EMAILS_PER_RUN:
                 break
             text = mailer.render_body(mail, to_name=to_name, email=to)
@@ -1789,9 +2061,9 @@ document.addEventListener("click", (e)=>{{
             else:
                 errors += 1
         return self._send(200, {"ok": True, "sent": sent, "errors": errors,
-                                "ready": len(ready), "skipped": unready,
+                                "ready": eff_limit, "skipped": len(ready) - eff_limit,
                                 "keyword": niche_kw or None,
-                                "limit": mailer.MAX_EMAILS_PER_RUN})
+                                "limit": cap})
 
     def _subs_table(self, rows):
         def state(r):
@@ -1850,24 +2122,32 @@ document.addEventListener("click", (e)=>{{
 {self._admin_nav('emails')}
 </header>
 <main>
-<section class="card"><h2>📨 Sender status</h2>
-<p class="hint" style="margin-top:-4px">{smtp_state}</p>
-<div class="row">
-  <button id="send" class="warm">Send next batch (up to {mailer.MAX_EMAILS_PER_RUN})</button>
-  <label style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="dry" style="width:auto;height:auto" checked> dry run</label>
-</div>
-<p id="out" class="msg"></p></section>
-<section class="card"><h2>👥 Subscribers</h2>
-<p class="hint">{stats['total']} total · {stats['active']} active · {stats['unsubscribed']} unsubscribed · {stats['emails_sent']} emails sent</p>
-<table class="plain"><thead><tr><th>Email</th><th>Niche</th><th>Sequence</th><th>State</th><th>Joined</th></tr></thead>
-<tbody>{self._subs_table(rows)}</tbody></table></section>
+ <section class="card"><h2>📨 Sender status</h2>
+ <p class="hint" style="margin-top:-4px">{smtp_state}</p>
+ <div class="row">
+   <label>Recipients
+     <select id="count">
+       <option value="0" selected>All ready (up to {mailer.MAX_EMAILS_PER_RUN} per run)</option>
+       <option value="5">First 5</option>
+       <option value="10">First 10</option>
+       <option value="25">First 25</option>
+     </select>
+   </label>
+   <button id="send" class="warm">Send next batch</button>
+   <label style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="dry" style="width:auto;height:auto" checked> dry run</label>
+ </div>
+ <p id="out" class="msg"></p></section>
+ <section class="card"><h2>👥 Subscribers</h2>
+ <p class="hint">{stats['total']} total · {stats['active']} active · {stats['unsubscribed']} unsubscribed · {stats['emails_sent']} emails sent</p>
+ <div class="table-wrap"><table class="plain"><thead><tr><th>Email</th><th>Niche</th><th>Sequence</th><th>State</th><th>Joined</th></tr></thead>
+ <tbody>{self._subs_table(rows)}</tbody></table></div></section>
 <section class="card"><h2>💌 Sequence preview</h2>
 <form class="row" method="get" action="/admin/emails">
   <label>Niche <select name="keyword" onchange="this.form.submit()">{opts}</select></label>
 </form>
 {seq_html}</section>
 </main>
-<footer><p>Emails only ever use real scraped data (title, price, stars, reviews) plus {{first_name}} — and always carry an unsubscribe link.</p></footer>
+<footer><p>Emails greet each reader by name — <code>{{first_name}}</code> uses the captured name (or one derived from their email), and <code>{{your_name}}</code> signs as “{seo._clean(mailer.STORE_NAME)}” (set <code>PSTORE_NAME</code> to change it). Only real scraped data, and every email carries an unsubscribe link.</p></footer>
 <script src="/table-flow.js" defer></script>
 {_TOTOP}
 <script>
@@ -1875,10 +2155,10 @@ function $(id){{return document.getElementById(id);}}
 $("send").onclick = async () => {{
   $("out").textContent = "Working…";
   const r = await fetch("/api/sequence/send", {{method:"POST", headers:{{"Content-Type":"application/json"}},
-    body: JSON.stringify({{dry_run: $("dry").checked}})}});
+    body: JSON.stringify({{dry_run: $("dry").checked, limit: parseInt($("count").value || "0", 10)}})}});
   const d = await r.json().catch(()=>({{ok:false, error:"bad response"}}));
   if (d && d.ok) {{
-    if (d.dry_run) $("out").textContent = "Dry run: " + d.ready + " subscriber(s) ready for the next email.";
+    if (d.dry_run) $("out").textContent = "Dry run: " + d.ready + " subscriber(s) ready for the next email (limit " + (d.limit||d.ready) + ").";
     else $("out").textContent = "Sent " + d.sent + " · skipped " + d.skipped + " · errors " + d.errors + " · (ready " + d.ready + ").";
   }} else $("out").textContent = (d && d.error) || "Send failed.";
   setTimeout(()=>location.reload(), 1500);
@@ -2138,6 +2418,10 @@ def main():
               "key in /admin/ebooks) to enable generation.")
     amazon.set_market(os.environ.get("PSTORE_MARKET", amazon.DEFAULT_MARKET))
     amazon.set_tag(os.environ.get("PSTORE_TAG", ""))
+    if _REFRESH_INTERVAL_SEC > 0:
+        threading.Thread(target=_auto_refresh_loop, daemon=True).start()
+        print("niche auto-refresh: every %ds, stale after %dm, %d/cycle"
+              % (_REFRESH_INTERVAL_SEC, _REFRESH_STALE_MIN, _REFRESH_MAX_PER_CYCLE))
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print("pstore running on http://localhost:%d" % PORT)
     try:

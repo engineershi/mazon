@@ -295,6 +295,7 @@ def optin_html(keyword, source="niche"):
   <h3>{label}</h3>
   <p class="hint">{sub}</p>
   <div class="courier-row">
+    <input type="text" name="first_name" placeholder="First name (optional)" autocomplete="given-name" maxlength="80">
     <input type="email" name="email" placeholder="you@example.com" required autocomplete="email">
     <input type="hidden" name="keyword" value="{kw}">
     <button type="submit" class="warm">Notify me</button>
@@ -321,23 +322,41 @@ def render_landing(saved_niches):
         ],
     }
     head = _head(SITE_DESC, SITE_DESC, "/", "/", jsonld=jsonld)
-    links = "".join(
-        f'<div class="product"><h4><a href="/n/{_slugify(n["keyword"])}">{_clean(n["keyword"])}</a></h4></div>'
-        for n in (saved_niches or [])[:48])
+    top_pick_niches = saved_niches or []
+    # comparison preview of the single most-picked niche (scannable, table-flow pill)
+    comp_kw = ""
+    comp_preview = ""
+    for n in (top_pick_niches or []):
+        if n.get("products"):
+            comp_kw = n["keyword"]
+            comp_preview = editorial.comparison_html(n["products"])
+            break
     body = f"""
 <header id="top"><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
-<p class="tagline">{_clean(SITE_DESC)}</p></header>
+<p class="tagline">{_clean(SITE_DESC)}</p>
+<nav style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+<a class="chip" href="#top-picks">🏆 Top picks</a>
+<a class="chip" href="#niches">🗂 Niches</a>
+<a class="chip" href="#method">🔬 How we pick</a>
+<a class="chip" href="#notify">✉️ Stay updated</a>
+<a class="chip" href="#faq">❓ FAQ</a>
+</nav></header>
 <main data-niche="home" data-source="home">
-<section class="card"><h1>Find the best <span style="color:var(--accent)">Amazon picks</span>, by niche.</h1>
-<p>Each niche page ranks the strongest products on Amazon for a topic — using live price, rating
-and review signals — so you can compare in minutes, not hours. Pick a niche and go.</p>
-<p class="hint">Honest picks. Live data. Affiliate-tagged links (see our
-<a href="/disclosure">Disclosure</a>).</p></section>
+<section class="card hero-home" id="top-picks">
+  <h1 style="font-size:30px;line-height:1.15">Find the best <span style="color:var(--accent)">Amazon picks</span>, by niche — before you scroll once.</h1>
+  <p style="font-size:16px;color:var(--muted);max-width:720px">Each niche page ranks the strongest products on Amazon for a topic — using live price, rating
+  and review signals — so the verdict and the price are above the fold, and the proof is right below it.
+  No endless listicles. No guesswork.</p>
+  <p class="hint">Honest picks. Live data. Affiliate-tagged links (see our <a href="/disclosure">Disclosure</a>).</p>
+</section>
+{editorial.quick_picks_band(saved_niches)}
+{comp_preview and ("<section class='card'><h2>Compare the shortlist — {0}</h2><p class='hint'>Scannable table of the live picks for {1}. Swipe or scroll sideways if it overflows.</p>{2}</section>".format(_clean(comp_kw.title()), _clean(comp_kw), comp_preview)) or ""}
+{editorial.home_trust_strip()}
 {optin_html("", "home")}
 
-{editorial.featured_html(saved_niches)}
+{editorial.niche_grid(saved_niches)}
 
-<section class="card"><h2>🌱 How we pick</h2>
+<section class="card" id="method"><h2>🌱 How we pick</h2>
 <div class="features">
   <div class="feature"><h3>⛏️ Niche mining</h3>
   <p>We expand each topic through Amazon's own autosuggest index to find the terms real shoppers use.</p></div>
@@ -345,14 +364,15 @@ and review signals — so you can compare in minutes, not hours. Pick a niche an
   <p>Products are ranked on demand and saturation from live listings — price, rating and review volume.</p></div>
   <div class="feature"><h3>🛒 Shop on Amazon</h3>
   <p>Every pick links straight to the product on Amazon. Purchases may earn us a commission at no cost to you.</p></div>
+</div>
+<div class="trust">
+  <h3>The one thing most review sites skip</h3>
+  <p>Most “best X to buy” pages make you wade through 2,000 words before showing a price, and never tell you
+  when their data went stale. We do the opposite: the pick, the rank and the live price come first, and every
+  page says it reflects <b>current Amazon listings</b> — prices move, so we re-pull rather than guess.</p>
 </div></section>
 
-<section class="card"><h2>🛒 Explore niches</h2>
-<p>Every page below is fully crawlable and carries live, affiliate-tagged product links.</p>
-<div class="grid">{links}</div>
-</section>
-
-<section class="card"><h2>❓ Quick questions</h2>
+<section class="card" id="faq"><h2>❓ Quick questions</h2>
 <div class="sub">
 <h3>Do your links cost me anything?</h3>
 <p>No. If you buy after clicking a link, the price is the same — we may earn a small commission

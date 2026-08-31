@@ -398,3 +398,78 @@ def featured_html(saved_niches):
             % (_clean(_display(top)), _clean(quick_take(top, [top])),
                stars, price_txt, kw,
                "/n/" + _slug(kw), _clean(kw), cta))
+
+
+def quick_picks_band(saved_niches, count=3):
+    """A 'Quick Verdict' band for the home hero: the best-scoring product from
+    the best-scoring niches, each with its ranked badge, live price/rating, one
+    line of reasoning and a primary CTA. Answer-first — a shopper gets a
+    decision-ready pick above the fold without scrolling into a long review."""
+    pools = []
+    for n in (saved_niches or []):
+        prods = n.get("products") or []
+        top = best_pick(prods)
+        if not top:
+            continue
+        kw = n.get("keyword") or n.get("name") or ""
+        pools.append((top, score_items(prods)[0][1], kw))
+    pools.sort(key=lambda t: t[1], reverse=True)
+    if not pools:
+        return ""
+    cards = []
+    for idx, (top, _score, kw) in enumerate(pools[:count]):
+        badge, why = rank_badge(top, idx + 1, [top])
+        price = _price(top)
+        stars = ('<span class="stars">★ %s</span>' % top.get("stars")) \
+            if isinstance(top.get("stars"), (int, float)) else ""
+        reviews = ('<span class="r-count">%s ratings</span>' % _review_hum(top.get("reviews"))) \
+            if isinstance(top.get("reviews"), (int, float)) and top["reviews"] >= 0 else ""
+        cta = ""
+        if top.get("url"):
+            cta = '<a class="btn" href="%s" data-asin="%s" target="_blank" rel="nofollow sponsored noopener">Check price%s</a>' \
+                  % (_clean(top["url"]), _clean(top.get("asin") or ""),
+                     ((" — " + price) if price else ""))
+        cards.append(
+            '<div class="qpick%s">'
+            '<div class="pick-head"><span class="rank">%s</span>'
+            '<h3>%s</h3><span class="badge">%s</span></div>'
+            '<p class="who">Best %s pick</p>'
+            '<p class="quick">%s</p>'
+            '<p class="why">%s</p>'
+            '<p class="starsline">%s %s</p>%s</div>'
+            % (" top" if idx == 0 else "", ("#%d" % (idx + 1)), _clean(_display(top)),
+               _clean(badge), _clean(kw), _clean(quick_take(top, [top])), _clean(why),
+               stars, reviews, cta))
+    return '<section class="card qband"><h2>Quick verdict — today’s top picks</h2>' \
+           '<p class="hint">Ranked from live Amazon data you can verify before you click.</p>' \
+           '<div class="qgrid">%s</div></section>' % "".join(cards)
+
+
+def home_trust_strip():
+    """A transparent, honesty-first strip. Where most review sites hide their
+    sourcing, we state it plainly — this is the differentiation we lean on."""
+    return ('<section class="card trust-strip">'
+            '<div class="trow">'
+            '<div class="tcell"><b>Live prices</b><span>Prices pulled from current Amazon listings — not cached guesses.</span></div>'
+            '<div class="tcell"><b>Independently ranked</b><span>Ranked by star rating, review volume and price — no paid placement.</span></div>'
+            '<div class="tcell"><b>Verdict first</b><span>See the pick and the price before the long read. Justified below.</span></div>'
+            '<div class="tcell"><b>Disclosure-first</b><span>Affiliate links, plainly labelled. Buying never changes the price to you.</span></div>'
+            '</div></section>')
+
+
+def niche_grid(saved_niches, limit=36):
+    """Explore-niches grid: each tile links to its ranked page and shows how
+    many live picks it holds, so the homepage doubles as a topic map."""
+    if not saved_niches:
+        return ""
+    tiles = []
+    for n in (saved_niches or [])[:limit]:
+        kw = n.get("keyword") or n.get("name") or ""
+        count = len(n.get("products") or [])
+        slug = _slug(kw)
+        tiles.append('<a class="ntile" href="/n/%s"><b>%s</b>'
+                     '<span>%d ranked picks · live prices</span></a>'
+                     % (_clean(slug), _clean(kw.title()), count))
+    return '<section class="card"><h2>Explore the niches</h2>' \
+           '<p class="hint">Every page below is fully crawlable and carries live, affiliate-tagged links.</p>' \
+           '<div class="ngrid">%s</div></section>' % "".join(tiles)

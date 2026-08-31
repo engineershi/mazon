@@ -173,6 +173,16 @@ button.warm {
   box-shadow: 0 6px 16px rgba(255, 107, 44, 0.32);
 }
 button.warm:hover { box-shadow: 0 10px 24px rgba(255, 107, 44, 0.4); }
+button.mini {
+  min-height: 30px;
+  padding: 0 14px;
+  font-size: 12.5px;
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  box-shadow: none;
+}
+button.mini:hover { box-shadow: none; filter: brightness(1.05); }
 a.btn {
   display: inline-flex;
   align-items: center;
@@ -490,7 +500,7 @@ a.chip:hover {
   flex-wrap: wrap;
   align-items: stretch;
 }
-.courier-row input[type=email] {
+.courier-row input[type=email], .courier-row input[type=text] {
   flex: 1 1 260px;
   height: 46px;
   padding: 0 14px;
@@ -520,10 +530,34 @@ table.plain th, table.plain td {
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
+table.plain td { word-break: break-word; overflow-wrap: anywhere; }
 table.plain th { color: var(--muted); font-size: 12px; letter-spacing: 0.3px; white-space: nowrap; }
 table.plain tr:hover td { background: #fff8f1; }
 .book-preview { margin-top: 10px; }
 .book-preview .card { box-shadow: none; }
+
+/* ---------- shared preview / key-value list styles ---------- */
+/* Used by email sequence preview, SEM/SEO pages and per-niche cards. Long
+   unbroken words, URLs and pre-wrapped body text must wrap instead of spilling
+   past the card edge. */
+.sub { border-top: 1px dashed var(--border); padding-top: 14px; margin-top: 14px; }
+.sub:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+.sub h3 { margin: 0 0 4px; font-size: 15px; font-weight: 700; }
+.sub .who { font-size: 12.5px; color: var(--muted); margin: 0 0 8px; line-height: 1.6; }
+.sub .key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin: 4px 0 0;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  max-width: 100%;
+}
+.badge { display: inline-block; font-size: 11.5px; font-weight: 700; border-radius: 999px; padding: 2px 9px; vertical-align: middle; }
 
 /* ---------- scrolling hygiene (clean, professional) ---------- */
 /* One consistent, slim scrollbar across the whole site (public + admin). */
@@ -554,6 +588,45 @@ body > header nav { margin-left: 0; margin-right: 0; }
 }
 .totop.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
 body:has(.totop.show) > header:first-of-type { scroll-margin-top: 0; }
+
+/* ---------- homepage components ---------- */
+/* Quick-verdict band: decision-first picks above the fold. */
+.qband { background: linear-gradient(180deg, #f7f3ff, #fff); border-color: #e6defa; }
+.qband h2 { font-size: 20px; }
+.qgrid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px; margin-top: 6px;
+}
+.qpick {
+  background: #fff; border: 1px solid var(--border); border-radius: 18px;
+  padding: 16px 16px 14px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: var(--shadow);
+}
+.qpick.top { border-color: var(--accent); box-shadow: 0 10px 26px rgba(255, 107, 44, 0.18); }
+.qpick .pick-head { align-items: flex-start; gap: 10px; }
+.qpick .pick-head h3 { font-size: 16px; line-height: 1.3; }
+.qpick .who { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 700; margin: 0; }
+.qpick .quick { font-size: 13.5px; color: var(--muted); margin: 0; font-weight: 600; }
+.qpick .why { font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.5; }
+.qpick .starsline { font-size: 12.5px; margin: 2px 0 0; }
+.qpick .btn { align-self: flex-start; margin-top: auto; min-height: 42px; padding: 0 16px; font-size: 13px; }
+.r-count { color: var(--text); font-weight: 600; }
+/* Honesty trust strip where most review sites stay vague. */
+.trust-strip { background: #fbfbf6; border-color: var(--border); }
+.trow { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+.tcell b { display: block; font-size: 14px; color: var(--accent2); margin-bottom: 4px; letter-spacing: 0.2px; }
+.tcell span { font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+/* Explore-niches tile grid. */
+.ngrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 4px; }
+a.ntile {
+  display: flex; flex-direction: column; gap: 2px;
+  background: #fff; border: 1px solid var(--border); border-radius: 14px;
+  padding: 12px 14px; text-decoration: none; color: var(--text);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+a.ntile:hover { transform: translateY(-2px); box-shadow: var(--shadow); border-color: var(--accent); }
+a.ntile b { font-size: 14px; }
+a.ntile span { font-size: 12px; color: var(--muted); }
 
 @media (max-width: 560px) {
   .pick-head h3 { flex-basis: 100%; }

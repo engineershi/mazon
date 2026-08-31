@@ -25,7 +25,7 @@ from email.utils import formataddr
 import market_engine
 import security
 
-STORE_NAME = "pstore"
+STORE_NAME = os.environ.get("PSTORE_NAME", "pstore").strip() or "pstore"
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 try:
@@ -57,15 +57,34 @@ def _footer(email):
             % (STORE_NAME, STORE_NAME, unsubscribe_url(email)))
 
 
+def _guess_first_name(email, stored="", fallback="there"):
+    """Best first-name to greet the reader with, from most to least specific:
+    a stored name we captured, else one derived from the email local-part
+    (e.g. jane.doe@example.com -> "Jane"), else the plain fallback."""
+    if stored and stored.strip():
+        return stored.strip()
+    if email and "@" in email:
+        local = email.split("@", 1)[0].replace(".", " ").replace("_", " ").replace("-", " ").strip()
+        if local:
+            return " ".join(w[:1].upper() + w[1:] for w in local.split() if w)[:80]
+    return fallback
+
+
 def render_body(mail, to_name="there", site_name=STORE_NAME, email=""):
     """Turn one mail dict from market_engine.build_email_sequence into a
     sendable plain-text body (drop the redundant Subject: line, fill the
-    {{placeholders}}, append a permission-reminder + unsubscribe footer)."""
+    {{placeholders}}, append a permission-reminder + unsubscribe footer).
+
+    {{first_name}} uses a captured name, else a name derived from the reader's
+    email local-part, so every send stays personal even without a stored name.
+    {{your_name}} is the store/sender's signature (configurable via PSTORE_NAME)."""
     body = mail.get("body") or ""
     if body.startswith("Subject:"):
         body = body.split("\n\n", 1)[-1]
-    body = body.replace("{{first_name}}", to_name or "there") \
-               .replace("{{your_name}}", site_name)
+    greeted = _guess_first_name(email, to_name, fallback="there")
+    body = body.replace("{{first_name}}", greeted).replace("{first_name}", greeted) \
+               .replace("{{your_name}}", site_name or STORE_NAME) \
+               .replace("{your_name}", site_name or STORE_NAME)
     if email:
         body += _footer(email)
     return body
