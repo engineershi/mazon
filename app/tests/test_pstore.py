@@ -605,6 +605,25 @@ class TestRoutes(unittest.TestCase):
         self.assertIn('id="settings"', html)
         self.assertIn('/tool', html)
         self.assertIn("Mine a niche", html)
+        self.assertIn("Step 3", html)
+        self.assertNotIn('href="/keys"', html)
+
+    def test_dashboard_js_wires_per_niche_launch(self):
+        st, ctype, body = self._get("/app.js")
+        self.assertEqual(st, 200)
+        js = body.decode("utf-8", "replace")
+        self.assertIn("Launch marketing", js)
+        self.assertIn('/tool?keyword=', js)
+        self.assertIn("conn-status", js)
+        self.assertIn("renderConnections", js)
+
+    def test_workbench_page_has_one_click_launch(self):
+        st, ctype, body = self._get("/tool")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        for needle in ("Launch marketing", "launch-btn", "send-kw", "ebook-open",
+                       "api/tools/launch", "?keyword=", "stat-clicks"):
+            self.assertIn(needle, html, needle)
 
     def test_keys_page_lists_every_credential(self):
         st, ctype, body = self._get("/keys")
@@ -628,6 +647,61 @@ class TestRoutes(unittest.TestCase):
     def test_keys_unknown_provider_404(self):
         st, _, _ = self._get("/keys/nope")
         self.assertEqual(st, 404)
+
+    def test_tools_workbench_payload(self):
+        import json as _json
+        from urllib.parse import quote
+        st, _, body = self._get("/api/tools?keyword=keto+snacks")
+        self.assertEqual(st, 200)
+        p = _json.loads(body)
+        self.assertEqual(p["keyword"], "keto snacks")
+        self.assertEqual(p["slug"], "keto-snacks")
+        self.assertIn("/n/keto-snacks", p["niche_url"])
+        self.assertEqual(p["landing_url"], "/lp/keto-snacks")
+        self.assertIn("/admin/ebooks/pdf?keyword=" + quote("keto snacks"), p["ebook_url"])
+        self.assertIn("funnel", p)
+        self.assertIn("text_links", p)
+        self.assertEqual(p["stats"]["subscribers_active"], 0)
+        self.assertEqual(p["stats"]["subscribers_ready"], 0)
+        self.assertEqual(p["indexnow"]["key"], indexnow.key())
+
+    def test_tools_workbench_unknown_keyword_still_shapes_payload(self):
+        import json as _json
+        st, _, body = self._get("/api/tools?keyword=NOPE")
+        self.assertEqual(st, 200)
+        p = _json.loads(body)
+        self.assertEqual(p["count"], 0)
+        self.assertEqual(p["landing_url"], "/lp/nope")
+
+    def test_tools_launch_warms_ebook_and_indexnow(self):
+        import json as _json
+        from urllib.parse import quote
+        st, _, _, body = self._raw(
+            "/api/tools/launch", "POST", body=b"keyword=keto snacks",
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        p = _json.loads(body)
+        self.assertEqual(p["keyword"], "keto snacks")
+        self.assertTrue(p["launched"]["landing"])
+        self.assertTrue(p["launched"]["ebook_cached"])
+        self.assertTrue(p["launched"]["indexnow_queued"])
+        self.assertTrue(p["ebook_ready"])
+        # ebook warmed by the launch -> its PDF now serves instantly
+        st, ctype, pdf = self._get("/admin/ebooks/pdf?keyword=" + quote("keto snacks"))
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("application/pdf"), ctype)
+        self.assertGreater(len(pdf), 100)
+
+    def test_tools_launch_unknown_keyword_404(self):
+        import json as _json
+        st, _, _, body = self._raw("/api/tools/launch", "POST",
+                                   body=b"keyword=no-such-niche", cookie=self.cookie)
+        self.assertEqual(st, 404)
+        self.assertIn("saved niche", _json.loads(body)["error"])
+
+    def test_tools_launch_requires_auth(self):
+        st, _, _, _ = self._raw("/api/tools/launch", "POST", body=b"keyword=x")
+        self.assertEqual(st, 401)
 
     def test_admin_pages_redirect_to_login_unauth(self):
         for route in ("/dashboard", "/tool", "/keys", "/keys/scraperapi", "/admin"):

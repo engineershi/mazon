@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pstore — Marketing Suite</title>
+<title>pstore — Marketing Workbench</title>
 <link rel="stylesheet" href="/style.css">
 <style>
   .stage { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
@@ -21,6 +21,15 @@
   .pick-line { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .pick-line .price { font-size:20px; font-weight:800; color:var(--accent); }
   .pick-line a { font-weight:700; }
+  .launch-strip { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .launch-strip .pill { display:inline-flex; align-items:center; gap:6px; background:#fffdf8;
+    border:1px solid var(--border); border-radius:999px; padding:6px 12px; font-size:12.5px; color:var(--muted); }
+  .launch-strip .pill.on { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:700; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:10px; }
+  .stats .stat { background:#fffdf8; border:1px solid var(--border); border-radius:14px; padding:12px 14px; }
+  .stats b { color:var(--accent); display:block; font-size:22px; }
+  .stats span { font-size:12px; color:var(--muted); }
+  .row .grow { flex:1 1 auto; }
 </style>
 </head>
 <body>
@@ -29,13 +38,14 @@
     <span class="mark">P</span><span>pstore</span>
   </a>
   <div class="hero">
-    <h1>Marketing <span>suite.</span></h1>
-    <p class="tagline">Turn a niche shortlist into a complete sales funnel — landing page, email automation, DM scripts, review pipeline and boost campaigns, all affiliate-tagged.</p>
+    <h1>Marketing <span>workbench.</span></h1>
+    <p class="tagline">Pick a saved niche, hit one button, and pstore wires everything together — landing page, lead magnet, email automation, social scripts and live click tracking.</p>
   </div>
   <nav>
     <a href="/dashboard" class="primary">🧭 Dashboard</a>
-    <a href="#funnel">🥧 Funnel</a>
+    <a href="#launch">🚀 Launch</a>
     <a href="#lp">🖥 Landing</a>
+    <a href="#ebook">📕 Ebook</a>
     <a href="#emails">✉️ Emails</a>
     <a href="#social">📣 Social</a>
     <a href="#dm">💬 DMs</a>
@@ -46,35 +56,59 @@
 </header>
 
 <main>
-  <section class="card" id="pick">
-    <h2>🧭 Generate the funnel</h2>
+  <section class="card" id="launch">
+    <h2>🚀 Launch marketing</h2>
     <div class="row">
       <label>Saved niche
         <select id="kw-select"><option value="">— choose a saved niche —</option></select>
       </label>
-      <button id="tool-btn" class="warm">Generate funnel</button>
+      <button id="launch-btn" class="warm" disabled>🚀 Launch marketing</button>
     </div>
     <p id="tool-msg" class="msg"></p>
-    <div id="top-pick" class="pick-line" style="display:none"></div>
+    <div class="launch-strip" id="launch-strip" style="display:none"></div>
+    <div class="stats">
+      <div class="stat"><b id="stat-clicks">0</b><span>Clicks tracked on landing</span></div>
+      <div class="stat"><b id="stat-subs">0</b><span>Active subscribers</span></div>
+      <div class="stat"><b id="stat-ready">0</b><span>Ready for next email</span></div>
+      <div class="stat"><b id="stat-top" style="font-size:14px">—</b><span>Most-clicked product</span></div>
+    </div>
+    <div id="top-pick" class="pick-line" style="display:none;margin-top:14px"></div>
   </section>
 
   <section class="card" id="funnel">
     <h2>🥧 Funnel stages</h2>
-    <div class="stage" id="stage-list"><p class="hint">Pick a niche and generate to see the funnel.</p></div>
+    <div class="stage" id="stage-list"><p class="hint">Launch a niche to see the funnel.</p></div>
   </section>
 
   <section class="card" id="lp">
     <h2>🖥 Landing page</h2>
-    <p class="hint">A live, crawlable sales page is hosted for every saved niche — link your social/email traffic straight to it.</p>
+    <p class="hint">A live, crawlable sales page is hosted for the niche — link your social/email traffic straight to it. Launch marks it in IndexNow so Google picks it up fast.</p>
     <div class="row">
       <button id="lp-open" class="warm" disabled>Open live page ↗</button>
       <button id="lp-copy" data-grab="lp-html">Copy HTML</button>
     </div>
-    <textarea id="lp-html" readonly rows="8" placeholder="Generate first…"></textarea>
+    <textarea id="lp-html" readonly rows="8" placeholder="Launch first…"></textarea>
+  </section>
+
+  <section class="card" id="ebook">
+    <h2>📕 Lead-magnet ebook</h2>
+    <p class="hint" id="ebook-hint">Launch warms the PDF so the lead magnet downloads instantly.</p>
+    <div class="row">
+      <a id="ebook-open" class="warm" target="_blank" rel="noopener" href="#">Open PDF ↗</a>
+      <button id="ebook-copy" data-grab="">Copy link</button>
+    </div>
   </section>
 
   <section class="card" id="emails">
     <h2>✉️ Email sequence (5-part)</h2>
+    <div class="row row-gap">
+      <label class="grow">Scope
+        <input id="send-kw" type="text" placeholder="keyword (empty = all niches)">
+      </label>
+      <label style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="real-send" style="width:auto;height:auto"> real send</label>
+      <button id="send-btn" class="warm">Send next batch</button>
+    </div>
+    <p id="send-out" class="msg"></p>
     <div id="email-list"><p class="hint">Automation-ready: hook → proof → objections → urgency → follow-up + review ask.</p></div>
   </section>
 
@@ -103,12 +137,12 @@
     <div class="cols">
       <div>
         <h3>Text links (DMs / bios)</h3>
-        <textarea id="text" readonly rows="5" placeholder="Generate first…"></textarea>
+        <textarea id="text" readonly rows="5" placeholder="Launch first…"></textarea>
         <button data-grab="text" class="warm">Copy</button>
       </div>
       <div>
         <h3>Markdown (blog / site)</h3>
-        <textarea id="markdown" readonly rows="5" placeholder="Generate first…"></textarea>
+        <textarea id="markdown" readonly rows="5" placeholder="Launch first…"></textarea>
         <button data-grab="markdown" class="warm">Copy</button>
       </div>
       <div>
@@ -136,24 +170,57 @@ window.fetch = function (...args) {
 function $(id){return document.getElementById(id);}
 function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
 
-async function loadNicheList(){
+async function loadNicheList(selected){
   const r = await fetch("/api/niches");
   const d = await r.json();
+  const list = d.niches||[];
   $("kw-select").innerHTML = '<option value="">— choose a saved niche —</option>' +
-    (d.niches||[]).map(n=>`<option value="${encodeURIComponent(n.keyword)}">${esc(n.keyword)}</option>`).join("");
+    list.map(n=>`<option value="${encodeURIComponent(n.keyword)}">${esc(n.keyword)}</option>`).join("");
+  setNiches(list.map(n=>n.keyword));
+  if (selected) $("kw-select").value = encodeURIComponent(selected);
+  $("launch-btn").disabled = list.length === 0;
+}
+
+function setNiches(keywords){
+  // keep the email scope box in sync with saved niches
+  const kw = $("send-kw");
+  if (!kw.dataset.set && keywords.length) { kw.value = keywords[0]; kw.dataset.set="1"; }
 }
 
 function copyArea(id, btn){
-  const el = $(id);
-  el.style.display="block";
-  el.select();
+  const el = typeof id === "string" ? $(id) : id;
+  if (!el || el.value === undefined) return;
+  if (el.style) el.style.display="block";
+  if (typeof el.select === "function") el.select();
   navigator.clipboard ? navigator.clipboard.writeText(el.value).then(()=>flash(btn)) : (document.execCommand("copy"), flash(btn));
 }
 function flash(btn){ const t=btn.textContent; btn.textContent="Copied ✓"; setTimeout(()=>btn.textContent=t, 1200); }
 
-function renderFunnel(f){
+function renderStats(d){
+  $("stat-clicks").textContent = d.stats ? (d.stats.clicks||0) : 0;
+  $("stat-subs").textContent = d.stats ? (d.stats.subscribers_active||0) : 0;
+  $("stat-ready").textContent = d.stats ? (d.stats.subscribers_ready||0) : 0;
+  const top = d.stats && d.stats.top_product;
+  $("stat-top").textContent = top ? (top.asin||"product") : "—";
+}
+
+function renderLaunchStrip(d){
+  const s = $("launch-strip");
+  const bits = [];
+  bits.push(`<span class="pill on">🚀 ${esc(d.keyword)}</span>`);
+  bits.push(`<span class="pill on">🖥 Landing live</span>`);
+  bits.push(`<span class="pill on">📡 IndexNow queued</span>`);
+  if (d.launched) bits.push(d.launched.ebook_cached
+    ? `<span class="pill on">📕 Ebook ready</span>`
+    : `<span class="pill">📕 Ebook warming…</span>`);
+  bits.push(`<span class="pill ${(d.stats && d.stats.clicks) ? "on" : ""}">👀 ${(d.stats && d.stats.clicks)||0} clicks tracked</span>`);
+  s.innerHTML = bits.join("");
+  s.style.display = "flex";
+}
+
+function renderFunnel(f, landing_url){
   // stages
-  $("stage-list").innerHTML = (f.stages||[]).map(s=>`<div><b>${esc(s[0])}</b><p>${esc(s[1])}</p></div>`).join("");
+  $("stage-list").innerHTML = (f.stages||[]).map(s=>`<div><b>${esc(s[0])}</b><p>${esc(s[1])}</p></div>`).join("") || '<p class="hint">Launch a niche to see the funnel.</p>';
   // top pick
   const p = f.pick;
   if (p && p.asin){
@@ -173,10 +240,10 @@ function renderFunnel(f){
   } else { $("top-pick").style.display="none"; $("qr-box").innerHTML=""; }
 
   // landing
-  $("lp-html").value = f.landing_page;
+  $("lp-html").value = f.landing_page || "";
   const lo = $("lp-open");
   lo.disabled = false;
-  lo.onclick = () => window.open(f.landing_url, "_blank");
+  lo.onclick = () => window.open(landing_url || f.landing_url, "_blank");
 
   // emails
   $("email-list").innerHTML = "";
@@ -192,13 +259,15 @@ function renderFunnel(f){
     box.appendChild(b); box.appendChild(ta);
     $("email-list").appendChild(box);
   });
+  if (!(f.email_sequence||[]).length && !$("email-list").innerHTML.trim())
+    $("email-list").innerHTML = '<p class="hint">No email sequence for this niche (needs products).</p>';
 
   // social
   const sl = $("social-list"); sl.innerHTML="";
   (Object.entries(f.social||{})).forEach(([platform, s])=>{
     const box = document.createElement("div");
     box.className = "sub";
-    box.innerHTML = `<h3>📣 ${esc(platform)}</h3><p class="who"># ${s.hashtags}</p>`;
+    box.innerHTML = `<h3>📣 ${esc(platform)}</h3><p class="who"># ${esc(s.hashtags)}</p>`;
     const ta = document.createElement("textarea");
     ta.readOnly=true; ta.rows=5; ta.value=s.caption;
     const b = document.createElement("button");
@@ -261,24 +330,76 @@ function renderFunnel(f){
   });
 }
 
-async function genTools(){
+function applyWorkbench(d){
+  $("tool-msg").textContent =
+    `Built ${d.count} products for "${d.keyword}". Tag: ${d.affiliate_tag||"not set"}. ` +
+    `IndexNow key ${d.indexnow && d.indexnow.key ? "ok" : "missing"}.`;
+  $("text").value = d.text_links || "";
+  $("markdown").value = d.markdown || "";
+
+  // ebook lead magnet
+  const eo = $("ebook-open");
+  if (d.ebook_url){
+    eo.setAttribute("href", d.ebook_url);
+    eo.classList.add("warm");
+    eo.style.pointerEvents = "";
+    const cb = $("ebook-copy");
+    cb.dataset.kind = "value";
+    cb.onclick = () => copyArea({value: location.origin + d.ebook_url}, cb);
+    $("ebook-hint").textContent = d.ebook_ready
+      ? "PDF is warm in cache — instant download."
+      : "PDF generates on first open (one-time, then cached).";
+  } else {
+    eo.removeAttribute("href");
+    eo.style.pointerEvents = "none";
+  }
+
+  renderStats(d);
+  if (d.launched) renderLaunchStrip(d);
+  // keep email scope pinned to the handled niche
+  $("send-kw").value = d.keyword || "";
+  renderFunnel(d.funnel || {}, d.landing_url);
+}
+
+async function launchMarketing(){
   const kw = $("kw-select").value;
   if(!kw){ $("tool-msg").textContent="Pick a saved niche first."; return; }
-  $("tool-msg").textContent="Building funnel…";
-  const r = await fetch("/api/tools?keyword="+kw);
-  const d = await r.json();
-  $("tool-msg").textContent = `Built ${d.count} products for "${d.keyword}". Tag: ${d.affiliate_tag||"not set"}.`;
-  $("text").value = d.text_links;
-  $("markdown").value = d.markdown;
-  renderFunnel(d.funnel);
+  $("tool-msg").textContent="🚀 Launching — building funnel, warming ebook, pinging IndexNow…";
+  const r = await fetch("/api/tools/launch", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({keyword: decodeURIComponent(kw)})
+  });
+  const d = await r.json().catch(()=>({error:"bad response"}));
+  if (!r.ok){ $("tool-msg").textContent = (d && d.error) || "Launch failed."; return; }
+  applyWorkbench(d);
+  history.replaceState(null, "", "/tool?keyword=" + kw);
+}
+
+async function sendNextBatch(){
+  const r = await fetch("/api/sequence/send", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({keyword: $("send-kw").value.trim(), dry_run: !$("real-send").checked})
+  });
+  const d = await r.json().catch(()=>({ok:false, error:"bad response"}));
+  const out = $("send-out");
+  if (d && d.ok){
+    if (d.dry_run) out.textContent = `Dry run for "${d.keyword || "all niches"}": ${d.ready} ready for the next email.`;
+    else out.textContent = `Sent ${d.sent} to "${d.keyword || "all niches"}" · skipped ${d.skipped} · errors ${d.errors} (ready ${d.ready}).`;
+  } else out.textContent = (d && d.error) || "Send failed.";
 }
 
 document.addEventListener("DOMContentLoaded", ()=>{
-  loadNicheList();
-  $("tool-btn").onclick = genTools;
+  const q = new URLSearchParams(location.search);
+  const initial = q.get("keyword") || "";
+  loadNicheList(initial).then(()=>{
+    if (initial) { $("kw-select").value = encodeURIComponent(initial); launchMarketing(); }
+  });
+  $("launch-btn").onclick = launchMarketing;
+  $("send-btn").onclick = sendNextBatch;
   document.addEventListener("click", (e)=>{
     const b = e.target.closest("[data-grab]");
     if(!b) return;
+    if (b.dataset.kind === "value" && b.onclick) return; // handled by its own handler
     copyArea(b.dataset.grab, b);
   });
 });

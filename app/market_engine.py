@@ -224,6 +224,7 @@ def build_email_sequence(keyword, items):
     stars = pick.get("stars")
     reviews = pick.get("reviews")
     proof = f"⭐ {stars}/5 from {reviews:,} Amazon buyers" if (stars and reviews) else "highly rated on Amazon"
+    social_head = f"What {reviews:,} buyers already think" if reviews else "What buyers already think"
     return [
         {"name": "Email 1 · Hook + value", "subject": f"Ignore if this isn't for you, but {title[:48]}…",
          "body": f"""Subject: Ignore if this isn't for you, but {title[:48]}…
@@ -239,8 +240,8 @@ My one-line take: it solves the problem, it's priced well{(' at ' + price) if pr
 No strings, no code — just the link. If it's not your thing, hit delete.
 
 — {{your_name}}"""},
-        {"name": "Email 2 · Social proof", "subject": f"What {reviews:,} buyers already think" if reviews else "What buyers already think",
-         "body": f"""Subject: What {reviews:,} buyers already think
+        {"name": "Email 2 · Social proof", "subject": social_head,
+         "body": f"""Subject: {social_head}
 
 Hi {{first_name}},
 

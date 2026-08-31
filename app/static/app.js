@@ -65,6 +65,24 @@ async function loadSettings() {
       <span class="tag">${p.has_key ? "keyed ✓" : "no key"}</span>`;
     box.appendChild(row);
   }
+  renderConnections(s);
+}
+
+function renderConnections(s) {
+  const pills = [];
+  pills.push(s.mailer && s.mailer.configured
+    ? `<span class="pill on">✉️ SMTP ${esc(s.mailer.host || "on")}</span>`
+    : `<span class="pill">✉️ SMTP not configured</span>`);
+  pills.push(s.ai && s.ai.configured
+    ? `<span class="pill on">🤖 ${esc(s.ai.provider)} · ${esc(s.ai.model)}</span>`
+    : `<span class="pill">🤖 AI not configured</span>`);
+  const pub = s.publish || {};
+  pills.push(pub.indexnow_key
+    ? `<span class="pill on">📡 IndexNow ${esc(pub.indexnow_key)}</span>`
+    : `<span class="pill">📡 no IndexNow key</span>`);
+  if (pub.sitemap) pills.push(`<span class="pill"><a href="${esc(pub.sitemap)}" target="_blank" rel="noopener">🗺 sitemap</a></span>`);
+  if (pub.site_url) pills.push(`<span class="pill"><a href="${esc(pub.site_url)}" target="_blank" rel="noopener">🌐 live site</a></span>`);
+  $("conn-status").innerHTML = pills.join("");
 }
 
 async function doMine() {
@@ -125,15 +143,29 @@ async function saveNiche(kw, score, sat, products) {
 async function loadSaved() {
   const r = await fetch("/api/niches");
   const data = await r.json();
-  $("saved-list").innerHTML = (data.niches||[]).map(s => `
+  const saved = data.niches || [];
+  $("saved-list").innerHTML = saved.map(s => {
+    const slug = s.slug || "";
+    const wp = `<a class="warm launch-link" style="text-decoration:none" href="/tool?keyword=${encodeURIComponent(s.keyword)}">🚀 Launch marketing</a>`;
+    return `
     <div class="saved-niche">
-      <b>${esc(s.keyword)}</b>
-      <span class="badge demand">demand ${s.score!=null?s.score:"—"}</span>
-      <span class="badge saturation">sat ${s.saturation!=null?s.saturation:"—"}</span>
-      <span class="tag" style="color:var(--muted);font-size:12px">${esc(s.market)} · ${esc(s.created_at)}</span>
-      ${(s.products||[]).map(productCard).join("")}
-    </div>`).join("");
+      <div class="launch-row">
+        <b>${esc(s.keyword)}</b>
+        <span class="badge demand">demand ${s.score!=null?s.score:"—"}</span>
+        <span class="badge saturation">sat ${s.saturation!=null?s.saturation:"—"}</span>
+        <span class="tag" style="color:var(--muted);font-size:12px">${esc(s.market)} · ${esc(s.created_at)}</span>
+        ${wp}
+        <div class="links">
+          ${slug?`<a href="/n/${escapeAttr(slug)}">review ↗</a>`:""}
+          ${slug?`<a href="/lp/${escapeAttr(slug)}">landing ↗</a>`:""}
+        </div>
+      </div>
+      <div class="grid">${(s.products||[]).map(productCard).join("")}</div>
+    </div>`;
+  }).join("") || '<p class="hint">Nothing saved yet — mine or search a niche to populate this list.</p>';
 }
+
+function escapeAttr(s) { return String(s).replace(/"/g, "&quot;"); }
 
 document.addEventListener("DOMContentLoaded", () => {
   loadSettings().then(loadSaved);

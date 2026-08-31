@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pstore — Amazon Affiliate Niche Finder</title>
 <link rel="stylesheet" href="/style.css">
+<style>
+  .step-tag { display:inline-block; font-size:12px; font-weight:800; letter-spacing:.06em;
+    color:var(--accent); text-transform:uppercase; margin-bottom:2px; }
+  .conn { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .conn .pill { display:inline-flex; align-items:center; gap:6px; background:#fffdf8;
+    border:1px solid var(--border); border-radius:999px; padding:6px 12px; font-size:12.5px; color:var(--muted); }
+  .conn .pill.on { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:700; }
+  .launch-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+  .launch-row .links { display:flex; gap:8px; flex-wrap:wrap; margin-left:auto; }
+</style>
 </head>
 <body>
 <header>
@@ -13,19 +23,18 @@
   </a>
   <div class="hero">
     <h1>Find winning niches, <span>no code, no API key.</span></h1>
-    <p class="tagline">Amazon affiliate niche finder — mine a topic, pick products, and push ready-to-share affiliate links straight from one dashboard.</p>
+    <p class="tagline">Amazon affiliate niche finder — mine a topic, pick products, and launch a full marketing kit for any niche from one dashboard.</p>
     <div class="hero-badges">
       <span class="badge demand">✓ live Amazon data</span>
       <span class="badge saturation">✓ autosuggest expansion</span>
-      <span class="badge source">✓ affiliate-ready links</span>
+      <span class="badge source">✓ one-click marketing</span>
     </div>
   </div>
   <nav>
     <a href="#mine" class="primary">🌱 Mine</a>
     <a href="#search">🔍 Search</a>
     <a href="#saved">💾 Saved</a>
-    <a href="/tool">🛠 Tools</a>
-    <a href="/keys">🔑 Keys</a>
+    <a href="/tool">🚀 Workbench</a>
     <a href="#settings">🎛 Settings</a>
     <a href="/admin">🗺 All pages</a>
     <a href="/admin/logout">⎋ Logout</a>
@@ -34,34 +43,21 @@
 </header>
 
 <main>
-  <section id="settings" class="card">
-    <h2>🎛 Settings</h2>
-    <div class="row">
-      <label>Marketplace
-        <select id="market"></select>
-      </label>
-      <label>Affiliate tag
-        <input id="tag" placeholder="yourname-20" title="Appended to every product link">
-      </label>
-      <button id="save-settings" class="warm">Save</button>
-    </div>
-    <div id="scraper-keys"></div>
-    <p id="settings-msg" class="msg"></p>
-  </section>
-
   <section id="mine" class="card">
+    <span class="step-tag">Step 1 · Find</span>
     <h2>🌱 Mine a niche</h2>
     <div class="row">
       <input id="mine-seed" placeholder="e.g. keto snacks">
       <select id="mine-market"></select>
       <button id="mine-btn" class="warm">Mine</button>
     </div>
-    <p class="hint">Uses Amazon autosuggest + product search. Enter any broad topic.</p>
+    <p class="hint">Uses Amazon autosuggest + product search. Enter any broad topic to surface profitable sub-niches.</p>
     <p id="mine-msg" class="msg"></p>
     <div id="mine-results"></div>
   </section>
 
   <section id="search" class="card">
+    <span class="step-tag">Step 1 · Find</span>
     <h2>🔍 Search products</h2>
     <div class="row">
       <input id="search-q" placeholder="search Amazon products">
@@ -73,8 +69,27 @@
   </section>
 
   <section id="saved" class="card">
+    <span class="step-tag">Step 2 · Build</span>
     <h2>💾 Saved niches</h2>
+    <p class="hint">Each saved niche gets its own live landing page and a one-click marketing launch.</p>
     <div id="saved-list"></div>
+  </section>
+
+  <section id="settings" class="card">
+    <span class="step-tag">Step 3 · Connect</span>
+    <h2>🎛 Settings &amp; connections</h2>
+    <div class="row">
+      <label>Marketplace
+        <select id="market"></select>
+      </label>
+      <label>Affiliate tag
+        <input id="tag" placeholder="yourname-20" title="Appended to every product link">
+      </label>
+      <button id="save-settings" class="warm">Save</button>
+    </div>
+    <div id="scraper-keys"></div>
+    <div class="conn" id="conn-status"></div>
+    <p id="settings-msg" class="msg"></p>
   </section>
 </main>
 

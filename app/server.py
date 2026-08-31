@@ -223,6 +223,11 @@ class Handler(BaseHTTPRequestHandler):
                 "providers": ai.providers(),
                 "note": "Ebook/headline copy uses the active AI provider; template fallback otherwise.",
             },
+            "publish": {
+                "indexnow_key": indexnow.key(),
+                "sitemap": "/sitemap.xml",
+                "site_url": seo.BASE_URL,
+            },
         }
 
     # ------------------------------------------------------------------ AI panel
@@ -471,6 +476,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 
         api_html = "".join('<a class="pill" href="%s">%s</a>' % (seo._clean(e), seo._clean(e))
                            for e in ("/api/settings", "/api/niches", "/api/tools",
+                                     "/api/tools/launch",
                                      "/api/mine", "/api/search", "/api/autosuggest",
                                      "/api/indexnow", "/api/subscribers", "/api/sequence/send"))
         body = f"""<!DOCTYPE html>
@@ -691,6 +697,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._indexnow_post()
             if parsed.path == "/api/sequence/send":
                 return self._sequence_send()
+            if parsed.path == "/api/tools/launch":
+                return self._tools_launch()
             if parsed.path == "/api/subscribers":
                 return self._subscribers_json()
             if parsed.path == "/api/ai/test":
@@ -776,6 +784,18 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
         self._push_indexnow(body.get("keyword"))
         return self._send(200, {"id": nid})
 
+    def _fire_indexnow(self, paths):
+        """Fire-and-forget IndexNow submit for a list of site-relative paths
+        (e.g. /n/keto-snacks). Never blocks the caller and never raises."""
+        try:
+            base = seo.BASE_URL.rstrip("/")
+            urls = [base + ("/" + p.lstrip("/")) for p in (paths or [])]
+        except Exception:
+            return
+        if not urls:
+            return
+        threading.Thread(target=lambda: indexnow.submit_urls(urls), daemon=True).start()
+
     def _push_indexnow(self, keyword):
         """Fire-and-forget IndexNow submit so a brand-new /n/ page is crawled
         in minutes instead of waiting for a sitemap re-crawl. Never blocks the
@@ -784,8 +804,7 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             slug = seo._slugify(keyword)
         except Exception:
             slug = "niche"
-        url = seo.BASE_URL.rstrip("/") + "/n/" + slug
-        threading.Thread(target=lambda: indexnow.submit_urls([url]), daemon=True).start()
+        self._fire_indexnow(["/n/" + slug])
 
     def _list_niches(self):
         with _lock:
@@ -796,6 +815,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
         for r in rows:
             d = dict(r)
             d["products"] = json.loads(d["products"] or "[]")
+            try:
+                d["slug"] = seo._slugify(d["keyword"])
+            except Exception:
+                d["slug"] = ""
             out.append(d)
         return self._send(200, {"niches": out})
 
@@ -1008,11 +1031,16 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
                     break
         return items, keyword
 
-    def _tools(self, q):
-        items, keyword = self._best_for_tools(q)
-        n = len(items or [])
-        return self._send(200, {
-            "keyword": keyword, "count": n, "affiliate_tag": amazon.AFFILIATE_TAG,
+    def _workbench_payload(self, keyword, items):
+        slug = seo._slugify(keyword) if keyword else ""
+        niche_url = seo.BASE_URL.rstrip("/") + "/n/" + slug if slug else None
+        landing_url = "/lp/" + slug if slug else None
+        subs, clicks, top_product = self._niche_stats(keyword, slug)
+        ebook_url = "/admin/ebooks/pdf?keyword=%s" % urllib.parse.quote(keyword) if keyword else None
+        return {
+            "keyword": keyword,
+            "count": len(items or []),
+            "affiliate_tag": amazon.AFFILIATE_TAG,
             "text_links": market_engine.build_text_links(items),
             "markdown": market_engine.build_markdown(items, heading=keyword),
             "email": market_engine.build_email_draft(items),
@@ -1021,7 +1049,71 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
             "funnel": market_engine.build_funnel(keyword, items,
                                                  site_url=seo.BASE_URL,
                                                  affiliate_tag=amazon.AFFILIATE_TAG),
-        })
+            "slug": slug,
+            "niche_url": niche_url,
+            "landing_url": landing_url,
+            "ebook_url": ebook_url,
+            "ebook_ready": keyword in _EBOOKS,
+            "stats": {"subscribers_active": subs["active"],
+                      "subscribers_ready": subs["ready"],
+                      "clicks": clicks,
+                      "top_product": top_product},
+            "indexnow": {"key": indexnow.key(), "status": "ready"},
+        }
+
+    def _niche_stats(self, keyword, slug):
+        """Per-niche feedback loop readings: opt-in subscribers (active / ready for
+        the next email) plus click intel gathered by the courier beacon."""
+        kw = (keyword or "").strip().lower()
+        with _lock:
+            conn = _db()
+            active = conn.execute(
+                "SELECT COUNT(*) c FROM subscribers WHERE unsubscribed=0 AND confirmed=1 "
+                "AND lower(keyword)=?", (kw,)).fetchone()["c"]
+            ready = conn.execute(
+                "SELECT COUNT(*) c FROM subscribers WHERE unsubscribed=0 AND confirmed=1 "
+                "AND sent_index < ? AND lower(keyword)=?",
+                (mailer.SEQUENCE_LENGTH, kw)).fetchone()["c"]
+            clicks = conn.execute(
+                "SELECT COUNT(*) c FROM clicks WHERE slug=?", (slug,)).fetchone()["c"]
+            top = conn.execute(
+                "SELECT asin, COUNT(*) c FROM clicks WHERE slug=? AND asin!='' "
+                "GROUP BY asin ORDER BY c DESC LIMIT 1", (slug,)).fetchone()
+            conn.close()
+        return {"active": active, "ready": ready}, clicks, (dict(top) if top else None)
+
+    def _tools(self, q):
+        items, keyword = self._best_for_tools(q)
+        return self._send(200, self._workbench_payload(keyword, items))
+
+    def _tools_launch(self):
+        """One-click marketing for a saved niche: compile every asset, warm the
+        lead-magnet ebook, ping IndexNow for the review + landing URLs, and return
+        the full workbench payload plus a launch summary. Never blocks on the
+        publish ping and never raises."""
+        body = self._body()
+        keyword = str(body.get("keyword") or "").strip()
+        items = []
+        for n in self._all_niches():
+            if n["keyword"].lower() == keyword.lower():
+                items = n["products"]
+                break
+        if not keyword or not items:
+            return self._send(404, {"error": "no saved niche matches that keyword"})
+        cached = self._ebook_for(keyword) is not None
+        try:
+            slug = seo._slugify(keyword)
+        except Exception:
+            slug = "niche"
+        self._fire_indexnow(["/n/" + slug, "/lp/" + slug])
+        payload = self._workbench_payload(keyword, items)
+        payload["launched"] = {
+            "keyword": keyword, "landing": True,
+            "ebook_cached": cached, "indexnow_queued": True,
+            "emails_ready": payload["stats"]["subscribers_ready"],
+            "clicks": payload["stats"]["clicks"],
+        }
+        return self._send(200, payload)
 
 
 # ------------------------------------------------------------------ email suite
@@ -1131,14 +1223,21 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
     def _sequence_send(self):
         body = self._body()
         dry = bool(body.get("dry_run"))
+        niche_kw = str(body.get("keyword") or "").strip().lower()
         if not mailer.configured():
             return self._send(200, {"ok": False, "error": "SMTP is not configured — set SMTP_HOST/USER/PASSWORD.",
                                     "sent": 0, "errors": 0, "ready": 0, "skipped": 0, "limit": 0})
         with _lock:
             conn = _db()
-            subs = conn.execute(
-                "SELECT * FROM subscribers WHERE unsubscribed=0 AND confirmed=1 "
-                "AND sent_index < ? ORDER BY id", (mailer.SEQUENCE_LENGTH,)).fetchall()
+            if niche_kw:
+                subs = conn.execute(
+                    "SELECT * FROM subscribers WHERE unsubscribed=0 AND confirmed=1 "
+                    "AND sent_index < ? AND lower(keyword)=? ORDER BY id",
+                    (mailer.SEQUENCE_LENGTH, niche_kw)).fetchall()
+            else:
+                subs = conn.execute(
+                    "SELECT * FROM subscribers WHERE unsubscribed=0 AND confirmed=1 "
+                    "AND sent_index < ? ORDER BY id", (mailer.SEQUENCE_LENGTH,)).fetchall()
             niche_map = {r["keyword"].strip().lower(): r
                          for r in conn.execute("SELECT keyword, products FROM niches")}
             conn.close()
@@ -1157,6 +1256,7 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
         if dry:
             return self._send(200, {"ok": True, "dry_run": True, "sent": 0, "errors": 0,
                                     "ready": len(ready), "skipped": unready,
+                                    "keyword": niche_kw or None,
                                     "limit": mailer.MAX_EMAILS_PER_RUN})
         sent = errors = 0
         for sid, idx, mail, to, to_name in ready:
@@ -1176,6 +1276,7 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
                 errors += 1
         return self._send(200, {"ok": True, "sent": sent, "errors": errors,
                                 "ready": len(ready), "skipped": unready,
+                                "keyword": niche_kw or None,
                                 "limit": mailer.MAX_EMAILS_PER_RUN})
 
     def _subs_table(self, rows):

@@ -310,6 +310,43 @@ class TestEmailSuite(unittest.TestCase):
         finally:
             mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
 
+    def test_sequence_send_scoped_to_one_keyword(self):
+        saved = (mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD)
+        mailer.SMTP_HOST = "smtp.test.local"
+        mailer.SMTP_USER = "u@example.com"
+        mailer.SMTP_PASSWORD = "pw"
+        self._subscribe("keto1@example.com", keyword="keto snacks")
+        self._subscribe("keto2@example.com", keyword="keto snacks")
+        self._subscribe("yoga1@example.com", keyword="yoga mat")
+        try:
+            def _dry(kw):
+                st, _, _, data = self._raw(
+                    "/api/sequence/send", "POST",
+                    body=json.dumps({"dry_run": True, "keyword": kw}),
+                    headers={"Content-Type": "application/json"}, cookie=self.cookie)
+                self.assertEqual(st, 200)
+                return json.loads(data)
+
+            p = _dry("keto snacks")
+            self.assertEqual(p["ready"], 2)
+            self.assertEqual(p["keyword"], "keto snacks")
+            p = _dry("yoga mat")
+            self.assertEqual(p["ready"], 1)
+            p = _dry("no such niche")
+            self.assertEqual(p["ready"], 0)
+            # a real (non-dry) scoped send only touches that niche's subscribers
+            st, _, _, data = self._raw(
+                "/api/sequence/send", "POST",
+                body=json.dumps({"keyword": "keto snacks"}),
+                headers={"Content-Type": "application/json"}, cookie=self.cookie)
+            self.assertEqual(st, 200)
+            self.assertEqual(json.loads(data)["sent"], 2)
+            self.assertEqual(self._sub("keto1@example.com")["sent_index"], 1)
+            self.assertEqual(self._sub("keto2@example.com")["sent_index"], 1)
+            self.assertEqual(self._sub("yoga1@example.com")["sent_index"], 0)
+        finally:
+            mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
+
     # --------------------------------------------------------------- admin pages
 
     def test_admin_pages_redirect_unauth(self):
