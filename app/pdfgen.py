@@ -99,8 +99,8 @@ class Pdf:
         if align in ("right", "center"):
             width = len(s) * 0.52 * size
             x = self.w - self.margin_x - width if align == "right" else x - width / 2
-        self._c("BT %s %d Tf %s %s %d Td (%s) Tj ET"
-                % (family, size, self._rgb(color), _n(x, y), 0, s))
+        self._c("BT %s %d Tf %s %s Td (%s) Tj ET"
+                % (family, size, self._rgb(color), _n(x, y), s))
 
     def ensure(self, need):
         if self.y - need < self.margin_y:

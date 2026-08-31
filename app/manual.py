@@ -220,6 +220,25 @@ def render_admin_manual(nav_html, totop_html):
 .tooltag{{display:inline-block;background:#fff;border:1px solid var(--border);border-radius:999px;padding:2px 10px;font-size:12px;margin:2px 4px 2px 0;color:var(--accent);text-decoration:none;font-weight:700}}
 .tooltag:hover{{border-color:var(--accent)}}
 .dlbar{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0 2px}}
+/* resizable-reader control (this page only) */
+#manual-main{{max-width:100%;margin:0;padding:22px 20px 60px;transition:width .18s ease}}
+.readctl{{position:sticky;top:70px;z-index:50;display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  background:rgba(255,255,255,.92);backdrop-filter:blur(6px);border:1px solid var(--border);
+  border-radius:14px;padding:8px 12px;margin:6px 0 14px;box-shadow:var(--shadow);font-size:13px}}
+.readctl b{{margin-right:2px}}
+.readctl .sep{{width:1px;height:22px;background:var(--border);margin:0 4px}}
+.readctl button{{border:1px solid var(--border);background:#fff;border-radius:999px;padding:5px 12px;
+  font-size:12.5px;font-weight:700;cursor:pointer;color:var(--text)}}
+.readctl button:hover{{border-color:var(--accent)}}
+.readctl button.on{{background:var(--accent);color:#fff;border-color:var(--accent)}}
+.readctl input[type=range]{{width:150px;accent-color:var(--accent);cursor:pointer}}
+.readctl .size{{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--muted);min-width:46px;text-align:right}}
+.readctl .hint{{color:var(--muted);font-size:12px}}
+#reader{{overflow-x:auto;scroll-margin-top:90px}}
+.readerhandle{{width:12px;align-self:stretch;cursor:ew-resize;flex:0 0 12px;display:flex;align-items:center;
+  justify-content:center;color:var(--muted);font-size:14px;user-select:none}}
+.readerhandle:hover{{color:var(--accent)}}
+.readwrap{{display:flex;align-items:stretch}}
 </style>
 </head><body>
 <header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
@@ -227,14 +246,25 @@ def render_admin_manual(nav_html, totop_html):
 <p class="tagline">The complete, visual guide to running pstore at its highest form — chip every tool on this page is a real, clickable shortcut.</p></div>
 {nav_html}
 </header>
-<main>
+<main id="manual-main">
+<div class="readctl" id="readctl" aria-label="Reading width controls">
+  <b>🔎 Read width</b>
+  <button data-w="760" title="Narrow column">Narrow</button>
+  <button data-w="1080" class="on" title="Default column">Normal</button>
+  <button data-w="1400" title="Wide column">Wide</button>
+  <button data-w="100" title="Full page width (100%)">Full</button>
+  <span class="sep"></span>
+  <input type="range" id="readr" min="640" max="2400" step="10" value="1080" title="Drag to size the reading window">
+  <span class="size" id="readsize">1080</span><span class="hint">px · drag edge or slide</span>
+</div>
+<div class="readwrap"><div class="reader" id="reader">
 <section class="card"><h2>📕 The manual — download it</h2>
 <div class="dlbar">
   <a class="btn warm" href="/admin/manual.pdf" download>Download PDF manual ⬇</a>
   <a class="btn" href="#toc">Jump to contents ↧</a>
   <a class="btn ghost" href="/admin">🗺 Back to all pages</a>
 </div>
-<p class="hint" style="margin-top:10px">A styled, printable PDF companion (no links — a document can't click). The section below is fully linked.</p>
+<p class="hint" style="margin-top:10px">A styled, printable PDF companion (no links — a document can't click). The section below is fully linked. Use the controls above to widen the reading window up to full page.</p>
 </section>
 
 <section class="card"><h2>🧭 Every tool &amp; feature — one click</h2>
@@ -335,8 +365,47 @@ def render_admin_manual(nav_html, totop_html):
 <li>Paste text links / Markdown / QR anywhere relevant</li>
 </ul>
 </section>
+</div><div class="readerhandle" id="readerhandle" title="Drag to resize reading width">⠿</div></div>
 </main>
 <footer><p>User manual — owner section, never indexed. <a href="/admin">All pages</a> · <a href="/admin/logout">Log out</a>.</p></footer>
+<script>
+(function(){{
+  var main=document.getElementById('manual-main'),
+      reader=document.getElementById('reader'),
+      ctl=document.getElementById('readctl'),
+      slider=document.getElementById('readr'),
+      size=document.getElementById('readsize'),
+      buttons=ctl.querySelectorAll('button[data-w]'),
+      handle=document.getElementById('readerhandle');
+  var maxW=Math.max(window.innerWidth-40, 640);
+  var saved=null;
+  try{{ saved=localStorage.getItem('pstore.manual.w'); }}catch(e){{}}
+  function apply(wst){{
+    var full = (wst==='100%');
+    if(full){{ slider.value=slider.max; size.textContent='Full'; main.style.width='100%'; }}
+    else{{ var w=Math.min(Math.max(parseInt(wst,10)||1080,640),maxW);
+      slider.value=w; size.textContent=w+''; main.style.width=w+'px'; }}
+    buttons.forEach(function(b){{ var on=(b.getAttribute('data-w')==='100'&&full)||((b.getAttribute('data-w')!=='100')&&!full&&parseInt(b.getAttribute('data-w'),10)===parseInt(main.style.width,10)); b.classList.toggle('on',on); }});
+    try{{ localStorage.setItem('pstore.manual.w', full?'100%':String(main.style.width.replace('px',''))); }}catch(e){{}}
+  }}
+  buttons.forEach(function(b){{
+    b.addEventListener('click', function(){{ apply(b.getAttribute('data-w')==='100' ? '100%' : b.getAttribute('data-w')); }});
+  }});
+  slider.addEventListener('input', function(){{ apply(String(slider.value)); }});
+  handle.addEventListener('mousedown', function(ev){{
+    ev.preventDefault();
+    var startX=ev.clientX, startW=main.offsetWidth;
+    function move(e){{
+      var w=Math.min(Math.max(startW+(e.clientX-startX),640),maxW);
+      apply(String(w));
+    }}
+    function up(){{ document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up); document.body.style.cursor=''; }}
+    document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+    document.body.style.cursor='ew-resize';
+  }});
+  apply(saved || 1080);
+}})();
+</script>
 {totop_html}
 </body></html>"""
     return body
