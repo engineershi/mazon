@@ -3,6 +3,15 @@
   "use strict";
   var main = document.querySelector("main[data-niche]");
   var slug = main ? (main.getAttribute("data-niche") || "page") : "page";
+  var baseSource = main ? (main.getAttribute("data-source") || "page") : "page";
+
+  /* Social-post attribution: when the page was reached via a UTM-tagged link
+     (utm_source=<platform>, utm_content=<post-code>), every click on it is
+     credited to that exact post so /admin/social + /admin/analytics can score
+     per-post traffic and conversions. */
+  var params = new URLSearchParams(location.search || "");
+  var utmSource = params.get("utm_source") || "";
+  var utmContent = params.get("utm_content") || "";
 
   /* ---- email opt-in: <form class="courier">, POST /subscribe, JSON ---- */
   document.addEventListener("submit", function (ev) {
@@ -42,13 +51,14 @@
     if (!a) return;
     var href = a.getAttribute("href") || "";
     if (href.indexOf("amazon.") === -1) return;
-    var source = a.getAttribute("data-beacon") || "page";
+    var source = utmSource || a.getAttribute("data-beacon") || baseSource;
     var asin = a.getAttribute("data-asin") || "";
     var payload = {
       slug: slug,
       source: source,
       referrer: (document.referrer || "").slice(0, 200),
-      asin: asin
+      asin: asin,
+      content: utmContent
     };
     if (navigator.sendBeacon) {
       navigator.sendBeacon("/api/track",
@@ -58,7 +68,8 @@
       img.src = "/api/track?slug=" + encodeURIComponent(payload.slug) +
                 "&source=" + encodeURIComponent(payload.source) +
                 "&referrer=" + encodeURIComponent(payload.referrer) +
-                "&asin=" + encodeURIComponent(payload.asin);
+                "&asin=" + encodeURIComponent(payload.asin) +
+                "&content=" + encodeURIComponent(payload.content);
     }
   });
 })();

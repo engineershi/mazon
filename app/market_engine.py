@@ -135,6 +135,7 @@ def build_landing_page(keyword, items, site_url=None):
     rest = [it for it in _best_items(items, 6) if it.get("asin") != (pick or {}).get("asin")]
     if not pick or not pick.get("asin"):
         return "<html><body><p>No products yet.</p></body></html>"
+    slug = _slug(keyword)
     title = _clip(pick.get("title"), 90)
     price = _price(pick) or "—"
     stars = pick.get("stars")
@@ -142,6 +143,8 @@ def build_landing_page(keyword, items, site_url=None):
     go = amazon.affiliate_url(pick["asin"])
     rating = f"{stars}★ ({reviews:,} ratings)" if (stars and reviews) else "highly rated on Amazon"
     e = html.escape
+    base = (site_url or "").rstrip("/")
+    og_image = (base + "/og/" + slug) if base else ""
     bullet_lines = []
     for it in rest[:3]:
         b = f"<li>{e(_clip(it.get('title'), 60))} — <strong>{e(_price(it) or 'see Amazon')}</strong>"
@@ -164,6 +167,14 @@ def build_landing_page(keyword, items, site_url=None):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{e(title)} — Best Picks</title>
+<meta property="og:title" content="{e(title)}">
+<meta property="og:description" content="The ranked best {e(keyword)} pick from live Amazon data — see why it wins, what it costs, and buy it in one click.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="{e(base)}/lp/{e(slug)}">
+<meta property="og:image" content="{e(og_image)}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{e(title)}">
+<meta name="twitter:description" content="The ranked best {e(keyword)} pick from live Amazon data.">
 <style>
   * {{ box-sizing: border-box; }}
   body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
@@ -187,13 +198,14 @@ def build_landing_page(keyword, items, site_url=None):
 </style>
 </head>
 <body>
+<main data-niche="{e(slug)}" data-source="landing">
 <div class="wrap">
   <div class="card">
     <span class="badge">🏆 Top pick · {rating}</span>
     <h1>{e(title)}</h1>
     <p class="muted">Vetted from live Amazon search data · {e(_slug(keyword).replace('-', ' '))} experts' picks</p>
     <div class="price">{e(price)}</div>
-    <a class="cta" href="{e(go)}" rel="nofollow sponsored noopener">Get it on Amazon →</a>
+    <a class="cta" href="{e(go)}" rel="nofollow sponsored noopener" data-asin="{e(pick['asin'])}" data-beacon="landing-cta">Get it on Amazon →</a>
     <div class="muted" style="text-align:center">Instant checkout · Amazon is the seller</div>
     <h3>Why it's our pick</h3>
     <ul>
@@ -203,12 +215,14 @@ def build_landing_page(keyword, items, site_url=None):
     </ul>
     <h3>More from this niche</h3>
     <ul>{bullets}</ul>
-    <a class="cta" href="{e(go)}" rel="nofollow sponsored noopener">Check price &amp; reviews →</a>
+    <a class="cta" href="{e(go)}" rel="nofollow sponsored noopener" data-asin="{e(pick['asin'])}" data-beacon="landing-cta">Check price &amp; reviews →</a>
     <h3>FAQs</h3>
     {faq}
     <p class="muted" style="margin-top:20px">As an Amazon Associate we earn from qualifying purchases.</p>
   </div>
 </div>
+</main>
+<script src="/courier.js" defer></script>
 </body>
 </html>"""
 

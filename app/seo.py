@@ -20,6 +20,9 @@ SITE_NAME = "pstore"
 SITE_DESC = "Hand-picked Amazon product picks by niche."
 BASE_URL = os.environ.get("PSTORE_URL", "https://pstore-gxbv.onrender.com").rstrip("/")
 
+# Optional Google Search Console ownership token — emits <meta name="google-site-verification">.
+GOOGLE_SITE_VERIFICATION = os.environ.get("PSTORE_GOOGLE_SITE_VERIFICATION", "")
+
 
 def _clean(s):
     return html.escape(str(s or ""), quote=True)
@@ -56,7 +59,14 @@ def _product_graph(items):
     return graph
 
 
-def _head(title, desc, canonical, path, jsonld=None):
+def _head(title, desc, canonical, path, jsonld=None, og_image=None):
+    img_html = ""
+    if og_image:
+        abs_img = og_image if str(og_image).startswith("http") else BASE_URL + og_image
+        img_html = (f'<meta property="og:image" content="{_clean(abs_img)}">\n'
+                    f'<meta name="twitter:image" content="{_clean(abs_img)}">\n')
+    gsc = (f'<meta name="google-site-verification" content="{_clean(GOOGLE_SITE_VERIFICATION)}">\n'
+           if GOOGLE_SITE_VERIFICATION else "")
     head = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -73,7 +83,7 @@ def _head(title, desc, canonical, path, jsonld=None):
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="{_clean(title)}">
 <meta name="twitter:description" content="{_clean(desc)}">
-<link rel="stylesheet" href="/style.css">
+{img_html}{gsc}<link rel="stylesheet" href="/style.css">
 """.encode("utf-8")
     if jsonld:
         payload = json.dumps(jsonld).replace("</", "<\\/")
@@ -343,7 +353,8 @@ def render_niche(keyword, niche, saved_niches=None):
         graph.append(editorial.faq_jsonld(keyword, best))
     graph.append(editorial.breadcrumb_jsonld(keyword))
     jsonld = {"@context": "https://schema.org", "@graph": graph}
-    head = _head(title, desc, canonical, canonical, jsonld=jsonld)
+    og = BASE_URL + "/og/" + _slugify(keyword)
+    head = _head(title, desc, canonical, canonical, jsonld=jsonld, og_image=og)
     body = f"""
 <header><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
 <nav><a href="/">🏠 Home</a><a href="/about">About</a><a href="/disclosure">Disclosure</a></nav></header>
@@ -363,6 +374,7 @@ def render_niche(keyword, niche, saved_niches=None):
 </div>
 {optin_html(keyword, "niche")}
 <script src="/courier.js" defer></script>
+<script src="/table-flow.js" defer></script>
 </main>
 """.encode("utf-8")
     return head + body + _footer()

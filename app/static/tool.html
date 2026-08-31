@@ -218,7 +218,7 @@ function renderLaunchStrip(d){
   s.style.display = "flex";
 }
 
-function renderFunnel(f, landing_url){
+function renderFunnel(f, landing_url, socialKit){
   // stages
   $("stage-list").innerHTML = (f.stages||[]).map(s=>`<div><b>${esc(s[0])}</b><p>${esc(s[1])}</p></div>`).join("") || '<p class="hint">Launch a niche to see the funnel.</p>';
   // top pick
@@ -276,6 +276,38 @@ function renderFunnel(f, landing_url){
     box.appendChild(b); box.appendChild(ta);
     sl.appendChild(box);
   });
+  if (!(f.social&&Object.keys(f.social).length) && !$("social-list").innerHTML.trim())
+    $("social-list").innerHTML = '<p class="hint">No social captions for this niche (needs a top pick).</p>';
+
+  // tracked social kits — publish these; the workbench tracks every click back
+  const kits = socialKit||[];
+  if (kits.length){
+    const kh = document.createElement("h3");
+    kh.textContent = "🎯 Tracked kits (drive clicks from your posts)";
+    sl.appendChild(kh);
+    const knote = document.createElement("p");
+    knote.className = "hint";
+    knote.textContent = "Six UTM-tagged posts pointing at the landing page. Open /admin/social to publish and watch per-post clicks.";
+    sl.appendChild(knote);
+    kits.forEach((k)=>{
+      const box = document.createElement("div");
+      box.className = "sub";
+      box.innerHTML = `<h3>${esc(k.platform)} · ${esc(k.name)}</h3><p class="who"># ${esc(k.hashtags)}</p>`;
+      const ta = document.createElement("textarea");
+      ta.readOnly=true; ta.rows=5; ta.value=k.body;
+      const linkP = document.createElement("p");
+      linkP.className = "hint";
+      linkP.style.wordBreak="break-all";
+      const a = document.createElement("a");
+      a.href = k.link; a.target="_blank"; a.rel="noopener"; a.textContent=k.link;
+      linkP.appendChild(a);
+      const b = document.createElement("button");
+      b.className="warm"; b.textContent="Copy post";
+      b.onclick = () => copyArea(ta, b);
+      box.appendChild(b); box.appendChild(ta); box.appendChild(linkP);
+      sl.appendChild(box);
+    });
+  }
 
   // dm
   $("dm-list").innerHTML="";
@@ -358,7 +390,7 @@ function applyWorkbench(d){
   if (d.launched) renderLaunchStrip(d);
   // keep email scope pinned to the handled niche
   $("send-kw").value = d.keyword || "";
-  renderFunnel(d.funnel || {}, d.landing_url);
+  renderFunnel(d.funnel || {}, d.landing_url, d.social_kit || []);
 }
 
 async function launchMarketing(){

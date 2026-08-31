@@ -42,6 +42,7 @@ import niche
 import oauth
 import seo
 import security
+import social
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
@@ -63,6 +64,7 @@ _SESSION_TTL = 12 * 60 * 60  # seconds
 _SESSIONS = {}  # token -> monotonic expiry
 
 _EBOOKS = {}  # keyword -> build_ebook() dict, LRU-ish (capped below)
+_SOCIAL_WEBHOOK = os.environ.get("SOCIAL_WEBHOOK", "")  # optional real-posting hook
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 
@@ -108,6 +110,24 @@ def _db():
         asin TEXT,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS social_posts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL,
+        keyword TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        name TEXT,
+        body TEXT,
+        link TEXT,
+        utm_content TEXT,
+        status TEXT DEFAULT 'draft',
+        created_at TEXT DEFAULT (datetime('now')),
+        published_at TEXT
+    )""")
+    try:
+        conn.execute("ALTER TABLE clicks ADD COLUMN content TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        conn.rollback()
     try:
         conn.execute("ALTER TABLE clicks ADD COLUMN asin TEXT")
         conn.commit()
@@ -429,6 +449,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 {chip('/admin/emails', '📧 Emails', 'emails')}
 {chip('/admin/ebooks', '📕 Ebooks', 'ebooks')}
 {chip('/admin/analytics', '📊 Analytics', 'analytics')}
+{chip('/admin/social', '📣 Social', 'social')}
 {chip('/admin', '🗺 All pages', 'admin', accent=True)}
 {chip('/admin/logout', '⎋ Logout', 'logout')}
 </nav>"""
@@ -447,7 +468,8 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
                  btn("/keys", "🔑 Keys & endpoints", "admin"),
                  btn("/admin/emails", "📧 Email capture & auto-send", "opt-in"),
                  btn("/admin/ebooks", "📕 AI ebook generator", "PDF lead magnet"),
-                 btn("/admin/analytics", "📊 Click tracking & analytics", "beacons")]
+                 btn("/admin/analytics", "📊 Click tracking & analytics", "beacons"),
+                 btn("/admin/social", "📣 Social publishing", "tracked posts")]
         for pid, meta in amazon._SCRAPER_PROVIDERS.items():
             tools.append(btn("/keys/" + seo._clean(pid), meta["name"] + " key", pid))
         tools.append(btn("/admin/logout", "⎋ Log out", "session"))
@@ -478,7 +500,8 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
                            for e in ("/api/settings", "/api/niches", "/api/tools",
                                      "/api/tools/launch",
                                      "/api/mine", "/api/search", "/api/autosuggest",
-                                     "/api/indexnow", "/api/subscribers", "/api/sequence/send"))
+                                     "/api/indexnow", "/api/subscribers", "/api/sequence/send",
+                                     "/api/social", "/api/social/publish"))
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>Admin — all pages · pstore</title>
@@ -602,6 +625,9 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._niche_page(path, q)
             if path.startswith("/lp/"):
                 return self._landing_page(path)
+            og = re.match(r"^/og/([a-z0-9-]+)$", path)
+            if og:
+                return self._og_image(og.group(1))
             go = re.match(r"^/go/([A-Z0-9]{10})$", path)
             if go:
                 return self._go(go.group(1))
@@ -617,6 +643,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_emails(q)
             if path == "/admin/analytics":
                 return self._admin_analytics()
+            if path == "/admin/social":
+                return self._admin_social(q)
+            if path == "/api/social":
+                return self._social_api(q)
             if path == "/keys":
                 return self._keys_page()
             key_provider = re.match(r"^/keys/([a-z0-9_-]+)$", path)
@@ -635,6 +665,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._send(200, open(os.path.join(STATIC, "style.css"), "rb").read(), "text/css; charset=utf-8")
             if path == "/courier.js":
                 with open(os.path.join(STATIC, "courier.js"), "rb") as fh:
+                    return self._send(200, fh.read(),
+                                      "application/javascript; charset=utf-8")
+            if path == "/table-flow.js":
+                with open(os.path.join(STATIC, "table-flow.js"), "rb") as fh:
                     return self._send(200, fh.read(),
                                       "application/javascript; charset=utf-8")
             if path == "/api/settings":
@@ -697,6 +731,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._indexnow_post()
             if parsed.path == "/api/sequence/send":
                 return self._sequence_send()
+            if parsed.path == "/api/social/publish":
+                return self._social_publish()
             if parsed.path == "/api/tools/launch":
                 return self._tools_launch()
             if parsed.path == "/api/subscribers":
@@ -1054,6 +1090,7 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
             "landing_url": landing_url,
             "ebook_url": ebook_url,
             "ebook_ready": keyword in _EBOOKS,
+            "social_kit": social.post_kits(keyword, items, base_url=seo.BASE_URL),
             "stats": {"subscribers_active": subs["active"],
                       "subscribers_ready": subs["ready"],
                       "clicks": clicks,
@@ -1116,14 +1153,282 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
         return self._send(200, payload)
 
 
+# ------------------------------------------------------------------ social suite
+    def _saved_niche(self, keyword):
+        keyword = (keyword or "").strip().lower()
+        for n in self._all_niches():
+            if (n["keyword"] or "").strip().lower() == keyword:
+                return n
+        return None
+
+    def _webhook_url(self):
+        """Effective SOCIAL_WEBHOOK — live env first, then whatever was set at
+        boot (so a webhook can be flipped on without restarting, and tests can
+        inject one at runtime)."""
+        return os.environ.get("SOCIAL_WEBHOOK", "") or _SOCIAL_WEBHOOK
+
+    def _social_kits(self, keyword):
+        """Six UTM-tracked post kits for the niche's top pick (empty when the
+        niche has no products or no saved niche matches). Kit URLs are stable
+        per (slug, platform): once a post exists its attribution code is reused,
+        so re-publishing flips status instead of forking a new tracked link."""
+        n = self._saved_niche(keyword)
+        if not n:
+            return []
+        slug = seo._slugify(n["keyword"])
+        kits = social.post_kits(n["keyword"], n["products"] or [],
+                                base_url=seo.BASE_URL, slug=slug)
+        if not kits:
+            return kits
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT platform, utm_content FROM social_posts WHERE lower(slug)=?",
+                (slug,)).fetchall()
+            conn.close()
+        keep = {}
+        for r in rows:
+            keep.setdefault(r["platform"], r["utm_content"])
+        for kit in kits:
+            code = keep.get(kit["platform"])
+            if code:
+                kit["utm_content"] = code
+                kit["link"] = social.track_link(seo.BASE_URL, slug,
+                                                kit["platform"], code)
+        return kits
+
+    def _social_db(self, keyword, slug, kits):
+        """Published posts + per-post click counts (attribution via utm_content)."""
+        codes = [k.get("utm_content") for k in kits or []]
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT * FROM social_posts WHERE lower(slug)=? ORDER BY id",
+                (slug or "",)).fetchall()
+            stats = {}
+            for code in codes:
+                if not code:
+                    continue
+                stats[code] = conn.execute(
+                    "SELECT COUNT(*) c FROM clicks WHERE lower(slug)=? AND content=?",
+                    (slug or "", code)).fetchone()["c"]
+            conn.close()
+        return [dict(r) for r in rows], stats
+
+    def _og_image(self, slug):
+        """Generated 1200x630 SVG share card — the og:image/twitter:image the
+        SEO pages point at. Served publicly + cacheable (static by slug)."""
+        for n in self._all_niches():
+            try:
+                if slug != seo._slugify(n["keyword"]):
+                    continue
+                items = n["products"] or []
+                pick = market_engine.pick_for_buyers(items)
+                title = (pick or {}).get("title") or ("Best " + n["keyword"])
+                stars = (pick or {}).get("stars")
+                reviews = (pick or {}).get("reviews")
+                svg = social.og_svg(slug, n["keyword"], title, stars, reviews)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.send_header("Content-Length", str(len(svg)))
+                self.end_headers()
+                self.wfile.write(svg)
+                return None
+            except Exception:
+                continue
+        return self._send(404, {"error": "og image not found"})
+
+    def _social_api(self, q):
+        keyword = (q.get("keyword") or [""])[0].strip()
+        webhook = bool(self._webhook_url())
+        if not keyword:
+            return self._send(200, {"keyword": "", "kits": [], "published": [],
+                                    "stats": {}, "webhook": webhook})
+        kits = self._social_kits(keyword)
+        slug = seo._slugify(keyword)
+        published, stats = self._social_db(keyword, slug, kits)
+        return self._send(200, {"keyword": keyword, "kits": kits,
+                                "published": published, "stats": stats,
+                                "webhook": webhook})
+
+    def _webhook_publish(self, kits):
+        """Fire-and-forget SOCIAL_WEBHOOK POSTs for each published kit, so
+        Zapier/Make/browser tools (or a future native API) can post for real.
+        Never raises and never blocks the publish response."""
+        webhook = self._webhook_url()
+        if not webhook or not kits:
+            return
+
+        def fire():
+            for kit in kits:
+                try:
+                    req = urllib.request.Request(
+                        webhook,
+                        data=json.dumps({"body": kit["body"], "link": kit["link"],
+                                         "platform": kit["platform"]}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"}, method="POST")
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        resp.read()
+                except Exception:
+                    continue
+        threading.Thread(target=fire, daemon=True).start()
+
+    def _social_publish(self):
+        """Publish one (or all) post kit(s) for a niche: upsert the social_posts
+        row to status 'published' and fire the webhook for genuine posting."""
+        body = self._body()
+        keyword = str(body.get("keyword") or "").strip()
+        platform = str(body.get("platform") or "").strip()
+        if not keyword:
+            return self._send(400, {"error": "keyword required"})
+        kits = self._social_kits(keyword)
+        if not kits:
+            return self._send(404, {"error": "no saved niche or top pick for that keyword"})
+        if platform and platform != "all" and platform not in social.PLATFORMS:
+            return self._send(400, {"error": "unknown platform"})
+        pick_list = kits if platform == "all" else \
+            [k for k in kits if k["platform"] == platform]
+        slug = seo._slugify(keyword)
+        now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with _lock:
+            conn = _db()
+            ids = []
+            for kit in pick_list:
+                row = conn.execute(
+                    "SELECT id FROM social_posts WHERE lower(slug)=? AND utm_content=?",
+                    (slug, kit["utm_content"])).fetchone()
+                if row:
+                    conn.execute(
+                        "UPDATE social_posts SET status='published', published_at=?, "
+                        "name=?, body=?, link=? WHERE id=?",
+                        (now, kit["name"], kit["body"], kit["link"], row["id"]))
+                    ids.append(row["id"])
+                else:
+                    cur = conn.execute(
+                        "INSERT INTO social_posts (slug, keyword, platform, name, body, "
+                        "link, utm_content, status, published_at) VALUES (?,?,?,?,?,?,?, "
+                        "'published', ?)",
+                        (slug, keyword, kit["platform"], kit["name"], kit["body"],
+                         kit["link"], kit["utm_content"], now))
+                    ids.append(cur.lastrowid)
+            conn.commit()
+            conn.close()
+        self._webhook_publish(pick_list)
+        _, stats = self._social_db(keyword, slug, kits)
+        return self._send(200, {"ok": True, "published": len(ids), "posts": pick_list,
+                                "stats": stats, "webhook": bool(self._webhook_url()),
+                                "keyword": keyword})
+
+    def _admin_social(self, q):
+        niches = [n["keyword"] for n in self._all_niches()]
+        keyword = (q.get("keyword") or [""])[0].strip() or (niches[0] if niches else "")
+        opts = "".join('<option value="%s"%s>%s</option>' % (seo._clean(k),
+                        ' selected' if k == keyword else "", seo._clean(k)) for k in niches)
+        if keyword:
+            kits = self._social_kits(keyword)
+            slug = seo._slugify(keyword)
+            published, stats = self._social_db(keyword, slug, kits)
+        else:
+            kits, published, stats, slug = [], [], {}, ""
+        webhook_state = ("<b>Configured</b> — publishing also fires your <code>SOCIAL_WEBHOOK</code>."
+                         if self._webhook_url() else
+                         "Not set — one click here flips the post to <b>published</b> and shows the "
+                         "copy-ready kit to paste anywhere. Set <code>SOCIAL_WEBHOOK</code> to also "
+                         "POST <code>{body, link, platform}</code> to Zapier/Make for real posting.")
+        kit_cards = []
+        for kit in kits:
+            hashing = stats.get(kit["utm_content"]) or 0
+            badge = ""
+            for p in published:
+                if p["utm_content"] == kit["utm_content"] and p["status"] == "published":
+                    badge = "<span class='badge' style='background:#e6ffe8;color:#1e8e3e'>published %s</span>" % \
+                        seo._clean(p.get("published_at") or "")
+                    break
+            kit_cards.append(f"""<div class="sub soc-kit">
+<h3>📣 {seo._clean(kit['platform'])} <span class="who">· {seo._clean(kit['name'])}</span> {badge} <span class="who">· {hashing} click(s) on this post</span></h3>
+<textarea readonly rows="5">{seo._clean(kit['body'])}</textarea>
+<p class="key" title="Tracked link (UTM) — every share uses this exact URL">{seo._clean(kit['link'])}</p>
+<div class="row">
+<button class="warm soc-pub" data-kw="{seo._clean(keyword)}" data-platform="{seo._clean(kit['platform'])}">Publish</button>
+<button class="soc-copy">Copy post</button>
+</div>
+</div>""")
+        kit_html = "".join(kit_cards) if kit_cards else \
+            '<p class="hint">Choose a saved niche with products — each kit turns its top pick into a tracked post.</p>'
+        pub_rows = "".join(
+            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class='ct'>%s</td></tr>"
+            % (seo._clean(p["platform"]), seo._clean(p["name"]), seo._clean(p["utm_content"]),
+               seo._clean(p["published_at"] or p["created_at"]),
+               stats.get(p["utm_content"]) or 0)
+            for p in published) or "<tr><td colspan='5' class='hint'>Nothing published yet — hit Publish above.</td></tr>"
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Social — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+<style>
+.soc-kit textarea {{ width:100%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }}
+.soc-kit .key {{ margin:8px 0 0; word-break:break-all; }}
+</style>
+</head><body>
+<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>One-click <span>social publishing.</span></h1>
+<p class="tagline">Every post is pre-written, UTM-tracked and points back to the niche landing page — publish here, then watch clicks land in Analytics.</p></div>
+{self._admin_nav('social')}
+</header>
+<main>
+<section class="card"><h2>📣 Tracked post kits</h2>
+<p class="hint" style="margin-top:-4px">Webhook: {webhook_state}</p>
+<form class="row" method="get" action="/admin/social">
+  <label>Niche <select name="keyword" onchange="this.form.submit()">{opts}</select></label>
+</form>
+<div class="cols">{kit_html}</div>
+<p id="out" class="msg"></p>
+</section>
+<section class="card"><h2>✅ Published posts &amp; clicks</h2>
+<p class="hint">Each code counts clicks on the landing page with that exact UTM tag — so you can see, per post, who clicked through.</p>
+<table class="plain"><thead><tr><th>Platform</th><th>Post</th><th>Code</th><th>Published</th><th>Clicks</th></tr></thead>
+<tbody>{pub_rows}</tbody></table></section>
+</main>
+<footer><p>Posts only use real scraped data (title, price, stars, reviews) — no fabricated claims. Landing page carries the courier beacon, so every tap is attributed.</p></footer>
+<script src="/table-flow.js" defer></script>
+<script>
+function $(id){{return document.getElementById(id);}}
+async function pub(btn){{
+  $("out").textContent = "Publishing…";
+  const r = await fetch("/api/social/publish", {{method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify({{keyword: btn.dataset.kw, platform: btn.dataset.platform}})}});
+  const d = await r.json().catch(()=>({{ok:false}}));
+  $("out").textContent = d && d.ok
+    ? "Published " + d.published + " post(s) for “" + d.keyword + "”. See the table below."
+    : (d && d.error) || "Publish failed.";
+  setTimeout(()=>location.reload(), 900);
+}}
+document.addEventListener("click", (e)=>{{
+  const p = e.target.closest(".soc-pub");
+  if (p){{ pub(p); return; }}
+  const c = e.target.closest(".soc-copy");
+  if (c){{
+    const box = c.closest(".soc-kit");
+    const body = box.querySelector("textarea").value;
+    const link = box.querySelector(".key").textContent.trim();
+    const text = body + "\\n\\n" + link;
+    navigator.clipboard ? navigator.clipboard.writeText(text).then(()=>{{const t=c.textContent;c.textContent="Copied ✓";setTimeout(()=>c.textContent=t,1200);}}) : (document.execCommand("copy"), c.textContent="Copied ✓");
+  }}
+}});
+</script>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+
 # ------------------------------------------------------------------ email suite
-    def _record_click(self, slug, source="page", referrer="", asin=""):
+    def _record_click(self, slug, source="page", referrer="", asin="", content=""):
         ip = security.ip_token(self._client_ip())
         with _lock:
             conn = _db()
             conn.execute(
-                "INSERT INTO clicks (slug, source, ip, referrer, asin) VALUES (?,?,?,?,?)",
-                (slug, source, ip, referrer, asin))
+                "INSERT INTO clicks (slug, source, ip, referrer, asin, content) VALUES (?,?,?,?,?,?)",
+                (slug, source, ip, referrer, asin, content))
             conn.commit()
             conn.close()
 
@@ -1199,7 +1504,8 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
         source = str(body.get("source") or (q.get("source") or ["page"])[0]).strip()[:40] or "page"
         referrer = str(body.get("referrer") or (q.get("referrer") or [""])[0]).strip()[:250]
         asin = str(body.get("asin") or (q.get("asin") or [""])[0]).strip().upper()[:40]
-        self._record_click(slug, source, referrer, asin)
+        content = str(body.get("content") or (q.get("content") or [""])[0]).strip()[:40]
+        self._record_click(slug, source, referrer, asin, content)
         return self._send(200, {"ok": True})
 
     def _subs_stats(self, conn):
@@ -1354,6 +1660,7 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
 {seq_html}</section>
 </main>
 <footer><p>Emails only ever use real scraped data (title, price, stars, reviews) plus {{first_name}} — and always carry an unsubscribe link.</p></footer>
+<script src="/table-flow.js" defer></script>
 <script>
 function $(id){{return document.getElementById(id);}}
 $("send").onclick = async () => {{
@@ -1598,6 +1905,7 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
 <table class="plain"><thead><tr><th>Niche</th><th>Source</th><th>Referrer</th><th>When</th></tr></thead><tbody>{recent_rows}</tbody></table></section>
 </main>
 <footer><p>Clicks are counted server-side when a visitor's browser pings /api/track before Amazon loads. Referrers are truncated; raw IPs are never stored.</p></footer>
+<script src="/table-flow.js" defer></script>
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
