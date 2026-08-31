@@ -457,7 +457,7 @@ def home_trust_strip():
             '</div></section>')
 
 
-def niche_grid(saved_niches, limit=36):
+def niche_grid(saved_niches, limit=36, anchor=""):
     """Explore-niches grid: each tile links to its ranked page and shows how
     many live picks it holds, so the homepage doubles as a topic map."""
     if not saved_niches:
@@ -470,6 +470,7 @@ def niche_grid(saved_niches, limit=36):
         tiles.append('<a class="ntile" href="/n/%s"><b>%s</b>'
                      '<span>%d ranked picks · live prices</span></a>'
                      % (_clean(slug), _clean(kw.title()), count))
-    return '<section class="card"><h2>Explore the niches</h2>' \
+    sid = ' id="%s"' % _clean(anchor) if anchor else ""
+    return '<section class="card"%s><h2>Explore the niches</h2>' \
            '<p class="hint">Every page below is fully crawlable and carries live, affiliate-tagged links.</p>' \
-           '<div class="ngrid">%s</div></section>' % "".join(tiles)
+           '<div class="ngrid">%s</div></section>' % (sid, "".join(tiles))

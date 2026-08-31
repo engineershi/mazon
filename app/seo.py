@@ -11,9 +11,7 @@ import html
 import json
 import os
 import re
-import urllib.parse
 
-import amazon
 import editorial
 
 SITE_NAME = "pstore"
@@ -285,13 +283,14 @@ contradicts this, <a href="/contact">tell us</a>.</p>
     return render_page("disclosure", "Affiliate Disclosure", desc, content)
 
 
-def optin_html(keyword, source="niche"):
+def optin_html(keyword, source="niche", anchor=""):
     """Email-capture widget: freq 0->1 niche updates. Hooks rendered by courier.js."""
     kw = _clean(keyword or "picks")
     label = ("Updates when these %s picks change" % keyword) if keyword else "The pstore picks note"
     sub = ("One honest email when this page's picks move — price drops, sold-out swaps, "
            "new top-rated options. Unsubscribe any time.")
-    return f"""<form class="courier card" action="/subscribe" method="post">
+    fid = ' id="%s"' % _clean(anchor) if anchor else ""
+    return f"""<form class="courier card"{fid} action="/subscribe" method="post">
   <h3>{label}</h3>
   <p class="hint">{sub}</p>
   <div class="courier-row">
@@ -352,9 +351,9 @@ def render_landing(saved_niches):
 {editorial.quick_picks_band(saved_niches)}
 {comp_preview and ("<section class='card'><h2>Compare the shortlist — {0}</h2><p class='hint'>Scannable table of the live picks for {1}. Swipe or scroll sideways if it overflows.</p>{2}</section>".format(_clean(comp_kw.title()), _clean(comp_kw), comp_preview)) or ""}
 {editorial.home_trust_strip()}
-{optin_html("", "home")}
+{optin_html("", "home", anchor="notify")}
 
-{editorial.niche_grid(saved_niches)}
+{editorial.niche_grid(saved_niches, anchor="niches")}
 
 <section class="card" id="method"><h2>🌱 How we pick</h2>
 <div class="features">

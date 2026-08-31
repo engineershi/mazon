@@ -17,15 +17,12 @@ GET  /api/niches        -> list saved niches from sqlite
    POST /api/ai/config     -> activate a provider runtime (admin)
 """
 import datetime
-import hashlib
 import hmac
 import json
 import os
 import re
 import secrets
-import socket
 import sqlite3
-import sys
 import threading
 import time
 import urllib.parse
@@ -1583,8 +1580,8 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
 </section>
 <section class="card"><h2>✅ Published posts &amp; clicks</h2>
 <p class="hint">Each code counts clicks on the landing page with that exact UTM tag — so you can see, per post, who clicked through.</p>
-<table class="plain"><thead><tr><th>Platform</th><th>Post</th><th>Code</th><th>Published</th><th>Clicks</th></tr></thead>
-<tbody>{pub_rows}</tbody></table></section>
+<div class="table-wrap"><table class="plain"><thead><tr><th>Platform</th><th>Post</th><th>Code</th><th>Published</th><th>Clicks</th></tr></thead>
+<tbody>{pub_rows}</tbody></table></div></section>
 </main>
 <footer><p>Posts only use real scraped data (title, price, stars, reviews) — no fabricated claims. Landing page carries the courier beacon, so every tap is attributed.</p></footer>
 <script src="/table-flow.js" defer></script>
@@ -2385,14 +2382,14 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
   <div class="feature"><h3>{stats['emails_sent']}</h3><p class="hint">emails sent</p></div>
 </div></section>
 <section class="card"><h2>🛒 Top clicked pages</h2>
-<table class="plain"><thead><tr><th>Niche</th><th>Clicks</th></tr></thead><tbody>{slug_rows}</tbody></table></section>
+<div class="table-wrap"><table class="plain"><thead><tr><th>Niche</th><th>Clicks</th></tr></thead><tbody>{slug_rows}</tbody></table></div></section>
 <section class="card"><h2>🏆 Most-clicked products</h2>
 <p class="hint">Which ASIN earns the taps, per niche — use it to pick which products to push in emails and which pages deserve more variants.</p>
-<table class="plain"><thead><tr><th>ASIN</th><th>Niche</th><th>Clicks</th></tr></thead><tbody>{product_rows}</tbody></table></section>
+<div class="table-wrap"><table class="plain"><thead><tr><th>ASIN</th><th>Niche</th><th>Clicks</th></tr></thead><tbody>{product_rows}</tbody></table></div></section>
 <section class="card"><h2>📥 By source</h2>
-<table class="plain"><thead><tr><th>Source</th><th>Clicks</th></tr></thead><tbody>{src_rows}</tbody></table></section>
+<div class="table-wrap"><table class="plain"><thead><tr><th>Source</th><th>Clicks</th></tr></thead><tbody>{src_rows}</tbody></table></div></section>
 <section class="card"><h2>🧾 Recent clicks</h2>
-<table class="plain"><thead><tr><th>Niche</th><th>Source</th><th>Referrer</th><th>When</th></tr></thead><tbody>{recent_rows}</tbody></table></section>
+<div class="table-wrap"><table class="plain"><thead><tr><th>Niche</th><th>Source</th><th>Referrer</th><th>When</th></tr></thead><tbody>{recent_rows}</tbody></table></div></section>
 </main>
 <footer><p>Clicks are counted server-side when a visitor's browser pings /api/track before Amazon loads. Referrers are truncated; raw IPs are never stored.</p></footer>
 <script src="/table-flow.js" defer></script>

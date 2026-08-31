@@ -8,6 +8,7 @@ lastmod derived from the niche created date."""
 import http.client
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -298,6 +299,20 @@ class TestSemSeoSite(unittest.TestCase):
         self.assertIn('/courier.js', html)
         self.assertIn('name="email"', html)
         self.assertIn('name="first_name"', html)
+
+    def test_homepage_nav_anchors_resolve(self):
+        st, _, _, body = self._raw("GET", "/")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        anchors = set(re.findall(r'href="#([a-z0-9-]+)"', html))
+        ids = set(re.findall(r'id="([a-z0-9-]+)"', html))
+        # every nav chip target must have a matching section id, or the click
+        # goes nowhere
+        for a in anchors:
+            self.assertIn(a, ids, "nav anchor #%s has no target id on the page" % a)
+        # the sections the chips point to exist
+        for a in ("top-picks", "niches", "notify", "method", "faq"):
+            self.assertIn(a, ids)
 
     def test_niche_noindex_when_missing(self):
         st, _, _, body = self._raw("GET", "/n/this-niche-does-not-exist")
