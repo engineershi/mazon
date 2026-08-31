@@ -34,6 +34,7 @@ import ai
 import ebook as ebook_mod
 import indexnow
 import mailer
+import manual
 import market_engine
 import niche
 import oauth
@@ -563,6 +564,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 {chip('/admin/social', '📣 Social', 'social')}
 {chip('/admin/sem', '🎯 SEM', 'sem')}
 {chip('/admin/seo', '🔍 SEO', 'seo')}
+{chip('/admin/manual', '📖 Manual', 'manual')}
 {chip('/admin/refresh', '📡 Refresh', 'refresh')}
 {chip('/admin', '🗺 All pages', 'admin', accent=True)}
 {chip('/admin/logout', '⎋ Logout', 'logout')}
@@ -586,6 +588,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
                  btn("/admin/social", "📣 Social publishing", "tracked posts"),
                  btn("/admin/sem", "🎯 Search funnel (SEM)", "long-tail growth"),
                  btn("/admin/seo", "🔍 SEO audit", "indexability + schema"),
+                 btn("/admin/manual", "📖 User manual", "visual + PDF guide"),
                  btn("/admin/refresh", "📡 Data refresh", "manual + auto re-mine")]
         for pid, meta in amazon._SCRAPER_PROVIDERS.items():
             tools.append(btn("/keys/" + seo._clean(pid), meta["name"] + " key", pid))
@@ -769,6 +772,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_sem(q)
             if path == "/admin/seo":
                 return self._admin_seo()
+            if path == "/admin/manual":
+                return self._admin_manual()
+            if path == "/admin/manual.pdf":
+                return self._admin_manual_pdf()
             if path == "/admin/refresh":
                 return self._admin_refresh(q)
             if path == "/api/sem":
@@ -1679,6 +1686,24 @@ document.addEventListener("click", (e)=>{{
 {_TOTOP}
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _admin_manual(self):
+        """In-app user manual: a visual, fully cross-linked guide to every tool,
+        page and feature, with an optional printable PDF download."""
+        body = manual.render_admin_manual(self._admin_nav("manual"), _TOTOP)
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _admin_manual_pdf(self):
+        """Serve the styled, printable PDF companion to the user manual."""
+        data = manual.build_pdf()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Content-Disposition", 'attachment; filename="pstore-user-manual.pdf"')
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+        return None
 
     def _admin_refresh(self, q):
         """Manual niche data refresh: re-mine one or all saved niches now, and

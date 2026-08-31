@@ -462,6 +462,32 @@ class TestEmailSuite(unittest.TestCase):
             "/admin/ebooks/pdf?keyword=no-such-niche", cookie=self.cookie)
         self.assertEqual(st, 404)
 
+    def test_admin_manual_redirects_unauth(self):
+        st, location, _, _ = self._raw("/admin/manual")
+        self.assertEqual(st, 302)
+        self.assertTrue(location.startswith("/admin/login"), location)
+
+    def test_admin_manual_page_cross_links(self):
+        st, _, ctype, data = self._raw("/admin/manual", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("text/html"))
+        html = data.decode("utf-8", "replace")
+        self.assertIn("User", html)
+        self.assertIn("manual", html.lower())
+        for tool in ("/dashboard", "/tool", "/keys", "/admin/emails",
+                     "/admin/ebooks", "/admin/analytics", "/admin/social",
+                     "/admin/sem", "/admin/seo", "/admin/refresh",
+                     "/admin/manual.pdf", "/n/air-fryer", "/lp/air-fryer"):
+            self.assertIn(tool, html, tool)
+        self.assertIn("Highest-form", html)
+
+    def test_admin_manual_pdf_served(self):
+        st, _, ctype, pdf = self._raw("/admin/manual.pdf", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("application/pdf"))
+        self.assertTrue(pdf.startswith(b"%PDF-"))
+        self.assertTrue(pdf.rstrip().endswith(b"%%EOF"))
+
     def test_ai_provider_panel_api(self):
         saved_url = ai._urlopen
         saved_runtime = dict(ai._RUNTIME)
