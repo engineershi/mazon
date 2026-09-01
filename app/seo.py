@@ -454,6 +454,7 @@ def indexable_urls(saved_niches, base_url=None):
         urls.append(base + "/" + page)
     for n in (saved_niches or []):
         urls.append(base + "/n/" + _slugify(n["keyword"]))
+        urls.append(base + "/lp/" + _slugify(n["keyword"]))
     return urls
 
 

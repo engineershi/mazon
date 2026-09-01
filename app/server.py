@@ -898,6 +898,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._tools_launch()
             if parsed.path == "/api/cms/page":
                 return self._cms_save_page()
+            if parsed.path == "/api/cms/preset":
+                return self._cms_apply_preset()
+            if parsed.path == "/api/cms/generate":
+                return self._cms_generate()
             cms_section = re.match(r"^/api/cms/pages/([0-9]+)/sections/([0-9]+)$", parsed.path)
             if cms_section:
                 return self._cms_update_section(cms_section.group(1), cms_section.group(2))
@@ -1095,6 +1099,7 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 kw = "niche"
             lm = (r["created_at"] or "")[:10] or "2026-08-28"
             entries.append((f"/n/{kw}", lm))
+            entries.append((f"/lp/{kw}", lm))
         return seo.render_sitemap(entries)
 
     def _landing(self):
@@ -1489,6 +1494,45 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
                 conn.close()
         return self._send(200, self._cms_page_payload(page_id))
 
+    def _cms_apply_preset(self):
+        """One-click restyle: apply a named style preset (color/mode/shape)."""
+        body = self._body()
+        page_id = int(body.get("page_id") or 0)
+        name = str(body.get("preset") or "").strip()
+        if name not in cms_mod.STYLE_PRESETS:
+            return self._send(400, {"error": "unknown preset"})
+        with _lock:
+            conn = _db()
+            try:
+                row = conn.execute(
+                    "SELECT id FROM lead_pages WHERE id=?", (page_id,)).fetchone()
+                if not row:
+                    return self._send(404, {"error": "page not found"})
+                cms_mod.apply_preset(conn, page_id, name)
+            finally:
+                conn.close()
+        return self._send(200, self._cms_page_payload(page_id))
+
+    def _cms_generate(self):
+        """One-click copy generation: reseed all section copy from the niche's
+        live data (persuasion defaults). Keeps style + settings toggles."""
+        body = self._body()
+        page_id = int(body.get("page_id") or 0)
+        keyword = str(body.get("keyword") or "").strip()
+        with _lock:
+            conn = _db()
+            try:
+                row = conn.execute(
+                    "SELECT keyword FROM lead_pages WHERE id=?", (page_id,)).fetchone()
+                if not row:
+                    return self._send(404, {"error": "page not found"})
+                keyword = keyword or row["keyword"]
+                count = cms_mod.generate_copy(conn, page_id, keyword)
+            finally:
+                conn.close()
+        return self._send(200, {"ok": True, "sections": count,
+                                "payload": self._cms_page_payload(page_id)})
+
     def _cms_update_section(self, page_id, section_id):
         """Update one section's content/enabled/sort_order."""
         page_id = int(page_id)
@@ -1542,13 +1586,40 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
 .field label {{ font-weight:700; margin-bottom:6px; }}
 .section-editor {{ border:1px solid var(--border); border-radius:16px; padding:16px;
   margin-bottom:14px; background:#fffdf8; }}
-.section-editor h3 {{ margin:0 0 12px; font-size:15px; }}
+.section-editor h3 {{ margin:0; font-size:15px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
 .section-editor textarea {{ min-height:70px; }}
 .items-editor textarea {{ min-height:110px; font-family:ui-monospace,Menlo,monospace; font-size:12px; }}
 .cols2 {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
-.color-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+.color-grid {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }}
 .color-grid label {{ font-size:11.5px; }}
 .outline {{ border:1px solid var(--border); border-radius:12px; padding:12px; margin:10px 0; background:#fff; }}
+.preset-grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }}
+.preset-btn {{ text-align:left; border:2px solid var(--border); border-radius:16px; padding:12px; cursor:pointer;
+  background:#fff; transition:border-color .15s ease, transform .15s ease; }}
+.preset-btn:hover {{ transform:translateY(-2px); }}
+.preset-btn.active {{ border-color:var(--accent,#ff6b2c); background:#fff6ee; }}
+.preset-btn .swatches {{ display:flex; gap:6px; margin-bottom:8px; }}
+.preset-btn .swatches i {{ width:22px; height:22px; border-radius:50%; border:1px solid rgba(0,0,0,.12); display:inline-block; }}
+.preset-btn b {{ display:block; font-size:13.5px; }}
+.preset-btn span {{ font-size:11.5px; color:var(--muted); }}
+/* toggle switch */
+.sw {{ position:relative; display:inline-block; width:44px; height:24px; vertical-align:middle; flex-shrink:0; }}
+.sw input {{ opacity:0; width:0; height:0; }}
+.sw .sl {{ position:absolute; inset:0; background:#cbd5e1; border-radius:999px; transition:.2s; cursor:pointer; }}
+.sw .sl:before {{ content:""; position:absolute; width:18px; height:18px; left:3px; top:3px; background:#fff;
+  border-radius:50%; transition:.2s; box-shadow:0 1px 3px rgba(0,0,0,.25); }}
+.sw input:checked + .sl {{ background:#22c55e; }}
+.sw input:checked + .sl:before {{ transform:translateX(20px); }}
+.toggle-row {{ display:flex; align-items:center; gap:10px; padding:8px 0; }}
+.toggle-row .lbl {{ font-weight:700; font-size:14px; }}
+.toggle-row .sub {{ color:var(--muted); font-size:12px; }}
+.sec-head {{ display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }}
+.sec-actions {{ display:flex; align-items:center; gap:10px; }}
+.copy-expand {{ border-top:1px dashed var(--border); margin-top:12px; padding-top:12px; }}
+details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); font-weight:700; font-size:13px; }}
+.hint-sm {{ font-size:12px; color:var(--muted); }}
+.bigbtn {{ width:100%; padding:16px; font-size:17px; font-weight:800; border-radius:14px;
+  border:0; cursor:pointer; color:#fff; background:linear-gradient(135deg,#ff6b2c,#ff873c); }}
 </style>
 </head><body>
 <header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
@@ -1579,6 +1650,12 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
     el.textContent = m;
     el.style.color = ok ? "#159a4b" : "#d64545";
   }}
+  function post(path, body) {{
+    return fetch(path, {{
+      method: "POST", headers: {{ "Content-Type": "application/json" }},
+      body: JSON.stringify(body)
+    }}).then(function (r) {{ return r.json(); }});
+  }}
   function collectStyle() {{
     var st = {{}};
     document.querySelectorAll("[data-style]").forEach(function (i) {{
@@ -1588,7 +1665,27 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
     st.border_radius = $("cms-radius") ? $("cms-radius").value : "";
     st.cta_gradient = $("cms-cta") ? $("cms-cta").value : "";
     st.layout = $("cms-layout") ? $("cms-layout").value : "centered";
+    st.hero_style = $("cms-hero") ? $("cms-hero").value : "gradient";
+    st.mode = $("cms-mode") ? $("cms-mode").value : "light";
+    var preset = document.querySelector("[data-preset].active");
+    if (preset) st.preset = preset.getAttribute("data-preset");
     return st;
+  }}
+  function collectSettings() {{
+    var s = {{ use_cms: $("use-cms") ? $("use-cms").checked : true }};
+    var gate = $("cms-gate");
+    if (gate) s.pdf_gated = gate.value === "1";
+    s.email_gate_enabled = gate ? s.pdf_gated : true;
+    s.promo_enabled = $("cms-promo") ? $("cms-promo").checked : false;
+    s.promo = {{ text: $("cms-promo-text") ? $("cms-promo-text").value : "",
+                code: $("cms-promo-code") ? $("cms-promo-code").value : "" }};
+    s.countdown_enabled = $("cms-countdown") ? $("cms-countdown").checked : false;
+    s.countdown_minutes = parseInt($("cms-cd-min") ? $("cms-cd-min").value : "30", 10);
+    s.countdown_headline = $("cms-cd-head") ? $("cms-cd-head").value : "";
+    s.countdown_done = $("cms-cd-done") ? $("cms-cd-done").value : "";
+    s.sticky_cta = $("cms-sticky") ? $("cms-sticky").checked : true;
+    s.animation = $("cms-anim") ? $("cms-anim").checked : true;
+    return s;
   }}
   function sectionContent(sec) {{
     var content = {{}};
@@ -1598,46 +1695,78 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
       if (txt.classList.contains("items-editor")) {{
         try {{ content[field] = JSON.parse(raw); }}
         catch (e) {{ content[field] = raw; }}
-      }} else {{
-        content[field] = raw;
-      }}
+      }} else {{ content[field] = raw; }}
     }});
     return content;
   }}
   function saveAll(ev) {{
     ev && ev.preventDefault();
     say("Saving…");
-    var body = {{ page_id: PAGE_ID, style: collectStyle() }};
-    var useCms = $("use-cms");
-    body.settings = {{ use_cms: useCms ? useCms.checked : true }};
-    var gate = $("cms-gate");
-    if (gate) body.settings.pdf_gated = gate.value === "1";
-    fetch("/api/cms/page", {{
-      method: "POST", headers: {{ "Content-Type": "application/json" }},
-      body: JSON.stringify(body)
-    }}).then(function (r) {{ return r.json(); }})
-      .then(function (d) {{ say("Page settings saved ✓", true); }})
+    post("/api/cms/page", {{ page_id: PAGE_ID, style: collectStyle(), settings: collectSettings() }})
+      .then(function (d) {{ say("Page settings saved ✓ — live now.", true); }})
       .catch(function () {{ say("Save failed.", false); }});
   }}
-  function saveSection(sec) {{
+  function saveSection(sec, enabled) {{
     var sid = sec.getAttribute("data-sec");
-    var en = sec.querySelector(".sec-enable");
-    var body = {{ section_id: parseInt(sid, 10) }};
-    body.content = sectionContent(sec);
-    body.enabled = en ? en.checked : true;
+    var toggle = sec.querySelector(".sec-enable");
+    var body = {{ section_id: parseInt(sid, 10), content: sectionContent(sec) }};
+    body.enabled = enabled !== undefined ? enabled : (toggle ? toggle.checked : true);
     say("Saving section…");
-    fetch("/api/cms/pages/" + PAGE_ID + "/sections/" + sid, {{
-      method: "POST", headers: {{ "Content-Type": "application/json" }},
-      body: JSON.stringify(body)
-    }}).then(function (r) {{ return r.json(); }})
-      .then(function (d) {{ say("Section saved ✓", true); }})
+    post("/api/cms/pages/" + PAGE_ID + "/sections/" + sid, body)
+      .then(function (d) {{ say("Section saved ✓ — live now.", true); }})
       .catch(function () {{ say("Section save failed.", false); }});
+  }}
+  function applyPreset(name) {{
+    say("Applying " + name + " template…");
+    post("/api/cms/preset", {{ page_id: PAGE_ID, preset: name }})
+      .then(function (d) {{
+        if (d.error) {{ say("Couldn't apply template.", false); return; }}
+        location.reload();
+      }})
+      .catch(function () {{ say("Template apply failed.", false); }});
+  }}
+  function generatePage() {{
+    say("Generating fresh copy from your niche data…");
+    post("/api/cms/generate", {{ page_id: PAGE_ID, keyword: KEYWORD }})
+      .then(function (d) {{
+        if (d.ok) {{ say("Page regenerated ✓ — " + d.sections + " sections written.", true); setTimeout(function () {{ location.reload(); }}, 700); }}
+        else {{ say("Generation failed.", false); }}
+      }})
+      .catch(function () {{ say("Generation failed.", false); }});
   }}
   var saveAllBtn = $("save-all");
   if (saveAllBtn) saveAllBtn.onclick = saveAll;
+  var genBtn = $("generate-page");
+  if (genBtn) genBtn.onclick = generatePage;
+  function syncToggle(boxId, panelId, hiddenId) {{
+    var box = $(boxId), panel = $(panelId);
+    if (!box) return;
+    var sync = function () {{
+      if (panel) panel.style.display = box.checked ? "block" : "none";
+      if (hiddenId) {{
+        var h = $(hiddenId);
+        if (h) h.value = box.checked ? "1" : "0";
+      }}
+    }};
+    box.addEventListener("change", sync);
+    sync();
+  }}
+  syncToggle("cms-promo", "promo-fields");
+  syncToggle("cms-countdown", "cd-fields");
+  syncToggle("cms-gate2", null, "cms-gate");
+  document.querySelectorAll(".preset-btn").forEach(function (btn) {{
+    btn.onclick = function () {{ applyPreset(btn.getAttribute("data-preset")); }};
+  }});
   document.querySelectorAll(".section-editor").forEach(function (sec) {{
-    var btn = sec.querySelector(".sec-save");
-    if (btn) btn.onclick = function (ev) {{ ev.preventDefault(); saveSection(sec); }};
+    var b = sec.querySelector(".sec-save");
+    if (b) b.onclick = function (ev) {{ ev.preventDefault(); saveSection(sec); }};
+    var t = sec.querySelector(".sec-enable");
+    if (t) t.onchange = function () {{ saveSection(sec, t.checked); }};
+  }});
+  document.querySelectorAll(".field textarea, .field input, .field select").forEach(function (el) {{
+    el.addEventListener("keydown", function (ev) {{
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === "s") {{ ev.preventDefault(); saveAll(); }}
+    }});
   }});
 }})();
 </script>
@@ -1645,15 +1774,38 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
     def _cms_admin_editor_html(self, keyword, page_id, page):
-        """The actual editor UI for one page. If no page payload, return nothing."""
+        """The actual editor UI for one page. If no page payload, return nothing.
+
+        One-click first: style templates (presets), page toggles (promo,
+        countdown, sticky CTA, email gate), per-section show/hide switches, and
+        a big "Generate page" button that re-writes copy from niche data.
+        Fine-grained copy + color editing collapse under "Edit copy" so the
+        screen stays clean.
+        """
         if not page:
             return ""
         e = seo._clean
-        style = page.get("style") or {}
-        settings = page.get("settings") or {}
+        style = dict(page.get("style") or {})
+        if not style.get("preset"):
+            style["preset"] = "sunset"
+        s = cms_mod.merge_settings(page.get("settings") or {})
+        promo = s.get("promo") or {}
         sections = page.get("sections") or []
         live_url = "/lp/" + e(seo._slugify(keyword))
-        # Style fields
+        current_preset = style.get("preset", "sunset")
+
+        # ── one-click style templates ──────────────────────────────────────
+        preset_cards = []
+        for name, p in cms_mod.STYLE_PRESETS.items():
+            sw = "".join('<i style="background:%s"></i>' % e(c) for c in p.get("swatches", []))
+            active = " active" if name == current_preset else ""
+            preset_cards.append(
+                '<button class="preset-btn%s" data-preset="%s">'
+                '<span class="swatches">%s</span><b>%s</b><span>%s</span></button>'
+                % (active, e(name), sw, e(p.get("label", name)), e(p.get("desc", ""))))
+        presets_html = "".join(preset_cards)
+
+        # ── fine style controls ────────────────────────────────────────────
         color_fields = {
             "bg": style.get("bg"), "card_bg": style.get("card_bg"),
             "accent": style.get("accent"), "accent2": style.get("accent2"),
@@ -1663,13 +1815,26 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
             '<label>{name}<input type="color" value="{v}" data-style="{k}"></label>'
             .format(name=k.replace("_", " ").title(), k=k, v=e(v or "#ffffff"))
             for k, v in color_fields.items())
-        # Section editors
+        layout_opts = ""
+        for lo in ("centered", "wide", "split"):
+            sel = ' selected' if (style.get('layout') or 'centered') == lo else ''
+            layout_opts += '<option value="%s"%s>%s</option>' % (lo, sel, lo.title())
+        hero_labels = {"gradient": "Gradient", "minimal": "Minimal", "bold": "Bold headline"}
+        hero_opts = ""
+        for ho in ("gradient", "minimal", "bold"):
+            sel = ' selected' if (style.get('hero_style') or 'gradient') == ho else ''
+            hero_opts += '<option value="%s"%s>%s</option>' % (ho, sel, hero_labels[ho])
+        mode_opts = '<option value="light"%s>Light</option><option value="dark"%s>Dark</option>' % (
+            ' selected' if (style.get('mode') or 'light') == 'light' else '',
+            ' selected' if (style.get('mode') or 'light') == 'dark' else '')
+
+        # ── section editors (toggle + collapsible copy) ────────────────────
         section_editors = []
-        for s in sections:
-            fid = s["id"]
-            content = s.get("content") or {}
+        for s_idx, sec in enumerate(sections):
+            fid = sec["id"]
+            content = sec.get("content") or {}
             body_editor = ""
-            for field in s.get("fields", []):
+            for field in sec.get("fields", []):
                 val = content.get(field, "")
                 if isinstance(val, (dict, list)):
                     import json as _json
@@ -1682,63 +1847,100 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
                     body_editor += ('<div class="field"><label>%s</label>'
                                     '<textarea class="sec-input" data-field="%s" data-sec="%d">%s</textarea></div>'
                                     % (field.replace("_", " ").title(), field, fid, e(val)))
+            enabled = sec.get("enabled", True)
             section_editors.append(f"""
-<div class="section-editor" data-sec="{fid}">
-  <h3>{s['icon']} {e(s['label'])} <span class="badge" style="background:#eee9ff;color:#7c5cff">{e(s['type'])}</span></h3>
-  <div class="outline">
-    {body_editor}
+<div class="section-editor" data-sec="{fid}" id="sec-{fid}">
+  <div class="sec-head">
+    <h3>{sec.get('icon','🧩')} {e(sec.get('label',''))}</h3>
+    <div class="sec-actions">
+      <span class="hint-sm">Show on page</span>
+      <label class="sw"><input type="checkbox" class="sec-enable" data-sec="{fid}" {'checked' if enabled else ''}>
+        <span class="sl"></span></label>
+      <button class="mini sec-save" data-sec="{fid}">Save copy</button>
+    </div>
   </div>
-  <div class="row" style="margin-top:10px">
-    <label style="flex-direction:row;align-items:center;gap:8px">
-      <input type="checkbox" class="sec-enable" data-sec="{fid}" style="width:auto" {'checked' if s.get('enabled') else ''}> Show section
-    </label>
-    <button class="mini sec-save" data-sec="{fid}">Save section</button>
-  </div>
+  <details class="copy-details">
+    <summary>✏️ Edit copy for this section</summary>
+    <div class="outline">{body_editor}</div>
+  </details>
 </div>""")
         section_html = "".join(section_editors) if section_editors else \
-            '<p class="hint">No sections yet — save this page to seed defaults.</p>'
-        use_cms = settings.get("use_cms", True)
+            '<p class="hint">No sections yet — hit “Generate page” to seed defaults.</p>'
+
         return f"""
-<section class="card"><h2>⏱️ Quick actions</h2>
-<div class="row">
-  <a class="btn" href="{live_url}" target="_blank" rel="noopener">👁 View live landing page ↗</a>
-  <button class="warm" id="save-all">💾 Save all changes</button>
-  <label style="flex-direction:row;align-items:center;gap:8px;margin-left:10px">
-    <input type="checkbox" id="use-cms" style="width:auto" {'checked' if use_cms else ''}> Use CMS render
-  </label>
+<section class="card"><h2>⚡ Build your page</h2>
+<div class="row" style="gap:10px">
+  <a class="btn" href="{live_url}" target="_blank" rel="noopener">👁 View live page ↗</a>
+  <button class="warm" id="save-all">💾 Save all</button>
 </div>
+<button class="bigbtn" id="generate-page" style="margin-top:12px">⚡ Generate page copy</button>
+<p class="hint-sm" style="margin-top:6px">One click re-writes all section copy from your niche's live data (headline, offers, proof, urgency, FAQ, CTA). Your chosen template and toggles stay untouched.</p>
 <p id="save-msg" class="msg"></p>
 </section>
 
-<section class="card"><h2>🎨 Style &amp; layout</h2>
-<div class="cms-layout">
-<div>
-  <div class="cols2 color-grid">{color_html}</div>
-  <div class="field" style="margin-top:14px"><label>Font family</label>
-    <input type="text" id="cms-font" value="{e(style.get('font_family',''))}" placeholder="CSS font stack"></div>
-  <div class="field"><label>Border radius</label>
-    <input type="text" id="cms-radius" value="{e(style.get('border_radius',''))}" placeholder="22px"></div>
-  <div class="field"><label>CTA gradient (CSS)</label>
-    <input type="text" id="cms-cta" value="{e(style.get('cta_gradient',''))}" placeholder="linear-gradient(...)"></div>
-  <div class="field"><label>Layout</label>
-    <select id="cms-layout">
-      <option value="centered" {'selected' if style.get('layout')=='centered' else ''}>Centered</option>
-      <option value="wide" {'selected' if style.get('layout')=='wide' else ''}>Wide</option>
-      <option value="split" {'selected' if style.get('layout')=='split' else ''}>Split</option>
-    </select></div>
+<section class="card"><h2>🎨 Pick a template</h2>
+<p class="hint-sm" style="margin-top:-4px">One click restyles the whole page. Fine-tune colors below after picking.</p>
+<div class="preset-grid">{presets_html}</div>
+<details class="copy-details" style="margin-top:14px">
+  <summary>🎛️ Advanced style (colors / layout)</summary>
+  <div class="outline">
+    <div class="cols2 color-grid">{color_html}</div>
+    <div class="cols2" style="margin-top:12px">
+      <div class="field"><label>Mode</label><select id="cms-mode">{mode_opts}</select></div>
+      <div class="field"><label>Layout</label><select id="cms-layout">{layout_opts}</select></div>
+      <div class="field"><label>Hero style</label><select id="cms-hero">{hero_opts}</select></div>
+      <div class="field"><label>Border radius</label><input type="text" id="cms-radius" value="{e(style.get('border_radius',''))}" placeholder="22px"></div>
+      <div class="field"><label>Font family</label><input type="text" id="cms-font" value="{e(style.get('font_family',''))}" placeholder="CSS font stack"></div>
+      <div class="field"><label>CTA gradient (CSS)</label><input type="text" id="cms-cta" value="{e(style.get('cta_gradient',''))}" placeholder="linear-gradient(...)"></div>
+    </div>
+  </div>
+</details>
+</section>
+
+<section class="card"><h2>🚀 Page features</h2>
+<div class="toggle-row">
+  <label class="sw"><input type="checkbox" id="cms-promo" {'checked' if s.get('promo_enabled') else ''}><span class="sl"></span></label>
+  <div><div class="lbl">Promo banner</div><div class="sub">Colored announcement strip at the very top</div></div>
 </div>
-<div>
-  <div class="field"><label>Email gate PDF enabled</label>
-    <select id="cms-gate">
-      <option value="1" {'selected' if settings.get('pdf_gated', True) else ''}>On — email to get PDF</option>
-      <option value="0" {'selected' if not settings.get('pdf_gated', True) else ''}>Off — direct PDF</option>
-    </select></div>
+<div class="outline" id="promo-fields" style="{'display:block' if s.get('promo_enabled') else 'display:none'}">
+  <div class="cols2">
+    <div class="field"><label>Promo text</label><input type="text" id="cms-promo-text" value="{e(promo.get('text',''))}" placeholder="Free shipping on orders over $25"></div>
+    <div class="field"><label>Promo code</label><input type="text" id="cms-promo-code" value="{e(promo.get('code',''))}" placeholder="SAVE10"></div>
+  </div>
 </div>
+<div class="toggle-row">
+  <label class="sw"><input type="checkbox" id="cms-countdown" {'checked' if s.get('countdown_enabled') else ''}><span class="sl"></span></label>
+  <div><div class="lbl">Countdown timer</div><div class="sub">Live HH:MM:SS boxes under the header — scarcity in one click</div></div>
+</div>
+<div class="outline" id="cd-fields" style="{'display:block' if s.get('countdown_enabled') else 'display:none'}">
+  <div class="cols2">
+    <div class="field"><label>Countdown length</label>
+      <select id="cms-cd-min">{''.join('<option value="%d"%s>%d minutes</option>' % (m, ' selected' if int(s.get('countdown_minutes') or 30) == m else '', m) for m in (5, 10, 15, 30, 45, 60))}</select></div>
+    <div class="field"><label>Headline above timer</label><input type="text" id="cms-cd-head" value="{e(s.get('countdown_headline',''))}" placeholder="⏳ Today's pricing refresh starts soon"></div>
+  </div>
+  <div class="field"><label>Message when time runs out</label><input type="text" id="cms-cd-done" value="{e(s.get('countdown_done',''))}" placeholder="Pricing just refreshed — see today's best rate below."></div>
+</div>
+<div class="toggle-row">
+  <label class="sw"><input type="checkbox" id="cms-sticky" {'checked' if s.get('sticky_cta', True) else ''}><span class="sl"></span></label>
+  <div><div class="lbl">Sticky “see the pick” bar</div><div class="sub">Floating CTA that follows the visitor after the hero</div></div>
+</div>
+<div class="toggle-row">
+  <label class="sw"><input type="checkbox" id="cms-anim" {'checked' if s.get('animation', True) else ''}><span class="sl"></span></label>
+  <div><div class="lbl">Scroll animations</div><div class="sub">Gentle reveal-on-scroll</div></div>
+</div>
+<div class="toggle-row">
+  <label class="sw"><input type="checkbox" id="cms-gate2" {'checked' if s.get('pdf_gated', True) else ''}><span class="sl"></span></label>
+  <div><div class="lbl">Email-gated PDF lead magnet</div><div class="sub">On = visitors give email to download the guide; Off = direct download</div></div>
+  <input type="hidden" id="cms-gate" value="{1 if s.get('pdf_gated', True) else 0}">
+</div>
+<div class="toggle-row">
+  <label class="sw"><input type="checkbox" id="use-cms" {'checked' if s.get('use_cms', True) else ''}><span class="sl"></span></label>
+  <div><div class="lbl">Use CMS renderer</div><div class="sub">Turn off to fall back to the legacy template</div></div>
 </div>
 </section>
 
-<section class="card"><h2>🧱 Sections</h2>
-<p class="hint" style="margin-top:-4px">Edit each section's content. Complex fields (benefits, FAQs, testimonials) use a compact JSON format you can edit inline.</p>
+<section class="card"><h2>🧱 Page sections</h2>
+<p class="hint-sm" style="margin-top:-4px">Flip a switch to show or hide a section (applies instantly). Open “Edit copy” to reword it — complex lists use a compact JSON list.</p>
 {section_html}
 </section>
 """

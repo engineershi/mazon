@@ -100,7 +100,11 @@ DEFAULT_SECTION_ORDER = [
 ]
 
 # ── default style palette ──────────────────────────────────────────────────────
+# Style keys: mode(light|dark), bg, card_bg, accent, accent2, text, muted,
+# cta_gradient, font_family, border_radius, layout, hero_style.
 DEFAULT_STYLE = {
+    "preset": "sunset",
+    "mode": "light",
     "bg": "#fff7ec",
     "card_bg": "#ffffff",
     "accent": "#ff6b2c",
@@ -114,13 +118,95 @@ DEFAULT_STYLE = {
     "hero_style": "gradient",       # gradient | minimal | bold
 }
 
+
+# ── one-click style templates ──────────────────────────────────────────────────
+# Each preset is a complete style dict — picking one restyles the whole page
+# (colors, dark/light mode, shape, layout) with a single click.
+STYLE_PRESETS = {
+    "sunset": {
+        "label": "Sunset Pop", "desc": "Warm, energetic, persuasive",
+        "swatches": ["#fff7ec", "#ff6b2c", "#7c5cff"],
+        "style": {
+            "preset": "sunset", "mode": "light",
+            "bg": "#fff7ec", "card_bg": "#ffffff",
+            "accent": "#ff6b2c", "accent2": "#7c5cff",
+            "text": "#2b2233", "muted": "#887b94",
+            "cta_gradient": "linear-gradient(135deg, #ff6b2c, #ff873c)",
+            "border_radius": "22px", "layout": "centered",
+            "hero_style": "gradient",
+        },
+    },
+    "clean": {
+        "label": "Clean & Modern", "desc": "Minimal SaaS-style, high trust",
+        "swatches": ["#f6f9fc", "#2563eb", "#0ea5e9"],
+        "style": {
+            "preset": "clean", "mode": "light",
+            "bg": "#f6f9fc", "card_bg": "#ffffff",
+            "accent": "#2563eb", "accent2": "#0ea5e9",
+            "text": "#0f172a", "muted": "#64748b",
+            "cta_gradient": "linear-gradient(135deg, #2563eb, #0ea5e9)",
+            "border_radius": "14px", "layout": "centered",
+            "hero_style": "minimal",
+        },
+    },
+    "forest": {
+        "label": "Forest Fresh", "desc": "Calm greens, money-word friendly",
+        "swatches": ["#f6fbf7", "#16a34a", "#0d9488"],
+        "style": {
+            "preset": "forest", "mode": "light",
+            "bg": "#f1f8f4", "card_bg": "#ffffff",
+            "accent": "#16a34a", "accent2": "#0d9488",
+            "text": "#0c2b1d", "muted": "#5b7a66",
+            "cta_gradient": "linear-gradient(135deg, #16a34a, #0d9488)",
+            "border_radius": "18px", "layout": "wide",
+            "hero_style": "gradient",
+        },
+    },
+    "ocean": {
+        "label": "Ocean Calm", "desc": "Airy blues, split hero layout",
+        "swatches": ["#eff8ff", "#0284c7", "#6366f1"],
+        "style": {
+            "preset": "ocean", "mode": "light",
+            "bg": "#eef6ff", "card_bg": "#ffffff",
+            "accent": "#0284c7", "accent2": "#6366f1",
+            "text": "#0b2b45", "muted": "#5f7a94",
+            "cta_gradient": "linear-gradient(135deg, #0284c7, #6366f1)",
+            "border_radius": "24px", "layout": "split",
+            "hero_style": "bold",
+        },
+    },
+    "midnight": {
+        "label": "Midnight Luxe", "desc": "Dark premium feel, bold gold CTA",
+        "swatches": ["#0d1321", "#f5b942", "#7c5cff"],
+        "style": {
+            "preset": "midnight", "mode": "dark",
+            "bg": "#0d1321", "card_bg": "#161f35",
+            "accent": "#f5b942", "accent2": "#9d7bff",
+            "text": "#f1f5fb", "muted": "#9aa7c0",
+            "cta_gradient": "linear-gradient(135deg, #f5b942, #ff873c)",
+            "border_radius": "20px", "layout": "centered",
+            "hero_style": "gradient",
+        },
+    },
+}
+
+
+def preset_style(name):
+    """Return a copy of a preset's style dict (or the default when unknown)."""
+    p = STYLE_PRESETS.get(name or "")
+    if not p:
+        return dict(DEFAULT_STYLE)
+    style = dict(p.get("style") or {})
+    style["font_family"] = DEFAULT_STYLE["font_family"]
+    return style
+
 # ── default section content ────────────────────────────────────────────────────
 # These are the Cialdini/Suby-influenced defaults that get rendered when a
 # niche has no custom CMS content yet.
 
 _DEFAULT_SECTIONS = {
     "hero": {
-        "headline": "The #{rank} {keyword} Pick — Vetted from Live Amazon Data",
+        "headline": "The {rank} {keyword} Pick — Vetted from Live Amazon Data",
         "subheadline": "We ranked every option by real buyer signals — rating, "
                        "review volume and price — so you don't have to open 47 tabs.",
         "badge_text": "🏆 Top pick",
@@ -226,6 +312,33 @@ def _slug(kw):
     return s or "niche"
 
 
+# ── default page settings ──────────────────────────────────────────────────────
+# Stored on lead_pages.settings; toggles are the "click and go" levers in the
+# admin editor. Everything has a safe offline default here.
+DEFAULT_SETTINGS = {
+    "use_cms": True,
+    "email_gate_enabled": True,     # email-gated PDF lead magnet
+    "pdf_gated": True,              # PDF behind opt-in (False = direct download)
+    "promo_enabled": False,         # announcement / promo banner on top
+    "promo": {"text": "Free shipping on orders over $25", "code": "SAVE10"},
+    "countdown_enabled": False,     # live countdown boxes under the header
+    "countdown_minutes": 30,
+    "countdown_headline": "⏳ Today's pricing refresh starts soon",
+    "countdown_done": "Pricing just refreshed — see today's best rate below.",
+    "sticky_cta": True,             # floating "see the top pick" bar on scroll
+    "animation": True,              # gentle reveal-on-scroll
+}
+
+
+def merge_settings(settings):
+    """Defaults first, then caller overrides — so old/partial rows never break."""
+    merged = dict(DEFAULT_SETTINGS)
+    merged.update(settings or {})
+    if not isinstance(merged.get("promo"), dict):
+        merged["promo"] = dict(DEFAULT_SETTINGS["promo"])
+    return merged
+
+
 def _interp(text, ctx):
     """Simple {key} interpolation with safe fallback."""
     if not text or not isinstance(text, str):
@@ -283,7 +396,7 @@ def get_or_create_page(conn, keyword):
         return _row_to_dict(row)
     section_order = json.dumps(DEFAULT_SECTION_ORDER)
     style = json.dumps(DEFAULT_STYLE)
-    settings = json.dumps({"email_gate_enabled": True, "pdf_gated": True})
+    settings = json.dumps(DEFAULT_SETTINGS)
     cur = conn.execute(
         "INSERT INTO lead_pages (keyword, slug, section_order, style, settings) "
         "VALUES (?,?,?,?,?)",
@@ -390,6 +503,30 @@ def upsert_section(conn, page_id, section_type, content=None, enabled=True, sort
     return cur.lastrowid
 
 
+def apply_preset(conn, page_id, preset_name):
+    """One-click restyle: overwrite the page style with a named preset."""
+    style = preset_style(preset_name)
+    update_page(conn, page_id, {"style": style})
+    return style
+
+
+def generate_copy(conn, page_id, keyword):
+    """One-click regeneration: reset every section's copy to the persuasion
+    defaults (which interpolate the niche's live data). Page settings and the
+    chosen style are kept, so toggles the operator turned on stay on."""
+    order = DEFAULT_SECTION_ORDER
+    conn.execute("DELETE FROM lead_sections WHERE page_id=?", (page_id,))
+    for idx, stype in enumerate(order):
+        conn.execute(
+            "INSERT INTO lead_sections (page_id, section_type, content, enabled, sort_order) "
+            "VALUES (?,?,?,?,?)",
+            (page_id, stype, json.dumps(_DEFAULT_SECTIONS.get(stype, {})), 1, idx))
+    conn.execute("UPDATE lead_pages SET section_order=?, updated_at=datetime('now') "
+                 "WHERE id=?", (json.dumps(order), page_id))
+    conn.commit()
+    return len(order)
+
+
 def build_page_context(conn, keyword, niche_data):
     """Build the full rendering context for a lead page from CMS + niche data.
 
@@ -440,23 +577,24 @@ def build_page_context(conn, keyword, niche_data):
         sec_data = get_section_content(conn, page["id"], stype)
         if not sec_data.get("_enabled", True):
             continue
-        # Interpolate all string fields
+        # Interpolate all string + list-of-string fields
         for field in (SECTION_TYPES.get(stype, {}).get("fields") or []):
-            if field in sec_data and isinstance(sec_data[field], str):
-                sec_data[field] = _interp(sec_data[field], ctx)
-            if field == "items" and isinstance(sec_data.get("items"), list):
-                sec_data["items"] = [
-                    _interp(item, ctx) if isinstance(item, str)
-                    else {k: _interp(v, ctx) for k, v in item.items()}
-                    if isinstance(item, dict) else item
-                    for item in sec_data["items"]
-                ]
+            if field not in sec_data:
+                continue
+            val = sec_data[field]
+            if isinstance(val, str):
+                sec_data[field] = _interp(val, ctx)
+            elif isinstance(val, list) and val and isinstance(val[0], str):
+                sec_data[field] = [_interp(x, ctx) for x in val]
         sec_data["_type"] = stype
         sec_data["_meta"] = SECTION_TYPES.get(stype, {})
         sections.append(sec_data)
 
     style = page.get("style") or DEFAULT_STYLE
-    settings = page.get("settings") or {}
+    if not style.get("preset"):
+        style = dict(style)
+        style["preset"] = "sunset"
+    settings = merge_settings(page.get("settings") or {})
 
     return {
         "page_id": page["id"],

@@ -371,6 +371,9 @@ class TestSEO(unittest.TestCase):
         s = seo.render_sitemap([("/", "2026-08-28"), ("/n/keto-snacks", "2026-08-28")])
         self.assertIn(b"/n/keto-snacks", s)
         self.assertIn(b"<urlset", s)
+        urls = seo.indexable_urls([{"keyword": "keto snacks"}], "https://pstore.example")
+        self.assertIn("https://pstore.example/n/keto-snacks", urls)
+        self.assertIn("https://pstore.example/lp/keto-snacks", urls)
 
     def test_robots(self):
         self.assertIn(b"Sitemap:", seo.render_robots())
@@ -567,6 +570,7 @@ class TestRoutes(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertIn(b"<loc>", body)
         self.assertNotIn(b"/admin</loc>", body)
+        self.assertIn(b"/lp/keto-snacks</loc>", body)
         for page in seo.STATIC_PAGES:
             self.assertIn(("/%s</loc>" % page).encode(), body)
 

@@ -84,6 +84,7 @@ class TestCMSRenderer(unittest.TestCase):
         self.assertIn("data-niche", html)
         self.assertIn("amazon.com/dp/B0TEST1234?tag=yourname-20", html)
         self.assertIn("/courier.js", html)
+        self.assertIn('<link rel="canonical" href="https://ex.com/lp/air-fryer">', html)
         conn.close()
 
     def test_rendered_cta_carries_asin_beacon(self):
@@ -129,12 +130,87 @@ class TestCMSRenderer(unittest.TestCase):
         self.assertIn("prices move daily", html.lower())
         conn.close()
 
+    def test_promo_countdown_sticky_render(self):
+        conn = _conn()
+        page = cms.get_or_create_page(conn, "air fryer")
+        cms.update_page(conn, page["id"], {"settings": {
+            "promo_enabled": True,
+            "promo": {"text": "Free shipping today", "code": "SAVE10"},
+            "countdown_enabled": True,
+            "countdown_minutes": 30,
+            "countdown_headline": "Time is ticking",
+            "sticky_cta": True,
+        }})
+        ctx = cms.build_page_context(conn, "air fryer", {"products": SAMPLE_ITEMS})
+        html = cms_render.render_landing_page_page(ctx, "air-fryer")
+        self.assertIn('class="promo"', html)
+        self.assertIn("Free shipping today", html)
+        self.assertIn("SAVE10", html)
+        self.assertIn("data-countdown", html)
+        self.assertIn("data-cd=\"h\"", html)
+        self.assertIn("Time is ticking", html)
+        self.assertIn("sticky-cta", html)
+        self.assertIn("sticky-cta", html)
+        conn.close()
+
+    def test_dark_preset_renders(self):
+        conn = _conn()
+        page = cms.get_or_create_page(conn, "air fryer")
+        cms.update_page(conn, page["id"], {"style": cms.preset_style("midnight")})
+        ctx = cms.build_page_context(conn, "air fryer", {"products": SAMPLE_ITEMS})
+        html = cms_render.render_landing_page_page(ctx, "air-fryer")
+        self.assertIn("--bg:#0d1321", html)
+        self.assertIn("--accent:#f5b942", html)
+        conn.close()
+
+    def test_gate_toggle_no_email_form(self):
+        conn = _conn()
+        page = cms.get_or_create_page(conn, "air fryer")
+        cms.update_page(conn, page["id"], {"settings": {"pdf_gated": False,
+                                                        "email_gate_enabled": False}})
+        ctx = cms.build_page_context(conn, "air fryer", {"products": SAMPLE_ITEMS})
+        html = cms_render.render_landing_page_page(ctx, "air-fryer")
+        self.assertNotIn("gate-form", html)
+        self.assertIn("/_gated/pdf?keyword=air%20fryer", html)
+        conn.close()
+
     def test_list_pages(self):
         conn = _conn()
         cms.get_or_create_page(conn, "air fryer")
         cms.get_or_create_page(conn, "coffee maker")
         pages = cms.list_pages(conn)
         self.assertEqual(len(pages), 2)
+        conn.close()
+
+    def test_preset_style_returns_full_style(self):
+        st = cms.preset_style("midnight")
+        self.assertEqual(st["mode"], "dark")
+        self.assertEqual(st["preset"], "midnight")
+        self.assertIn("font_family", st)
+        st2 = cms.preset_style("nope")
+        self.assertEqual(st2["preset"], "sunset")
+
+    def test_apply_preset_roundtrip(self):
+        conn = _conn()
+        page = cms.get_or_create_page(conn, "air fryer")
+        cms.apply_preset(conn, page["id"], "ocean")
+        page2 = cms.get_page(conn, "air fryer")
+        self.assertEqual(page2["style"]["preset"], "ocean")
+        self.assertEqual(page2["style"]["accent"], "#0284c7")
+        conn.close()
+
+    def test_generate_copy_reseeds_sections(self):
+        conn = _conn()
+        page = cms.get_or_create_page(conn, "air fryer")
+        gate = next(s for s in cms.get_sections(conn, page["id"])
+                    if s["section_type"] == "email_gate")
+        cms.update_section(conn, gate["id"], {"content": {"headline": "Custom"}, "enabled": 0})
+        n = cms.generate_copy(conn, page["id"], "air fryer")
+        self.assertEqual(n, len(cms.DEFAULT_SECTION_ORDER))
+        sections = cms.get_sections(conn, page["id"])
+        self.assertEqual(len(sections), n)
+        gate2 = next(s for s in sections if s["section_type"] == "email_gate")
+        self.assertEqual(gate2["enabled"], 1)
         conn.close()
 
 
@@ -209,6 +285,32 @@ class TestCMSRoutes(unittest.TestCase):
         except Exception as exc:
             return getattr(exc, "code", None), None, b""
 
+    @classmethod
+    def _json_post(cls, path, obj, cookie=None):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", cls.PORT, timeout=5)
+        headers = {"Content-Type": "application/json"}
+        if cookie:
+            headers["Cookie"] = cookie
+        conn.request("POST", path, body=json.dumps(obj).encode(), headers=headers)
+        resp = conn.getresponse()
+        status = resp.status
+        data = resp.read()
+        conn.close()
+        return status, data
+
+    def _ensure_page(self, keyword):
+        """Create the CMS page by rendering its landing page, then return its id."""
+        slug = keyword.replace(" ", "-")
+        status, _c, _b = self._raw("/lp/" + slug)
+        self.assertEqual(status, 200)
+        st, _ct, body = self._get("/api/cms/pages")
+        pages = json.loads(body)["pages"]
+        for p in pages:
+            if p["slug"] == slug:
+                return p["id"]
+        self.fail("page not created for %s" % keyword)
+
     def test_cms_admin_page_requires_auth(self):
         status, _cookie, _body = self._raw("/admin/cms")  # no cookie sent
         self.assertIn(status, (302, 401, 200))
@@ -226,6 +328,47 @@ class TestCMSRoutes(unittest.TestCase):
         self.assertEqual(st, 200)
         payload = json.loads(body)
         self.assertIn("pages", payload)
+
+    def test_cms_preset_api(self):
+        page_id = self._ensure_page("keto snacks")
+        st, body = self._json_post("/api/cms/preset",
+                                   {"page_id": page_id, "preset": "midnight"},
+                                   cookie=self.cookie)
+        self.assertEqual(st, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["style"]["preset"], "midnight")
+        self.assertEqual(payload["style"]["mode"], "dark")
+
+    def test_cms_preset_rejects_unknown(self):
+        page_id = self._ensure_page("keto snacks")
+        st, body = self._json_post("/api/cms/preset",
+                                   {"page_id": page_id, "preset": "nope"},
+                                   cookie=self.cookie)
+        self.assertEqual(st, 400)
+
+    def test_cms_generate_api(self):
+        page_id = self._ensure_page("keto snacks")
+        st, body = self._json_post("/api/cms/generate",
+                                   {"page_id": page_id, "keyword": "keto snacks"},
+                                   cookie=self.cookie)
+        self.assertEqual(st, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertGreaterEqual(payload["sections"], 10)
+        self.assertEqual(payload["payload"]["id"], page_id)
+
+    def test_cms_section_toggle_off(self):
+        page_id = self._ensure_page("keto snacks")
+        payload = json.loads(self._get("/api/cms/pages/%d" % page_id)[2])
+        testi = next(s for s in payload["sections"] if s["type"] == "testimonials")
+        st, body = self._json_post(
+            "/api/cms/pages/%d/sections/%d" % (page_id, testi["id"]),
+            {"section_id": testi["id"], "content": {}, "enabled": False},
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        payload = json.loads(body)
+        sec = next(s for s in payload["sections"] if s["type"] == "testimonials")
+        self.assertFalse(sec["enabled"])
 
     def test_subscribe_returns_download_token(self):
         status, _cookie, body = self._raw(
