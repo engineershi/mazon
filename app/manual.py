@@ -371,8 +371,9 @@ def render_admin_manual(nav_html, totop_html):
 <li>Add the free PDF ebook to the sequence to lift engagement.</li>
 </ul>
 
-<h3 id="s5">8 · Step 5-6 — Ebook lead magnet + social posts</h3>
+<h3 id="s5">8 · Step 5-6 — Ebook lead magnet + social posts + boosts</h3>
 <p>The <a class="tooltag" href="/admin/ebooks">📕 Ebooks</a> page turns any niche into a designed PDF in one click. Free AI providers are built in (OpenCode, Mistral, NVIDIA); add an OpenAI key for extra polish. The <a class="tooltag" href="/admin/social">📣 Social</a> page generates a ready-to-post kit for X, Facebook, LinkedIn, Instagram, Pinterest and Threads — each with a <b>tracked link</b>, so every post's clicks are counted individually in <a class="tooltag" href="/admin/analytics">📊 Analytics</a>.</p>
+<p>The <a class="tooltag" href="/tool">🛠 Workbench</a> <b>Marketing boosts</b> panel mints a real, UTM-tracked campaign per promo angle (<b>▶ Run</b> persists it, folds in SEM long-tail phrases, warms the lead-magnet PDF and pings IndexNow; <b>⟶ Social page</b> publishes one as a live, attributed Boost post). Each boost keeps a stable link so its clicks aggregate over time.</p>
 
 <h3 id="s6">9 · Step 7-8 — Launch + keep data fresh</h3>
 <p>Use <b>Launch marketing</b> on the <a class="tooltag" href="/tool">🛠 Workbench</a> to build the whole funnel in one click, then see a status strip (landing live · IndexNow queued · ebook ready · clicks tracking). The Workbench also has <b>DM scripts, review pipeline, boost campaigns, text links, Markdown and QR codes</b>.</p>
@@ -382,7 +383,7 @@ def render_admin_manual(nav_html, totop_html):
 <ul class="step-list">
 <li>Set the <b>affiliate tag</b> and <b>SMTP</b> first — nothing else matters until those work.</li>
 <li><b>Stack traffic</b>: SEO (compounding) + social (fast) + email (cheap) + QR/landing pages (offline).</li>
-<li>Watch <a class="tooltag" href="/admin/analytics">📊 Analytics</a> and double down on the most-clicked products and best sources.</li>
+<li>Watch <a class="tooltag" href="/admin/analytics">📊 Analytics</a> and double down on the most-clicked products and best sources. It now also shows <b>page views</b> (leads + public site) and <b>lead-page interactions</b> — promo taps, countdown, sticky-CTAs and PDF downloads — so you can optimize the landing page itself, not just the links.</li>
 <li>Choose niches like a fund: <b>high demand, lower saturation</b> first.</li>
 <li><b>Comply always</b>: opted-in email, FTC/Associates disclosure, direct tagged links.</li>
 </ul>

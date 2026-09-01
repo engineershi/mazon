@@ -86,4 +86,46 @@
                 "&content=" + encodeURIComponent(payload.content);
     }
   });
+/* ---- pageview beacon: report every public page visit once ---- */
+  function beacon(name, extra) {
+    var payload = { name: name || "view", slug: slug, page: location.pathname };
+    if (utmSource) payload.source = utmSource;
+    if (main && main.dataset.keyword) payload.keyword = main.dataset.keyword;
+    if (extra) { for (var k in extra) payload[k] = extra[k]; }
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon("/api/pageview",
+        new Blob([JSON.stringify(payload)], { type: "application/json" }));
+    } else {
+      var img = new Image();
+      img.src = "/api/pageview?name=" + encodeURIComponent(payload.name) +
+                "&slug=" + encodeURIComponent(payload.slug) +
+                "&page=" + encodeURIComponent(payload.page) +
+                "&source=" + encodeURIComponent(payload.source || "") +
+                "&keyword=" + encodeURIComponent(payload.keyword || "");
+    }
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () { beacon("view"); });
+  } else {
+    beacon("view");
+  }
+
+  /* ---- micro-interactions: any element tagged [data-ev] reports on click ---- */
+  document.addEventListener("click", function (ev) {
+    var el = ev.target;
+    var mark = el && el.closest ? el.closest("[data-ev]") : null;
+    if (!mark) return;
+    beacon(mark.getAttribute("data-ev") || "click");
+  });
+
+  /* ---- lead capture: gated / review PDF downloads ---- */
+  document.addEventListener("click", function (ev) {
+    var el = ev.target;
+    var a = el && el.closest ? el.closest("a") : null;
+    if (!a) return;
+    var href = a.getAttribute("href") || "";
+    if (href.indexOf("/_gated/pdf") !== -1 || href.indexOf("/admin/ebooks/pdf") !== -1) {
+      beacon("lead_pdf");
+    }
+  });
 })();

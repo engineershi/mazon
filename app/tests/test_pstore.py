@@ -217,10 +217,27 @@ class TestSalesFunnel(unittest.TestCase):
         self.assertIn("no incentive", combined)
 
     def test_boost_campaigns(self):
-        b = market_engine.build_boost_campaigns("keto snacks", self.items)
+        b = market_engine.build_boost_campaigns("keto snacks", self.items,
+                                                base_url="https://pstore.example")
         self.assertGreaterEqual(len(b), 5)
-        self.assertIn("https://www.amazon.com/dp/B0KETO1234?tag=yourname-20", b[0]["script"])
-        self.assertNotIn("/go/", b[0]["script"])
+        self.assertIn("utm_source=boost", b[0]["script"])
+        self.assertIn("/lp/keto-snacks?utm_source=boost", b[0]["script"])
+        self.assertIn("utm_content=", b[1]["link"])
+        joined = " ".join(x["script"] for x in b)
+        self.assertIn("https://www.amazon.com/dp/B0KETO1234?tag=yourname-20", joined)
+        self.assertNotIn("/go/", joined)
+        b2 = market_engine.build_boost_campaigns("keto snacks", self.items,
+                                                 base_url="https://pstore.example")
+        self.assertEqual(b[0]["code"], b2[0]["code"])
+        self.assertEqual(b[0]["link"], b2[0]["link"])
+        self.assertTrue(all(c["target"] == "landing" for c in b))
+
+    def test_boost_campaigns_keyword_hints(self):
+        b = market_engine.build_boost_campaigns("keto snacks", self.items,
+                                                keywords=("keto bars for women",
+                                                          "keto chips review"))
+        self.assertIn("keto bars for women", b[0]["script"])
+        self.assertIn("keto chips review", b[0]["script"])
 
     def test_build_funnel_payload(self):
         f = market_engine.build_funnel("keto snacks", self.items,
@@ -647,6 +664,47 @@ class TestRoutes(unittest.TestCase):
         self.assertIn("Outscraper", html)
         self.assertIn("https://app.outscraper.com/", html)
         self.assertIn("OUTSCRAPER_API_KEY", html)
+        self.assertIn("Test key", html)
+        self.assertIn("/api/keys/test", html)
+
+    def test_keys_provider_test_api(self):
+        import json as _json
+        saved = amazon._urlopen
+
+        def fake(req, timeout):
+            if any(v == "good-key" for k, v in req.headers.items()
+                   if k.lower() == "x-api-key"):
+                class R(object):
+                    def read(self):
+                        return b'{"balance": 12.5}'
+                return R()
+            raise urllib.error.HTTPError(req.full_url, 401, "unauthorized", {}, None)
+
+        # /api/keys/test requires auth
+        st, _, _, body = self._raw("/api/keys/test", "POST", body=b"pid=outscraper&key=good-key")
+        self.assertEqual(st, 401)
+
+        amazon._urlopen = fake
+        try:
+            st, _, _, body = self._raw("/api/keys/test", "POST",
+                                       body=b"pid=outscraper&key=good-key",
+                                       cookie=self.cookie)
+            self.assertEqual(st, 200)
+            d = _json.loads(body)
+            self.assertTrue(d["ok"], d)
+            self.assertEqual(d["status"], 200)
+            self.assertIn("balance", d.get("detail", ""))
+            st, _, _, body = self._raw("/api/keys/test", "POST",
+                                       body=b"pid=outscraper&key=bad-key",
+                                       cookie=self.cookie)
+            d = _json.loads(body)
+            self.assertFalse(d["ok"])
+            self.assertEqual(d["status"], 401)
+        finally:
+            amazon._urlopen = saved
+        # direct unit checks
+        self.assertFalse(amazon.test_scraper_key("nope", "x")["ok"])
+        self.assertFalse(amazon.test_scraper_key("outscraper", "  ")["ok"])
 
     def test_keys_unknown_provider_404(self):
         st, _, _ = self._get("/keys/nope")
@@ -706,6 +764,85 @@ class TestRoutes(unittest.TestCase):
     def test_tools_launch_requires_auth(self):
         st, _, _, _ = self._raw("/api/tools/launch", "POST", body=b"keyword=x")
         self.assertEqual(st, 401)
+
+    def test_boosts_api_requires_auth(self):
+        st, _, _, body = self._raw("/api/boosts?keyword=keto+snacks")
+        self.assertEqual(st, 401)
+
+    def test_boosts_run_api(self):
+        import json as _json
+        st, _, _, body = self._raw("/api/boosts/run", "POST",
+                                   body=b"keyword=keto+snacks", cookie=self.cookie)
+        self.assertEqual(st, 200, body)
+        d = _json.loads(body)
+        self.assertTrue(d["ok"], d)
+        self.assertEqual(d["ran"], 5)
+        self.assertEqual(d["runs_total"], 5)
+        self.assertEqual(d["sem_keywords"], [])
+        self.assertGreaterEqual(len(d["boosts"]), 5)
+        for b in d["boosts"]:
+            self.assertIn("utm_source=boost", b["link"], b)
+            self.assertIn("/lp/keto-snacks?", b["link"], b)
+            self.assertIn("utm_content=", b["link"], b)
+            self.assertTrue(b["code"], b)
+            self.assertEqual(b["target"], "landing")
+            self.assertEqual(b["runs"], 1, b)
+        st, _, _, body = self._raw("/api/boosts/run", "POST",
+                                   body=b"keyword=keto+snacks&names=Bundle+stack",
+                                   cookie=self.cookie)
+        d = _json.loads(body)
+        self.assertTrue(d["ok"], d)
+        self.assertEqual(d["ran"], 1)
+        self.assertEqual(d["runs_total"], 6)
+        bundle = next(b for b in d["boosts"] if b["name"] == "Bundle stack")
+        self.assertEqual(bundle["runs"], 2)
+        # click the tracked link -> per-campaign attribution on the read API
+        st, _, _, body = self._raw(
+            "/api/track", "POST",
+            body=("slug=keto-snacks&content=%s" % bundle["code"]).encode(),
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        st, _, body = self._get("/api/boosts?keyword=keto+snacks")
+        d = _json.loads(body)
+        bundle = next(b for b in d["boosts"] if b["name"] == "Bundle stack")
+        self.assertEqual(bundle["clicks"], 1)
+
+    def test_boosts_run_unknown_keyword_404(self):
+        import json as _json
+        st, _, _, body = self._raw("/api/boosts/run", "POST",
+                                   body=b"keyword=no-such-niche", cookie=self.cookie)
+        self.assertEqual(st, 404)
+        self.assertIn("saved niche", _json.loads(body)["error"])
+
+    def test_boosts_to_social_publishes_relink(self):
+        import json as _json
+        from urllib.parse import urlencode
+        st, _, _, body = self._raw("/api/boosts/run", "POST",
+                                   body=b"keyword=keto+snacks", cookie=self.cookie)
+        d = _json.loads(body)
+        first = d["boosts"][0]
+        st, _, _, body = self._raw(
+            "/api/boosts/social", "POST",
+            body=urlencode({"keyword": "keto snacks",
+                            "campaign": first["name"]}).encode(),
+            cookie=self.cookie)
+        self.assertEqual(st, 200, body)
+        out = _json.loads(body)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["post"]["utm_content"], first["code"])
+        self.assertIn("Boost", out["post"]["name"])
+        self.assertIn("/lp/keto-snacks?utm_source=boost", out["post"]["link"])
+        st, ctype, body = self._get("/admin/social?keyword=keto+snacks")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn("Boost", html)
+        self.assertIn("boost", html.lower())
+
+    def test_boosts_to_social_requires_campaign(self):
+        import json as _json
+        st, _, _, body = self._raw("/api/boosts/social", "POST",
+                                   body=b"keyword=keto+snacks", cookie=self.cookie)
+        self.assertEqual(st, 400)
 
     def test_admin_pages_redirect_to_login_unauth(self):
         for route in ("/dashboard", "/tool", "/keys", "/keys/scraperapi", "/admin"):

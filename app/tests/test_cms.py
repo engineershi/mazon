@@ -213,6 +213,41 @@ class TestCMSRenderer(unittest.TestCase):
         self.assertEqual(gate2["enabled"], 1)
         conn.close()
 
+    def test_sticky_cta_toggle_controls_render(self):
+        conn = _conn()
+        page = cms.get_or_create_page(conn, "air fryer")
+        cms.update_page(conn, page["id"], {
+            "settings": {"sticky_cta": False, "pdf_gated": False}})
+        ctx = cms.build_page_context(conn, "air fryer", {"products": SAMPLE_ITEMS,
+                                                          "subscriber_count": 25})
+        self.assertEqual(cms_render._sticky_cta_html(ctx), "")
+        html = cms_render.render_landing_page_page(ctx, "air-fryer")
+        self.assertNotIn('<div class="sticky-cta">', html)
+        self.assertNotIn('document.querySelector(".sticky-cta")', html)
+        cms.update_page(conn, page["id"], {"settings": {"sticky_cta": True}})
+        ctx = cms.build_page_context(conn, "air fryer", {"products": SAMPLE_ITEMS})
+        self.assertIn("<div class=\"sticky-cta\">",
+                      cms_render.render_landing_page_page(ctx, "air-fryer"))
+        conn.close()
+
+    def test_settings_toggles_reflect_in_render(self):
+        conn = _conn()
+        page = cms.get_or_create_page(conn, "air fryer")
+        cms.update_page(conn, page["id"], {"settings": {
+            "promo_enabled": True,
+            "promo": {"text": "SAVE20 at checkout", "code": "SAVE20"},
+            "countdown_enabled": True, "countdown_minutes": 15,
+            "countdown_headline": "Offer ending", "countdown_done": "Ended",
+            "animation": False}})
+        ctx = cms.build_page_context(conn, "air fryer", {"products": SAMPLE_ITEMS,
+                                                          "subscriber_count": 25})
+        html = cms_render.render_landing_page_page(ctx, "air-fryer")
+        self.assertIn("SAVE20 at checkout", html)
+        self.assertIn("data-countdown=\"15\"", html)
+        self.assertIn("Offer ending", html)
+        self.assertNotIn("new IntersectionObserver", html)  # animation off
+        conn.close()
+
 
 class TestCMSRoutes(unittest.TestCase):
     """Boots the real HTTP server against a scratch DB and exercises the CMS
@@ -369,6 +404,111 @@ class TestCMSRoutes(unittest.TestCase):
         payload = json.loads(body)
         sec = next(s for s in payload["sections"] if s["type"] == "testimonials")
         self.assertFalse(sec["enabled"])
+
+    def test_cms_settings_toggle_round_trip(self):
+        """Mirrors the editor JS payload and checks every page-feature toggle
+        persists through /api/cms/page and lands in the saved page."""
+        page_id = self._ensure_page("keto snacks")
+        base = {"use_cms": True, "pdf_gated": True, "email_gate_enabled": True,
+                "promo_enabled": False,
+                "promo": {"text": "Free shipping", "code": "SAVE10"},
+                "countdown_enabled": False, "countdown_minutes": 30,
+                "countdown_headline": "", "countdown_done": "",
+                "sticky_cta": True, "animation": True}
+        style = {"preset": "sunset", "mode": "light", "layout": "centered",
+                 "hero_style": "gradient", "border_radius": "", "font_family": "",
+                 "cta_gradient": ""}
+        states = {
+            "promo on": dict(base, **{"promo_enabled": True,
+                                      "promo": {"text": "20% off today", "code": "HOT20"}}),
+            "countdown on": dict(base, **{"countdown_enabled": True,
+                                          "countdown_minutes": 15,
+                                          "countdown_headline": "Going fast",
+                                          "countdown_done": "Done"}),
+            "sticky off": dict(base, **{"sticky_cta": False}),
+            "anim off": dict(base, **{"animation": False}),
+            "gate off": dict(base, **{"pdf_gated": False, "email_gate_enabled": False}),
+            "cms off": dict(base, **{"use_cms": False}),
+        }
+        for label, settings in states.items():
+            st, body = self._json_post(
+                "/api/cms/page",
+                {"page_id": page_id, "style": style, "settings": settings},
+                cookie=self.cookie)
+            self.assertEqual(st, 200, label)
+            payload = json.loads(self._get("/api/cms/pages/%d" % page_id)[2])
+            got = payload["settings"]
+            for key, val in settings.items():
+                self.assertEqual(got.get(key), val, "%s: %s" % (label, key))
+        # end on a CMS-rendered page with every marketing lever switched off
+        st, _ = self._json_post(
+            "/api/cms/page",
+            {"page_id": page_id, "style": style, "settings": {
+                "use_cms": True, "pdf_gated": False, "email_gate_enabled": False,
+                "promo_enabled": False,
+                "promo": {"text": "Free shipping", "code": "SAVE10"},
+                "countdown_enabled": False, "countdown_minutes": 30,
+                "countdown_headline": "", "countdown_done": "",
+                "sticky_cta": False, "animation": False}},
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        st, _ct, html_body = self._get("/lp/keto-snacks")
+        self.assertEqual(st, 200)
+        live = html_body.decode("utf-8", "replace")
+        self.assertNotIn('class="promo"', live)
+        self.assertNotIn("data-countdown=", live)
+        self.assertNotIn('<div class="sticky-cta">', live)
+        self.assertNotIn("new IntersectionObserver", live)
+        self.assertNotIn("gate-form", live)
+        self.assertIn("<!DOCTYPE html>", live)
+        # restore a clean, fully-gated default so sibling tests are unaffected
+        st, _ = self._json_post(
+            "/api/cms/page",
+            {"page_id": page_id, "style": style, "settings": {
+                "use_cms": True, "pdf_gated": True, "email_gate_enabled": True,
+                "promo_enabled": False,
+                "promo": {"text": "Free shipping", "code": "SAVE10"},
+                "countdown_enabled": False, "countdown_minutes": 30,
+                "countdown_headline": "", "countdown_done": "",
+                "sticky_cta": True, "animation": True}},
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+
+    def test_landing_has_discreet_full_review_link(self):
+        status, _c, body = self._raw("/lp/keto-snacks")
+        self.assertEqual(status, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn("Full review ↗", html)
+        self.assertIn("href=\"/n/keto-snacks\"", html)
+
+    def test_niche_page_has_one_pager_short_link(self):
+        status, _c, body = self._raw("/n/keto-snacks")
+        self.assertEqual(status, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn("One-pager", html)
+        self.assertIn("href=\"/lp/keto-snacks\"", html)
+        self.assertIn('data-keyword="keto snacks"', html)
+
+    def test_cms_gate_field_round_trip_flagged_value(self):
+        page_id = self._ensure_page("keto snacks")
+        # the editor sends pdf_gated via the mirrored cms-gate hidden input;
+        # end the loop back on a fully-gated state for sibling tests
+        for want in (False, True):
+            st, _ = self._json_post(
+                "/api/cms/page",
+                {"page_id": page_id, "style": {}, "settings": {"pdf_gated": want,
+                                                               "email_gate_enabled": want}},
+                cookie=self.cookie)
+            self.assertEqual(st, 200)
+            payload = json.loads(self._get("/api/cms/pages/%d" % page_id)[2])
+            self.assertEqual(payload["settings"]["pdf_gated"], want)
+            self.assertEqual(payload["settings"]["email_gate_enabled"], want)
+        self.assertIn("cms-gate2", self._get("/admin/cms?keyword=keto+snacks")[2]
+                      .decode("utf-8", "replace"))
+        self.assertIn("autoSaveSettings", self._get("/admin/cms?keyword=keto+snacks")[2]
+                      .decode("utf-8", "replace"))
+        self.assertIn("cms-sticky", self._get("/admin/cms?keyword=keto+snacks")[2]
+                      .decode("utf-8", "replace"))
 
     def test_subscribe_returns_download_token(self):
         status, _cookie, body = self._raw(

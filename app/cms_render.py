@@ -107,6 +107,10 @@ def _style_css(style):
     font-size:13.5px; font-weight:700; padding:9px 14px; letter-spacing:.2px; }}
   .promo b {{ text-transform:uppercase; margin-left:8px; background:rgba(255,255,255,.18);
     padding:2px 9px; border-radius:999px; font-size:12px; }}
+  /* discreet short link back to the public review page */
+  .full-review {{ color:var(--muted); font-size:12.5px; font-weight:600; text-decoration:none;
+    border:1px solid var(--line); padding:5px 10px; border-radius:999px; }}
+  .full-review:hover {{ border-color:var(--accent); color:var(--accent); }}
   /* countdown boxes */
   .cd-wrap {{ display:flex; gap:10px; justify-content:center; margin:16px 0 0; }}
   .cd-box {{ background:var(--card); border:1px solid var(--line); border-radius:14px;
@@ -216,7 +220,7 @@ def _global_settings_html(ctx, style):
         code = promo.get("code") or ""
         code_html = f"<b>Code {_esc(code)}</b>" if code else ""
         parts.append(
-            f'<div class="promo" data-niche="{_esc(ctx.get("slug",""))}">'
+            f'<div class="promo" data-niche="{_esc(ctx.get("slug",""))}" data-ev="promo">'
             f'⚡ {_esc(promo.get("text",""))}{code_html}</div>')
     if settings.get("countdown_enabled"):
         minutes = int(settings.get("countdown_minutes") or 30)
@@ -224,7 +228,7 @@ def _global_settings_html(ctx, style):
         done = settings.get("countdown_done", "")
         head = f'<p style="text-align:center;font-weight:800;margin:18px 0 0">{_esc(headline)}</p>' if headline else ""
         parts.append(f"""
-<div class="countdown" data-countdown="{minutes}" data-done-selector="#cd-done">
+<div class="countdown" data-countdown="{minutes}" data-done-selector="#cd-done" data-ev="countdown">
   {head}
   <div class="cd-wrap">
     <div class="cd-box"><div class="num" data-cd="h">00</div><div class="unit">hrs</div></div>
@@ -238,6 +242,9 @@ def _global_settings_html(ctx, style):
 
 def _sticky_cta_html(ctx):
     """Floating bottom CTA that appears after the hero is scrolled past."""
+    settings = ctx.get("settings") or {}
+    if not settings.get("sticky_cta", True):
+        return ""
     pick = ctx.get("pick") or {}
     asin = pick.get("asin", "")
     url = _find_amazon_url(ctx)
@@ -247,7 +254,7 @@ def _sticky_cta_html(ctx):
     return f"""
 <div class="sticky-cta">
   <a class="cta" href="{_esc(url)}" rel="nofollow sponsored noopener"
-     data-asin="{_esc(asin)}" data-beacon="landing-sticky">See today's {_esc(keyword[:40])} pick →</a>
+     data-asin="{_esc(asin)}" data-beacon="landing-sticky" data-ev="sticky_cta">See today's {_esc(keyword[:40])} pick →</a>
 </div>"""
 
 
@@ -373,6 +380,7 @@ def _section_html(section, ctx):
       <p class="gate-msg courier-msg" style="display:none"></p>
     </form>
     <a class="cta" id="gate-unlock" href="#" rel="noopener"
+       data-ev="gate_unlock"
        style="display:none;margin-top:14px">⬇ {e(pdf_head)}</a>
     {pdf_sub_html}
     <p class="hint">{e(privacy)}</p>
@@ -384,6 +392,7 @@ def _section_html(section, ctx):
     <h2>{e(headline)}</h2>
     {sub_html}
     <a class="cta" href="/_gated/pdf?keyword={e(urllib.parse.quote(kw))}"
+       data-ev="lead_pdf"
        rel="noopener">⬇ {e(pdf_head)}</a>
     {pdf_sub_html}
     <p class="hint">{e(privacy)}</p>
@@ -535,6 +544,17 @@ def render_landing_page_page(context, keyword, site_url=None):
     el.style.transitionDelay = (i % 3) * 60 + "ms";
     io.observe(el);
   });"""
+    sticky_js = ""
+    if sticky:
+        sticky_js = """  /* sticky floating CTA after the hero is gone */
+  var bar = document.querySelector(".sticky-cta");
+  if (bar) {{
+    var hero = document.querySelector("main .hero") || document.querySelector(".wrap");
+    var threshold = hero ? hero.offsetTop + hero.offsetHeight : 360;
+    function onScroll() {{ document.body.classList.toggle("show-sticky", window.scrollY > threshold); }}
+    window.addEventListener("scroll", onScroll, {{ passive: true }});
+    onScroll();
+  }}"""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -553,10 +573,10 @@ def render_landing_page_page(context, keyword, site_url=None):
 <style>{css}</style>
 </head>
 <body>
-<main data-niche="{e(slug)}" data-source="landing">
+<main data-niche="{e(slug)}" data-source="landing" data-keyword="{e(keyword)}">
 <div class="topbar">
   <div class="brand"><b>✓ {e(keyword_title[:28])} Guide</b></div>
-  <div class="trust2"><span>🛒 Live Amazon prices</span><span>⭐ Real buyer ratings</span>{top_link}</div>
+  <div class="trust2"><span>🛒 Live Amazon prices</span><span>⭐ Real buyer ratings</span>{top_link} <a class="full-review" href="/n/{e(slug)}" rel="noopener">Full review ↗</a></div>
 </div>
 {chrome}
 <div class="wrap">
@@ -612,15 +632,7 @@ We may earn a small commission when you buy through our links (the price you pay
     }}, 1000);
   }}
   {reveal_js}
-  /* sticky floating CTA after the hero is gone */
-  var bar = document.querySelector(".sticky-cta");
-  if (bar) {{
-    var hero = document.querySelector("main .hero") || document.querySelector(".wrap");
-    var threshold = hero ? hero.offsetTop + hero.offsetHeight : 360;
-    function onScroll() {{ document.body.classList.toggle("show-sticky", window.scrollY > threshold); }}
-    window.addEventListener("scroll", onScroll, {{ passive: true }});
-    onScroll();
-  }}
+  {sticky_js}
 }})();
 </script>
 </body>

@@ -13,6 +13,7 @@ Everything is keyless and produces affiliate-tagged, copy-paste-ready output:
 All outbound links are DIRECT, affiliate-tagged amazon.com/dp/<ASIN>?tag=...
 URLs (no /go cloaking) so the site stays Amazon-Affiliate-compliant.
 """
+import hashlib
 import html
 import re
 import urllib.parse
@@ -374,38 +375,80 @@ Thanks for giving it a shot! 🙏
     }
 
 
-def build_boost_campaigns(keyword, items):
-    """Ready-to-run promo angle templates for the pick."""
+def _boost_code(slug, name):
+    """Stable 5-char UTM content code per (slug, campaign) — no random churn,
+    so re-running a boost reuses the same tracked link and clicks aggregate."""
+    h = hashlib.sha1(("%s:%s" % (slug, name)).encode("utf-8")).digest()
+    n = int.from_bytes(h[:3], "big")
+    core = "23456789abcdefghjkmnpqrstuvwxyz"
+    out = ""
+    while n:
+        n, r = divmod(n, len(core))
+        out = core[r] + out
+    return out or "a"
+
+
+def build_boost_campaigns(keyword, items, base_url="", slug="", keywords=()):
+    """Ready-to-run promo angle templates for the pick. Each campaign carries a
+    stable, UTM-tracked link back to the niche landing page (/lp/<slug>) so a
+    "boost" is a real, measurable campaign — not a bare Amazon link. Long-tail
+    keyword hints (SEM) get woven into the copy where it fits."""
     pick = pick_for_buyers(items)
-    url = redirect_url(pick["asin"]) if pick else "#"
+    slug = slug or _slug(keyword)
+    base = (base_url or "").rstrip("/")
+    amazon_url = redirect_url(pick["asin"]) if pick else "#"
     title = _clip(pick.get("title"), 55) if pick else keyword
-    return [
-        {"name": "Problem → Agitate → Solution (PAS)", "script": f"""Awareness:
-Pain of {keyword.replace('-', ' ')} done wrong → the fix in one line.
+    disc = keyword.replace("-", " ")
+    kit = [str(k).strip() for k in (keywords or ()) if str(k).strip()]
+    long = kit[0] if kit else disc
+    hints = ("  ·  sweep these search terms: " +
+             ", ".join(kit[:3]) + ".") if kit else ""
+
+    def tracked(name):
+        code = _boost_code(slug, name)
+        q = urllib.parse.urlencode({
+            "utm_source": "boost", "utm_medium": "social",
+            "utm_campaign": slug, "utm_content": code})
+        link = "%s/lp/%s?%s" % (base, slug, q)
+        return link, code
+
+    def entry(name, script):
+        link, code = tracked(name)
+        return {"name": name, "id": _slug(name),
+                "script": script, "link": link, "code": code,
+                "qr": qr_url(pick["asin"]) if pick else "",
+                "target": "landing"}
+
+    pas_link, _ = tracked("Problem Agitate Solution")
+    entries = [
+        entry("Problem → Agitate → Solution (PAS)", f"""Awareness:
+Pain of {disc} done wrong → the fix in one line. People keep searching “{long}”.
 
 Agitate:
 How much time/money you waste on a bad pick…
 
 Solution:
 This one's the most-reviewed ({'⭐ ' + str(pick['stars']) if pick and pick.get('stars') else ''}).
-{url}"""},
-        {"name": "Social proof drop", "script": f"""Just facts, zero hype:
-• Most-reviewed option in the {keyword} niche
+Full ranked guide (live prices): {pas_link}{hints}"""),
+        entry("Social proof drop", f"""Just facts, zero hype:
+• Most-reviewed option in the {disc} niche
 • Sold & shipped by Amazon
 • 30-second checkout
-
-Link: {url}"""},
-        {"name": "Urgency / restock angle", "script": f"""⏳ If you've been eyeing {title}, Amazon prices/stock move all the time.
-Best-reviewed pick in the niche → don't lose it to a price change: {url}"""},
-        {"name": "Bundle stack", "script": f"""This {keyword} pick + the runner-ups in the same range = the whole starter kit.
-Top pick: {url}
-Ask me for the rest of the list 👇"""},
-        {"name": "Giveaway / engagement", "script": f""""Like anything {keyword}? Drop a comment 🍀 I'll DM the winner the link to the top-rated pick (fair price, Amazon-backed).
-{url}"""},
+• Full ranked guide: {pas_link}"""),
+        entry("Urgency / restock angle", f"""⏳ If you've been eyeing {title}, Amazon prices/stock move all the time.
+Best-reviewed pick in the niche → don't lose it to a price change: {pas_link}"""),
+        entry("Bundle stack", f"""This {disc} pick + the runner-ups in the same range = the whole starter kit.
+Top pick: {amazon_url}
+Buyers keep asking “{long}” — the full ranked guide answers it: {pas_link}"""),
+        entry("Giveaway / engagement", f""""Fellow {disc} shopper: the top-rated pick is ranked from live data.
+Top pick: {amazon_url}
+Guides & honest picks: {pas_link}
+Drop a comment 🍀 I'll DM the winner the link.""") if True else None,
     ]
+    return [e for e in entries if e]
 
 
-def build_funnel(keyword, items, site_url=None, affiliate_tag=None):
+def build_funnel(keyword, items, site_url=None, affiliate_tag=None, boosts_kw=()):
     """The complete sales funnel payload for one niche shortlist."""
     pick = pick_for_buyers(items)
     landing = build_landing_page(keyword, items, site_url=site_url)
@@ -421,7 +464,10 @@ def build_funnel(keyword, items, site_url=None, affiliate_tag=None):
         "social": build_social_pack(keyword, items),
         "conversation": build_dm_conversation(keyword, items),
         "reviews": build_review_pipeline(keyword, items),
-        "boosts": build_boost_campaigns(keyword, items),
+        "boosts": build_boost_campaigns(keyword, items,
+                                        base_url=site_url or "",
+                                        slug=_slug(keyword),
+                                        keywords=boosts_kw),
     }
 
 

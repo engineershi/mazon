@@ -145,6 +145,26 @@ class TestSocialSuite(unittest.TestCase):
             self.assertIn(platform, html)
         self.assertIn("Publish", html)
         self.assertIn("/api/social/publish", html)
+        self.assertIn("View live", html)
+        self.assertIn("/lp/keto?utm_source=", html)
+
+    def test_published_post_carries_live_link(self):
+        st, _, _, data = self._raw(
+            "/api/social/publish", "POST",
+            body=json.dumps({"keyword": "keto snacks", "platform": "Twitter / X"}),
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        kit = json.loads(data)["posts"][0]
+        st, _, _, page = self._raw("/admin/social?keyword=keto+snacks", cookie=self.cookie)
+        html = page.decode("utf-8", "replace")
+        self.assertIn("open ↗", html)
+        self.assertIn(seo._clean(kit["link"]), html)
+        st, _, _, api = self._raw(
+            "/api/social?keyword=" + urllib.parse.quote("keto snacks"), cookie=self.cookie)
+        res = json.loads(api)
+        pub = next(p for p in res["published"] if p["utm_content"] == kit["utm_content"])
+        self.assertIn("utm_source=", pub["link"])
+        self.assertEqual(pub["link"], kit["link"])
 
     def test_kits_are_utm_tracked_to_landing(self):
         d = self._api()

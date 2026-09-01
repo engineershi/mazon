@@ -232,6 +232,28 @@ def _db():
         created_at TEXT DEFAULT (datetime('now')),
         published_at TEXT
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS boosts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL,
+        keyword TEXT NOT NULL,
+        name TEXT NOT NULL,
+        script TEXT,
+        link TEXT,
+        utm_content TEXT,
+        runs INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'active',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL DEFAULT 'page',
+        page TEXT,
+        name TEXT NOT NULL,
+        keyword TEXT,
+        source TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
     try:
         conn.execute("ALTER TABLE clicks ADD COLUMN content TEXT")
         conn.commit()
@@ -732,6 +754,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._unsubscribe(q)
             if path == "/api/track":
                 return self._track_click()
+            if path == "/api/pageview":
+                return self._page_view()
             if path == "/_gated/pdf":
                 return self._gated_pdf(q)
             if self._needs_admin(path) and not self._authed():
@@ -845,6 +869,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._subscribers_json()
             if path == "/api/tools":
                 return self._tools(q)
+            if path == "/api/boosts":
+                return self._boosts_api(q)
             self._send(404, {"error": "not found"})
         except Exception as e:
             self._send(500, {"error": str(e)})
@@ -878,6 +904,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._subscribe()
             if parsed.path == "/api/track":
                 return self._track_click()
+            if parsed.path == "/api/pageview":
+                return self._page_view()
             if parsed.path.startswith("/api/") and not self._authed():
                 return self._send(401, {"error": "unauthorized", "auth": False})
             if parsed.path == "/api/niches":
@@ -896,6 +924,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._social_publish()
             if parsed.path == "/api/tools/launch":
                 return self._tools_launch()
+            if parsed.path == "/api/boosts/run":
+                return self._run_boosts()
+            if parsed.path == "/api/boosts/social":
+                return self._boosts_to_social()
             if parsed.path == "/api/cms/page":
                 return self._cms_save_page()
             if parsed.path == "/api/cms/preset":
@@ -909,6 +941,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._subscribers_json()
             if parsed.path == "/api/ai/test":
                 return self._ai_test()
+            if parsed.path == "/api/keys/test":
+                return self._keys_test()
             if parsed.path == "/api/ai/models":
                 return self._ai_models()
             if parsed.path == "/api/ai/config":
@@ -1201,7 +1235,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             ("Sitemap", seo.BASE_URL.rstrip("/") + "/sitemap.xml"),
             ("Affiliate tag", amazon.AFFILIATE_TAG or "(none set)"),
             ("Marketplace", amazon.MARKET),
-            ("Scraper", amazon.scraper_status().get("active", "n/a")),
+            ("Scraper providers", "%d / %d keyed" % (
+                sum(1 for p in amazon.scraper_status()["providers"].values()
+                    if p["has_key"]),
+                len(amazon.scraper_status()["providers"]))),
         ]
         cards = "".join(
             '<div class="sub"><h3>%s</h3><p class="key" '
@@ -1270,6 +1307,11 @@ border-radius:10px;padding:10px 12px;margin:0;word-break:break-all}}
 <p class="hint">Create / copy your key at the {meta['name']} dashboard, then paste it here:</p>
 <p><a class="btn" href="{meta['key_url']}" target="_blank" rel="noopener">Open {meta['name']} dashboard ↗</a></p>
 </div>
+<div class="sub"><h3>Test the key</h3>
+<p class="hint">Fires a real, free request to {meta['name']} — the provider confirms the key is accepted, with zero search quota used.</p>
+<button id="test" class="warm">▶ Test key</button>
+<p id="tmsg" class="msg"></p>
+</div>
 <div class="row">
   <label>API key
     <input id="key" placeholder="paste key…" autocomplete="off" spellcheck="false">
@@ -1283,24 +1325,41 @@ border-radius:10px;padding:10px 12px;margin:0;word-break:break-all}}
 <footer><p>Keys are stored in memory for this instance; set {meta['env_var']} as an environment variable to make them permanent.</p></footer>
 <script>
 function $(id){{return document.getElementById(id);}}
-async function post(payload){{
-  const r = await fetch("/api/settings", {{method:"POST", headers:{{"Content-Type":"application/json"}},
+async function post(path, payload){{
+  const r = await fetch(path, {{method:"POST", headers:{{"Content-Type":"application/json"}},
     body: JSON.stringify(payload)}});
-  return r.ok;
+  return r;
 }}
+$("test").onclick = async () => {{
+  const t = $("tmsg"), key = $("key").value.trim();
+  t.textContent = "Testing…"; t.className = "msg";
+  let d, r;
+  try {{ r = await post("/api/keys/test", {{pid: "{pid}", key: key}}); d = await r.json(); }}
+  catch(e) {{ t.textContent = "✗ Could not reach the server."; return; }}
+  if (d.ok) {{ t.textContent = "✓ Valid — the provider accepted this key." +
+      (d.latency_ms ? " (" + d.latency_ms + "ms)" : "") + (d.detail ? " · " + d.detail : "");
+      t.className = "msg ok"; }}
+  else {{ t.textContent = "✗ " + (d.error || "Test failed."); t.className = "msg err"; }}
+}};
 $("save").onclick = async () => {{
   const v = $("key").value.trim();
-  if (await post({{scraper: {{"{pid}": v}}}})) {{ $("msg").textContent = "Saved ✓"; setTimeout(()=>location.reload(), 700); }}
+  if (await (await post("/api/settings", {{scraper: {{"{pid}": v}}}})).ok) {{ $("msg").textContent = "Saved ✓"; setTimeout(()=>location.reload(), 700); }}
   else $("msg").textContent = "Save failed.";
 }};
 $("clear").onclick = async () => {{
-  if (await post({{scraper: {{"{pid}": ""}}}})) {{ $("msg").textContent = "Cleared."; setTimeout(()=>location.reload(), 700); }}
+  if (await (await post("/api/settings", {{scraper: {{"{pid}": ""}}}})).ok) {{ $("msg").textContent = "Cleared."; setTimeout(()=>location.reload(), 700); }}
   else $("msg").textContent = "Clear failed.";
 }};
 $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").onclick(); }});
 </script>
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _keys_test(self):
+        body = self._body()
+        pid = str(body.get("pid") or "").strip()
+        key = str(body.get("key") or "").strip()
+        return self._send(200, amazon.test_scraper_key(pid, key))
 
     def _best_for_tools(self, q):
         items = []
@@ -1323,6 +1382,7 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
         landing_url = "/lp/" + slug if slug else None
         subs, clicks, top_product = self._niche_stats(keyword, slug)
         ebook_url = "/admin/ebooks/pdf?keyword=%s" % urllib.parse.quote(keyword) if keyword else None
+        boosts = self._boosts_for(keyword) if keyword else []
         return {
             "keyword": keyword,
             "count": len(items or []),
@@ -1335,6 +1395,7 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
             "funnel": market_engine.build_funnel(keyword, items,
                                                  site_url=seo.BASE_URL,
                                                  affiliate_tag=amazon.AFFILIATE_TAG),
+            "boosts": boosts,
             "slug": slug,
             "niche_url": niche_url,
             "landing_url": landing_url,
@@ -1401,6 +1462,180 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
             "clicks": payload["stats"]["clicks"],
         }
         return self._send(200, payload)
+
+
+# ------------------------------------------------------------------ boosts suite
+    def _boost_longtail(self, keyword):
+        """Long-tail phrases (SEM autosuggest) to weave into boost copy on a run.
+        Gated off in offline tests (CACHE_TTL=0) so runs stay fast and hermit."""
+        if amazon.CACHE_TTL <= 0:
+            return ()
+        try:
+            niche = self._saved_niche(keyword)
+            if not niche:
+                return ()
+            info = sem.brief(keyword, niche, seo.BASE_URL,
+                             audit_row=seo.audit_niche(niche),
+                             indexnow_key=indexnow.key())
+            out = [g.get("phrase") for g in (info.get("longtail") or [])]
+            out = [p for p in out if p]
+            for q in (info.get("paa") or []):
+                if len(out) >= 3:
+                    break
+                if q.get("question"):
+                    out.append(q["question"])
+            return tuple(out[:3])
+        except Exception:
+            return ()
+
+    def _boosts_for(self, keyword, keywords=()):
+        """Boost campaigns for a niche — live builds merged with run/publish
+        history and per-campaign click totals (attribution via utm_content)."""
+        niche = self._saved_niche(keyword)
+        if not niche:
+            return []
+        slug = seo._slugify(keyword)
+        campaigns = market_engine.build_boost_campaigns(
+            keyword, niche["products"] or [], base_url=seo.BASE_URL,
+            slug=slug, keywords=keywords)
+        with _lock:
+            conn = _db()
+            rows = [dict(r) for r in conn.execute(
+                "SELECT * FROM boosts WHERE lower(slug)=? ORDER BY id", (slug,)).fetchall()]
+            stat = {}
+            for c in campaigns:
+                stat[c["code"]] = conn.execute(
+                    "SELECT COUNT(*) c FROM clicks WHERE lower(slug)=? AND content=?",
+                    (slug, str(c["code"]))).fetchone()["c"]
+            conn.close()
+        run_map = {r["name"]: r for r in rows}
+        seen = set()
+        out = []
+        for c in campaigns:
+            r = run_map.get(c["name"]) or {}
+            seen.add(c["name"])
+            out.append({"name": c["name"], "id": c.get("id"),
+                        "target": c.get("target", "landing"),
+                        "script": c.get("script", ""),
+                        "link": c.get("link", ""), "code": c.get("code", ""),
+                        "qr": c.get("qr", ""), "runs": r.get("runs") or 0,
+                        "status": r.get("status") or "ready",
+                        "clicks": stat.get(c.get("code")) or 0,
+                        "updated_at": r.get("updated_at")})
+        for r in rows:
+            if r["name"] in seen:
+                continue
+            out.append({"name": r["name"], "id": None, "target": "landing",
+                        "script": r["script"], "link": r["link"],
+                        "code": r["utm_content"], "qr": "", "runs": r["runs"] or 0,
+                        "status": r["status"],
+                        "clicks": stat.get(r["utm_content"]) or 0,
+                        "updated_at": r["updated_at"]})
+        return out
+
+    def _boosts_api(self, q):
+        keyword = (q.get("keyword") or [""])[0].strip()
+        if not keyword:
+            return self._send(200, {"keyword": "", "boosts": []})
+        return self._send(200, {"keyword": keyword,
+                                 "boosts": self._boosts_for(keyword)})
+
+    def _run_boosts(self):
+        """Run boost campaigns for a niche for real: persist each campaign with
+        its tracked link, weave in SEM long-tail copy, warm the lead-magnet PDF,
+        and ping IndexNow for the landing URL. Returns the live boosts feed."""
+        body = self._body()
+        keyword = str(body.get("keyword") or "").strip()
+        niche = self._saved_niche(keyword)
+        if not niche:
+            return self._send(404, {"error": "no saved niche matches that keyword"})
+        slug = seo._slugify(keyword)
+        keywords = self._boost_longtail(keyword)
+        campaigns = market_engine.build_boost_campaigns(
+            keyword, niche["products"] or [], base_url=seo.BASE_URL,
+            slug=slug, keywords=keywords)
+        names = body.get("names") or []
+        if isinstance(names, str):
+            names = [n.strip() for n in names.split(",") if n.strip()]
+        pick = campaigns
+        if names:
+            pick = [c for c in campaigns
+                    if c["name"] in names or c.get("id") in names]
+            if not pick:
+                return self._send(400, {"error": "no campaign matches those names"})
+        now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with _lock:
+            conn = _db()
+            for c in pick:
+                row = conn.execute(
+                    "SELECT id FROM boosts WHERE lower(slug)=? AND name=?",
+                    (slug, c["name"])).fetchone()
+                if row:
+                    conn.execute(
+                        "UPDATE boosts SET script=?, link=?, utm_content=?, "
+                        "runs=runs+1, status='active', updated_at=? WHERE id=?",
+                        (c["script"], c["link"], c["code"], now, row["id"]))
+                else:
+                    conn.execute(
+                        "INSERT INTO boosts (slug, keyword, name, script, link, "
+                        "utm_content, runs, status, updated_at) VALUES (?,?,?,?,?,?,1,'active',?)",
+                        (slug, keyword, c["name"], c["script"], c["link"],
+                         c["code"], now))
+            conn.commit()
+            conn.close()
+        try:
+            dry = self._ebook_for(keyword) is not None
+        except Exception:
+            dry = False
+        self._fire_indexnow(["/lp/" + slug])
+        boosts = self._boosts_for(keyword, keywords=keywords)
+        return self._send(200, {
+            "ok": True, "keyword": keyword, "ran": len(pick),
+            "runs_total": sum(b["runs"] for b in boosts),
+            "ebook_cached": dry, "indexnow_queued": True,
+            "sem_keywords": list(keywords), "boosts": boosts,
+        })
+
+    def _boosts_to_social(self):
+        """Push one boost campaign to the social page as a published "Boost"
+        post — same UTM link, real webhook fire, click attribution included."""
+        body = self._body()
+        keyword = str(body.get("keyword") or "").strip()
+        name = str(body.get("campaign") or "").strip()
+        if not keyword or not name:
+            return self._send(400, {"error": "keyword and campaign required"})
+        boosts = self._boosts_for(keyword)
+        c = next((b for b in boosts if b["name"] == name or b["id"] == name), None)
+        if not c:
+            return self._send(404, {"error": "no matching boost campaign"})
+        slug = seo._slugify(keyword)
+        now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        kit = {"platform": "Boost", "name": "Boost · %s" % c["name"],
+               "body": c["script"], "link": c["link"],
+               "utm_content": c["code"], "keyword": keyword}
+        with _lock:
+            conn = _db()
+            row = conn.execute(
+                "SELECT id FROM social_posts WHERE lower(slug)=? AND utm_content=?",
+                (slug, c["code"])).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE social_posts SET status='published', published_at=?, "
+                    "name=?, body=?, link=? WHERE id=?",
+                    (now, kit["name"], kit["body"], kit["link"], row["id"]))
+            else:
+                conn.execute(
+                    "INSERT INTO social_posts (slug, keyword, platform, name, body, "
+                    "link, utm_content, status, published_at) "
+                    "VALUES (?,?,?,?,?,?,?, 'published', ?)",
+                    (slug, keyword, "Boost", kit["name"], kit["body"],
+                     kit["link"], c["code"], now))
+            conn.commit()
+            conn.close()
+        self._webhook_publish([kit])
+        _, stats = self._social_db(keyword, slug, None)
+        return self._send(200, {"ok": True, "post": kit,
+                                "clicks": c["clicks"], "stats": stats})
 
 
 # ------------------------------------------------------------------ CMS suite
@@ -1754,6 +1989,23 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
   syncToggle("cms-promo", "promo-fields");
   syncToggle("cms-countdown", "cd-fields");
   syncToggle("cms-gate2", null, "cms-gate");
+  /* feature toggles persist the moment they flip, so what you see on the
+     live page follows the switch — same instant behavior as section toggles */
+  var autoSaveTimer = null;
+  function autoSaveSettings() {{
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = setTimeout(function () {{
+      say("Saving settings…");
+      post("/api/cms/page", {{ page_id: PAGE_ID, style: collectStyle(), settings: collectSettings() }})
+        .then(function (d) {{ say("Settings saved ✓ — live now.", true); }})
+        .catch(function () {{ say("Save failed.", false); }});
+    }}, 350);
+  }}
+  ["cms-promo", "cms-countdown", "cms-sticky", "cms-anim", "cms-gate2", "use-cms"]
+    .forEach(function (id) {{
+      var box = $(id);
+      if (box) box.addEventListener("change", autoSaveSettings);
+    }});
   document.querySelectorAll(".preset-btn").forEach(function (btn) {{
     btn.onclick = function () {{ applyPreset(btn.getAttribute("data-preset")); }};
   }});
@@ -2003,6 +2255,12 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                 stats[code] = conn.execute(
                     "SELECT COUNT(*) c FROM clicks WHERE lower(slug)=? AND content=?",
                     (slug or "", code)).fetchone()["c"]
+            extra = [r["utm_content"] for r in rows
+                     if r["utm_content"] and r["utm_content"] not in stats]
+            for code in extra:
+                stats[code] = conn.execute(
+                    "SELECT COUNT(*) c FROM clicks WHERE lower(slug)=? AND content=?",
+                    (slug or "", code)).fetchone()["c"]
             conn.close()
         return [dict(r) for r in rows], stats
 
@@ -2143,16 +2401,19 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
 <div class="row">
 <button class="warm soc-pub" data-kw="{seo._clean(keyword)}" data-platform="{seo._clean(kit['platform'])}">Publish</button>
 <button class="soc-copy">Copy post</button>
+<a class="btn" target="_blank" rel="noopener" href="{seo._clean(kit['link'])}">View live ↗</a>
 </div>
 </div>""")
         kit_html = "".join(kit_cards) if kit_cards else \
             '<p class="hint">Choose a saved niche with products — each kit turns its top pick into a tracked post.</p>'
         pub_rows = "".join(
-            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class='ct'>%s</td></tr>"
+            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class='ct'>%s</td>"
+            "<td class='ct'><a target='_blank' rel='noopener' href='%s'>open ↗</a></td></tr>"
             % (seo._clean(p["platform"]), seo._clean(p["name"]), seo._clean(p["utm_content"]),
                seo._clean(p["published_at"] or p["created_at"]),
-               stats.get(p["utm_content"]) or 0)
-            for p in published) or "<tr><td colspan='5' class='hint'>Nothing published yet — hit Publish above.</td></tr>"
+               stats.get(p["utm_content"]) or 0, seo._clean(p["link"]))
+            for p in published) or \
+            "<tr><td colspan='6' class='hint'>Nothing published yet — hit Publish above.</td></tr>"
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Social — pstore</title><link rel="stylesheet" href="/style.css">
@@ -2178,7 +2439,7 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
 </section>
 <section class="card"><h2>✅ Published posts &amp; clicks</h2>
 <p class="hint">Each code counts clicks on the landing page with that exact UTM tag — so you can see, per post, who clicked through.</p>
-<div class="table-wrap"><table class="plain"><thead><tr><th>Platform</th><th>Post</th><th>Code</th><th>Published</th><th>Clicks</th></tr></thead>
+<div class="table-wrap"><table class="plain"><thead><tr><th>Platform</th><th>Post</th><th>Code</th><th>Published</th><th>Clicks</th><th>Live</th></tr></thead>
 <tbody>{pub_rows}</tbody></table></div></section>
 </main>
 <footer><p>Posts only use real scraped data (title, price, stars, reviews) — no fabricated claims. Landing page carries the courier beacon, so every tap is attributed.</p></footer>
@@ -2442,6 +2703,17 @@ fresh();
         paa = info.get("paa") or []
         perf = info.get("performance") or []
         page = info.get("page") or {}
+        boosts = self._boosts_for(keyword) if keyword else []
+        long_phrases = [g.get("phrase") for g in lt if g.get("phrase")]
+        boost_kw = " · ".join(long_phrases[:3]) if long_phrases else "none yet"
+        boost_rows = "".join(
+            '<div class="sub"><h3>🚀 %s</h3>'
+            '<p class="who">%s ✓ · %d run · %d clicks</p>'
+            '<p class="key"><a href="%s">%s</a></p></div>'
+            % (seo._clean(b["name"]),
+               b["status"], b["runs"] or 0, b["clicks"] or 0,
+               seo._clean(b["link"] or "#"), seo._clean(b["link"] or "—"))
+            for b in boosts) or '<p class="hint">Run boosts on the Workbench — they weave these long-tail terms in.</p>'
 
         def chip(t, s):
             return '<span class="badge %s">%s</span>' % (s, t)
@@ -2500,6 +2772,11 @@ fresh();
 <div class="sub"><h3>Canonical</h3><p class="key"><a href="{seo._clean(page.get('canonical',''))}">{seo._clean(page.get('canonical',''))}</a></p></div>
 <div class="sub"><h3>Share image</h3><p class="key"><a href="{seo._clean(page.get('og_image',''))}">{seo._clean(page.get('og_image',''))}</a></p></div>
 <div class="sub"><h3>Landing page</h3><p class="key"><a href="{seo._clean(page.get('landing_url',''))}">{seo._clean(page.get('landing_url',''))}</a></p></div></section>
+<section class="card"><h2>🚀 Long-tail boosts</h2>
+<p class="hint">These campaigns weave the {seo._clean(boost_kw or 'long-tail')} terms above into social-ready promo copy, each with a stable UTM-tracked link back to the landing page. Run them in the Workbench.</p>
+<p class="hint"><b>Fold-in phrases:</b> {seo._clean(boost_kw)}</p>
+{boost_rows}
+<p class="hint"><a href="/tool?keyword={seo._clean(keyword)}">Open Workbench for “{seo._clean(keyword)}” →</a></p></section>
 </main>
 <footer><p>The funnel grows the keyword pool around each review page. All suggestions are honest — we never assert traffic or rankings we can't observe.</p></footer>
 {_TOTOP}
@@ -2632,6 +2909,44 @@ fresh();
         content = str(body.get("content") or (q.get("content") or [""])[0]).strip()[:40]
         self._record_click(slug, source, referrer, asin, content)
         return self._send(200, {"ok": True})
+
+    def _page_view(self):
+        """Public pageview/event beacon (GET or POST). Records lead-page + public
+        site activity (views, promo/countdown/sticky clicks, PDF downloads) —
+        rate-limited and IP-anonymized, same privacy posture as /api/track."""
+        key = "pv|" + security.client_key(self.headers, self._client_ip())
+        if not security.PAGEVIEW_LIMITER.hit(key):
+            return self._send(200, {"ok": True})
+        parsed = urllib.parse.urlsplit(self.path)
+        q = urllib.parse.parse_qs(parsed.query)
+        body = self._body()
+        source = str(body.get("source") or (q.get("source") or [""])[0]).strip()[:40]
+        entry = {
+            "slug": str(body.get("slug") or (q.get("slug") or ["page"])[0]).strip()[:120] or "page",
+            "page": (body.get("page") or (q.get("page") or [""])[0]).strip()[:160] or "/",
+            "name": (body.get("name") or (q.get("name") or ["view"])[0]).strip()[:40] or "view",
+            "keyword": (body.get("keyword") or (q.get("keyword") or [""])[0]).strip()[:120],
+            "source": source or "organic",
+        }
+        if entry["slug"] in ("page", "") and not entry["keyword"]:
+            entry["slug"] = entry["page"].strip("/").split("?")[0][:120] or "page"
+        self._record_event(entry)
+        return self._send(200, b'{"ok": true}', "application/json")
+
+    def _record_event(self, e):
+        e = {k: (v or "").strip()[:k_limit] for k, (v, k_limit) in {
+            "slug": (e.get("slug"), 120), "page": (e.get("page"), 160),
+            "name": (e.get("name"), 40), "keyword": (e.get("keyword"), 120),
+            "source": (e.get("source"), 40)}.items()}
+        with _lock:
+            conn = _db()
+            conn.execute(
+                "INSERT INTO events (slug, page, name, keyword, source) "
+                "VALUES (?,?,?,?,?)",
+                (e["slug"], e["page"], e["name"] or "view",
+                 e["keyword"], e["source"]))
+            conn.commit()
+            conn.close()
 
     def _subs_stats(self, conn):
         return {
@@ -3002,6 +3317,13 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
                 "SELECT asin, slug, COUNT(*) c FROM clicks WHERE asin != '' "
                 "GROUP BY asin, slug ORDER BY c DESC LIMIT 10").fetchall()
             recent = conn.execute("SELECT * FROM clicks ORDER BY id DESC LIMIT 15").fetchall()
+            views = conn.execute(
+                "SELECT COUNT(*) c FROM events WHERE name='view'").fetchone()["c"]
+            event_breakdown = conn.execute(
+                "SELECT name, COUNT(*) c FROM events GROUP BY name ORDER BY c DESC LIMIT 12").fetchall()
+            event_pages = conn.execute(
+                "SELECT page, COUNT(*) c FROM events WHERE name='view' "
+                "GROUP BY page ORDER BY c DESC LIMIT 10").fetchall()
             conn.close()
         slug_rows = "".join(
             "<tr><td>%s</td><td class='ct'>%s</td></tr>" % (seo._clean(r["slug"]), r["c"])
@@ -3018,6 +3340,14 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
             % (seo._clean(r["slug"]), seo._clean(r["source"]), seo._clean(r["referrer"] or "—"),
                seo._clean(r["created_at"] or "—"))
             for r in recent) or "<tr><td colspan='4' class='hint'>No clicks yet — they're recorded when visitors tap Amazon links on the pages.</td></tr>"
+        ev_rows = "".join(
+            "<tr><td>%s</td><td class='ct'>%d</td></tr>"
+            % (seo._clean(r["name"]), r["c"]) for r in event_breakdown
+        ) or "<tr><td colspan='2' class='hint'>No pageview events yet.</td></tr>"
+        ev_page_rows = "".join(
+            "<tr><td>%s</td><td class='ct'>%d</td></tr>"
+            % (seo._clean(r["page"] or "—"), r["c"]) for r in event_pages
+        ) or "<tr><td colspan='2' class='hint'>Views appear as pages load.</td></tr>"
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Analytics — pstore</title><link rel="stylesheet" href="/style.css">
@@ -3033,9 +3363,15 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
 <div class="row" style="align-items:stretch">
   <div class="feature"><h3>{total}</h3><p class="hint">total clicks</p></div>
   <div class="feature"><h3>{len(top_slugs)}</h3><p class="hint">niches clicked</p></div>
+  <div class="feature"><h3>{views}</h3><p class="hint">page views (leads + site)</p></div>
   <div class="feature"><h3>{stats['active']}</h3><p class="hint">active subscribers</p></div>
   <div class="feature"><h3>{stats['emails_sent']}</h3><p class="hint">emails sent</p></div>
 </div></section>
+<section class="card"><h2>👀 Page views by URL</h2>
+<div class="table-wrap"><table class="plain"><thead><tr><th>Page</th><th>Views</th></tr></thead><tbody>{ev_page_rows}</tbody></table></div></section>
+<section class="card"><h2>⚡ Lead-page interactions</h2>
+<p class="hint">Promo taps, countdown timing, sticky-CTAs, gate unlocks and lead-PDF downloads — every element tagged <code>[data-ev]</code> on the landing/build pages.</p>
+<div class="table-wrap"><table class="plain"><thead><tr><th>Event</th><th>Count</th></tr></thead><tbody>{ev_rows}</tbody></table></div></section>
 <section class="card"><h2>🛒 Top clicked pages</h2>
 <div class="table-wrap"><table class="plain"><thead><tr><th>Niche</th><th>Clicks</th></tr></thead><tbody>{slug_rows}</tbody></table></div></section>
 <section class="card"><h2>🏆 Most-clicked products</h2>
@@ -3046,7 +3382,7 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
 <section class="card"><h2>🧾 Recent clicks</h2>
 <div class="table-wrap"><table class="plain"><thead><tr><th>Niche</th><th>Source</th><th>Referrer</th><th>When</th></tr></thead><tbody>{recent_rows}</tbody></table></div></section>
 </main>
-<footer><p>Clicks are counted server-side when a visitor's browser pings /api/track before Amazon loads. Referrers are truncated; raw IPs are never stored.</p></footer>
+<footer><p>Views + interactions are captured privacy-first (IP hashes only) via /api/pageview; clicks via /api/track. Promo/countdown/sticky/gate elements are auto-tagged so you can see exactly which page behavior earns engagement and conversions.</p></footer>
 <script src="/table-flow.js" defer></script>
 {_TOTOP}
 </body></html>"""

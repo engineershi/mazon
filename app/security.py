@@ -56,6 +56,7 @@ API_LIMITER = RateLimiter(limit=240, window_sec=60)          # /api flood guard
 HTTP_LIMITER = RateLimiter(limit=720, window_sec=60)         # global per-client cap
 SUBSCRIBE_LIMITER = RateLimiter(limit=6, window_sec=10 * 60)  # opt-in abuse guard
 TRACK_LIMITER = RateLimiter(limit=180, window_sec=60)        # click beacons
+PAGEVIEW_LIMITER = RateLimiter(limit=120, window_sec=60)     # pageview/event beacons
 
 
 def client_key(headers, peer_ip):

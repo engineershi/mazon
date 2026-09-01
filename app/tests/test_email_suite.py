@@ -67,6 +67,7 @@ class TestEmailSuite(unittest.TestCase):
         indexnow._post = cls._saved_indexnow_post
         security.SUBSCRIBE_LIMITER.clear("sub|" + cls.IPKEY)
         security.TRACK_LIMITER.clear("trk|" + cls.IPKEY)
+        security.PAGEVIEW_LIMITER.clear("pv|" + cls.IPKEY)
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
         cls.httpd.server_close()
@@ -544,7 +545,29 @@ class TestEmailSuite(unittest.TestCase):
         html = data.decode("utf-8", "replace")
         self.assertIn("analytics", html.lower())
         self.assertIn("keto-snacks", html)
-        self.assertIn("raw IPs are never stored", html)
+        self.assertIn("privacy-first", html)
+
+    def test_pageview_beacon_public_and_counted(self):
+        self._raw("/api/pageview", "POST",
+                  body="slug=keto-snacks&page=%2Fn%2Fketo-snacks&name=view&source=niche")
+        self._raw("/api/pageview", "POST",
+                  body="slug=keto-snacks&page=%2Flp%2Fketo-snacks&name=promo&source=niche")
+        st, _, _, data = self._raw("/admin/analytics", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        html = data.decode("utf-8", "replace")
+        self.assertIn("Page views by URL", html)
+        self.assertIn("/n/keto-snacks", html)
+        self.assertIn("promo", html)
+        self.assertIn("Lead-page interactions", html)
+
+    def test_courier_js_tracks_views_and_interactions(self):
+        st, _, _, data = self._raw("/courier.js")
+        self.assertEqual(st, 200)
+        js = data.decode("utf-8", "replace")
+        self.assertIn("/api/pageview", js)
+        self.assertIn("beacon(\"view\")", js)
+        self.assertIn("data-ev", js)
+        self.assertIn("_gated/pdf", js)
 
     # ---------------------------------------------------------- public surfaces
 

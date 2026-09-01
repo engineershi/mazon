@@ -129,7 +129,12 @@
 
   <section class="card" id="boosts">
     <h2>🚀 Marketing boosts</h2>
-    <div id="boost-list"><p class="hint">Ready-to-run promo angle templates.</p></div>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px;">
+      <button id="run-boosts" class="btn">▶ Run all boost campaigns</button>
+      <span class="hint">Persists each UTM-tracked link, warms the lead-magnet PDF, pings IndexNow, folds in SEM long-tail copy.</span>
+    </div>
+    <div id="boost-msg" class="hint" style="display:none; margin-bottom:8px;"></div>
+    <div id="boost-list"><p class="hint">Ready-to-run promo angle templates. Click ▶ Run to mint tracked links, or ⟶ Social to publish one to the Social page.</p></div>
   </section>
 
   <section class="card">
@@ -351,19 +356,117 @@ function renderFunnel(f, landing_url, socialKit){
   });
 
   // boosts
-  $("boost-list").innerHTML="";
+  const blink = $("boost-list"); blink.innerHTML="";
   (f.boosts||[]).forEach(bost=>{
     const box = document.createElement("div");
     box.className = "sub";
-    box.innerHTML = `<h3>🚀 ${esc(bost.name)}</h3>`;
+    const head = document.createElement("div");
+    head.style.display="flex"; head.style.alignItems="center"; head.style.gap="10px";
+    const name = document.createElement("h3");
+    name.style.margin="0"; name.textContent = `🚀 ${bost.name}`;
+    head.appendChild(name);
+    const badge = document.createElement("span");
+    badge.className = "hint";
+    badge.textContent = `ran ${bost.runs||0}x · ${bost.clicks||0} clicks`;
+    head.appendChild(badge);
+    box.appendChild(head);
     const ta = document.createElement("textarea");
     ta.readOnly=true; ta.rows=5; ta.value=bost.script;
-    const b = document.createElement("button");
-    b.className="warm"; b.textContent="Copy";
-    b.onclick = () => copyArea(ta, b);
-    box.appendChild(b); box.appendChild(ta);
-    $("boost-list").appendChild(box);
+    const row = document.createElement("div");
+    row.style.display="flex"; row.style.flexWrap="wrap"; row.style.gap="8px";
+    const btns = [
+      {t:"▶ Run", cls:"", act:()=>runBoost(bost.name, b)},,
+      {t:"Copy", cls:"warm", act:()=>copyArea(ta, b)},
+    ];
+    if (bost.link){
+      const a = document.createElement("a");
+      a.className="btn"; a.href=bost.link; a.target="_blank"; a.rel="noopener";
+      a.textContent="Open live ↗";
+      row.appendChild(a);
+      btns.push({t:"⟶ Social page", cls:"warm", act:()=>boostToSocial(bost.name)});
+    }
+    btns.forEach(x=>{
+      const b = document.createElement("button");
+      b.className=x.cls; b.textContent=x.t;
+      b.onclick = ()=>{ if(x.t==="▶ Run") runBoost(bost.name, b); else x.act(); };
+      row.appendChild(b);
+    });
+    box.appendChild(row); box.appendChild(ta);
+    box.appendChild(P());
+    const linkP = document.createElement("p");
+    linkP.className = "hint"; linkP.style.wordBreak="break-all";
+    const a2 = document.createElement("a");
+    a2.href=bost.link; a2.target="_blank"; a2.rel="noopener"; a2.textContent=bost.link||"(no link yet — run once to mint one)";
+    linkP.appendChild(a2);
+    box.appendChild(linkP);
+    blink.appendChild(box);
   });
+}
+
+function P(){const p=document.createElement("p");p.style.margin="6px 0 0";return p;}
+
+function boostStatus(msg, ok){
+  $("boost-msg").textContent = msg;
+  $("boost-msg").className = ok ? "ok" : "err";
+  $("boost-msg").style.display="block";
+}
+
+function runBoost(name, btn){
+  const t0 = performance.now();
+  const original = btn ? btn.textContent : "";
+  if (btn){btn.textContent="Running…"; btn.disabled=true;}
+  fetch("/api/boosts/run", {
+    method:"POST",
+    headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body: new URLSearchParams({keyword: window.CURRENT_KEY, names: name}).toString()
+  }).then(r=>r.json()).then(d=>{
+    if (btn){btn.textContent=original; btn.disabled=false;}
+    if (d && d.ok){
+      boostStatus(`Ran boost "${name}" (${d.ran} campaign, ${d.runs_total} total runs) `+
+        `in ${Math.round(performance.now()-t0)}ms — ${((d.sem_keywords||[]).length)} `+
+        `SEM long-tail phrases folded in. ${d.ebook_cached?"Lead-magnet PDF cached.":""} `+
+        `IndexNow pinged for /lp/${d.keyword}.`, true);
+      window.BOOSTS_RUN = true;
+      loadWorkbench(window.CURRENT_KEY);
+    } else {
+      boostStatus(d.error || "Run failed", false);
+    }
+  }).catch(e=>{
+    if (btn){btn.textContent=original; btn.disabled=false;}
+    boostStatus(String(e), false);
+  });
+}
+
+function runAllBoosts(){
+  if(!window.CURRENT_KEY){ boostStatus("Launch a niche first.", false); return; }
+  const t0 = performance.now();
+  fetch("/api/boosts/run", {
+    method:"POST",
+    headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body: new URLSearchParams({keyword: window.CURRENT_KEY}).toString()
+  }).then(r=>r.json()).then(d=>{
+    if (d && d.ok){
+      boostStatus(`Ran all ${d.ran} boost campaigns for "${d.keyword}". `+
+        `${d.sem_keywords.length} SEM long-tail phrases folded in — `+
+        `ebook ${d.ebook_cached?"cached":"failed"}. `+
+        `${Math.round(performance.now()-t0)}ms.`, true);
+      window.BOOSTS_RUN = true;
+      loadWorkbench(window.CURRENT_KEY);
+    } else boostStatus(d.error||"Run failed", false);
+  }).catch(e=>boostStatus(String(e), false));
+}
+
+function boostToSocial(name){
+  fetch("/api/boosts/social", {
+    method:"POST",
+    headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body: new URLSearchParams({keyword: window.CURRENT_KEY, campaign: name}).toString()
+  }).then(r=>r.json()).then(d=>{
+    if (d && d.ok){
+      boostStatus(`"${name}" published to the Social page (live link + webhook). `+
+        `${d.clicks} clicks attributed so far.`, true);
+    } else boostStatus(d.error||"Push failed", false);
+  }).catch(e=>boostStatus(String(e), false));
 }
 
 function applyWorkbench(d){
@@ -407,6 +510,7 @@ async function launchMarketing(){
   });
   const d = await r.json().catch(()=>({error:"bad response"}));
   if (!r.ok){ $("tool-msg").textContent = (d && d.error) || "Launch failed."; return; }
+  window.CURRENT_KEY = decodeURIComponent(kw);
   applyWorkbench(d);
   history.replaceState(null, "", "/tool?keyword=" + kw);
 }
@@ -431,6 +535,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
     if (initial) { $("kw-select").value = encodeURIComponent(initial); launchMarketing(); }
   });
   $("launch-btn").onclick = launchMarketing;
+  $("run-boosts").onclick = runAllBoosts;
   $("send-btn").onclick = sendNextBatch;
   document.addEventListener("click", (e)=>{
     const b = e.target.closest("[data-grab]");

@@ -340,7 +340,7 @@ def render_landing(saved_niches):
 <a class="chip" href="#notify">✉️ Stay updated</a>
 <a class="chip" href="#faq">❓ FAQ</a>
 </nav></header>
-<main data-niche="home" data-source="home">
+<main data-niche="home" data-source="home" data-keyword="best amazon niche picks">
 <section class="card hero-home" id="top-picks">
   <h1 style="font-size:30px;line-height:1.15">Find the best <span style="color:var(--accent)">Amazon picks</span>, by niche — before you scroll once.</h1>
   <p style="font-size:16px;color:var(--muted);max-width:720px">Each niche page ranks the strongest products on Amazon for a topic — using live price, rating
@@ -416,8 +416,8 @@ def render_niche(keyword, niche, saved_niches=None):
                  noindex=not bool(items))
     body = f"""
 <header id="top"><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
-<nav><a href="/">🏠 Home</a><a href="/about">About</a><a href="/disclosure">Disclosure</a></nav></header>
-<main data-niche="{_clean(_slugify(keyword))}" data-source="niche">
+<nav><a href="/">🏠 Home</a><a href="/about">About</a><a href="/disclosure">Disclosure</a><a href="/lp/{_clean(_slugify(keyword))}">One-pager →</a></nav></header>
+<main data-niche="{_clean(_slugify(keyword))}" data-source="niche" data-keyword="{_clean(keyword)}">
 <div class="card">
   {editorial.breadcrumbs_html(keyword)}
   <h1>Best {_clean(keyword)}: ranked picks</h1>

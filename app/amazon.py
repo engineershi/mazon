@@ -470,6 +470,60 @@ def set_scraper_key(pid, key):
         _STORED_SCRAPER[pid] = (key or "").strip()
 
 
+def test_scraper_key(pid, key=""):
+    """Verify an API key against the provider's live account endpoint.
+
+    Uses the module's ``_urlopen`` seam (and ``_fetch``), so tests can stub it
+    while production makes a real, no-quota request per provider:
+      * scraperapi -> GET /account  (api_key query param)
+      * serpapi    -> GET /account  (api_key query param)
+      * outscraper -> GET /account  (X-API-KEY header)
+    A 200 response means the key was accepted; 401/403 means it was rejected.
+    Returns {"ok", "pid", "provider", "status", "detail", "latency_ms"}.
+    """
+    meta = _SCRAPER_PROVIDERS.get(pid)
+    if not meta:
+        return {"ok": False, "pid": pid, "provider": "",
+                "status": 0, "error": "unknown provider: %s" % pid}
+    name = meta["name"]
+    key = (key or "").strip() or _scraper_key(pid)
+    if not key:
+        return {"ok": False, "pid": pid, "provider": name,
+                "status": 0, "error": "no key set"}
+    t0 = time.monotonic()
+    try:
+        if pid == "outscraper":
+            req = urllib.request.Request(
+                "https://api.app.outscraper.com/account",
+                headers={"X-API-KEY": key})
+            raw = _urlopen(req, NET_TIMEOUT).read()
+        elif pid == "scraperapi":
+            raw = _fetch("https://api.scraperapi.com/account?api_key=%s"
+                         % urllib.parse.quote_plus(key))
+        else:  # serpapi
+            raw = _fetch("https://serpapi.com/account?api_key=%s"
+                         % urllib.parse.quote_plus(key))
+        detail = raw.decode("utf-8", "replace").strip()
+        try:
+            obj = json.loads(detail)
+            if isinstance(obj, dict):
+                detail = ", ".join("%s=%s" % (k, str(v)[:80])
+                                   for k, v in sorted(obj.items())[:3])
+        except Exception:
+            detail = detail[:200]
+        return {"ok": True, "pid": pid, "provider": name, "status": 200,
+                "detail": detail,
+                "latency_ms": round((time.monotonic() - t0) * 1000)}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "pid": pid, "provider": name, "status": e.code,
+                "error": "rejected by %s (HTTP %d)" % (name, e.code),
+                "latency_ms": round((time.monotonic() - t0) * 1000)}
+    except Exception as e:
+        return {"ok": False, "pid": pid, "provider": name, "status": 0,
+                "error": "test failed: %s" % e,
+                "latency_ms": round((time.monotonic() - t0) * 1000)}
+
+
 def _scraper_preferred_order():
     order = list(_SCRAPER_PROVIDERS.keys())
     pref = _SCRAPER_PREFERRED

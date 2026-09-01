@@ -173,6 +173,8 @@ button.warm {
   box-shadow: 0 6px 16px rgba(255, 107, 44, 0.32);
 }
 button.warm:hover { box-shadow: 0 10px 24px rgba(255, 107, 44, 0.4); }
+.ok { color: #12805c; font-weight: 600; }
+.err { color: #b42318; font-weight: 600; }
 button.mini {
   min-height: 30px;
   padding: 0 14px;
