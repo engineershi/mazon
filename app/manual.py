@@ -107,6 +107,28 @@ def build_pdf():
     ])
     doc.page_break()
 
+    doc.heading("The landing page — CMS sales page")
+    doc.paragraph(
+        "Every niche gets a dedicated, fully editable sales landing page at "
+        "/lp/<slug>. It is the money page: it turns cold traffic (from Google, "
+        "social, QR codes or emails) into subscribers and Amazon clicks. You run "
+        "it entirely from the Landing Pages editor (/admin/cms) — no code.")
+    doc.bullets([
+        "Pick a style template in one click: sunset (warm default), clean, forest, ocean or midnight (dark). The preset re-skins the entire page instantly.",
+        "Feature toggles switch the promo banner + discount code, the countdown timer, the sticky buy button and reveal animations on or off per niche.",
+        "Every section has its own show/hide switch: hero, social proof, product spotlight, email gate, testimonials, urgency, guarantee, FAQ and more.",
+        "Generate copy rebuilds all section text from the niche in one click; Apply preset re-skins without touching your custom copy — the two never fight.",
+    ])
+    doc.paragraph(
+        "The page is persuasion-engineered (Suby's How to Sell Like Crazy + "
+        "Cialdini's Influence): live-data social proof, scarcity counters, an "
+        "honest disclosure and a reciprocity offer — a free niche PDF guide "
+        "delivered the moment a visitor opts in. Email gate on means the PDF is "
+        "unlocked by a short-lived token issued on subscribe; flip the PDF gate "
+        "off to hand out the PDF with no email wall. Landing pages are indexed "
+        "too: each /lp/<slug> appears in your sitemap with a canonical URL.")
+    doc.page_break()
+
     doc.heading("Step 4 — Send the 5-part buyer sequence")
     doc.paragraph(
         "Every subscriber enters a 5-email sequence built from the niche's top "
@@ -182,6 +204,7 @@ def render_admin_manual(nav_html, totop_html):
         a("/tool", "🛠 Workbench", "launch + funnel"),
         a("/keys", "🔑 Keys", "affiliate tag + endpoints"),
         a("/admin/emails", "📧 Emails", "sequence + subscribers"),
+        a("/admin/cms", "🎨 Landing pages", "presets + toggles"),
         a("/admin/ebooks", "📕 Ebooks", "PDF lead magnet"),
         a("/admin/analytics", "📊 Analytics", "clicks + sources"),
         a("/admin/social", "📣 Social", "tracked posts"),
@@ -280,11 +303,12 @@ def render_admin_manual(nav_html, totop_html):
   <a href="#s1">3 · Step 1 · Mine</a>
   <a href="#s2">4 · Step 2 · SEO</a>
   <a href="#s3">5 · Step 3 · Capture</a>
-  <a href="#s4">6 · Step 4 · Email</a>
-  <a href="#s5">7 · Step 5-6 · Ebook + Social</a>
-  <a href="#s6">8 · Step 7-8 · Launch + Refresh</a>
-  <a href="#playbook">9 · Highest-form playbook</a>
-  <a href="#checklist">10 · 30-min checklist</a>
+  <a href="#lp">6 · Landings · CMS</a>
+  <a href="#s4">7 · Step 4 · Email</a>
+  <a href="#s5">8 · Step 5-6 · Ebook + Social</a>
+  <a href="#s6">9 · Step 7-8 · Launch + Refresh</a>
+  <a href="#playbook">10 · Highest-form playbook</a>
+  <a href="#checklist">11 · 30-min checklist</a>
 </nav>
 
 <h3 id="what">1 · What pstore is</h3>
@@ -327,7 +351,19 @@ def render_admin_manual(nav_html, totop_html):
 <li>Every email carries an <b>unsubscribe</b> link + <code>List-Unsubscribe</code>.</li>
 </ul>
 
-<h3 id="s4">6 · Step 4 — Send the 5-part buyer sequence</h3>
+<h3 id="lp">6 · The landing page — CMS sales page</h3>
+<p>Every niche gets a dedicated, fully editable <b>sales landing page at <code>/lp/&lt;slug&gt;</code></b> — the money page that turns cold traffic (Google, social, QR codes, email) into subscribers and Amazon clicks. You run it entirely from the <a class="tooltag" href="/admin/cms">🎨 Landing pages</a> editor, no code.</p>
+<ul class="step-list">
+<li><b>Style templates in one click:</b> sunset (warm default), clean, forest, ocean or midnight (dark) — the preset re-skins the entire page, including dark mode.</li>
+<li><b>Feature toggles per niche:</b> promo banner + discount code, countdown timer, sticky buy button and reveal animations — each on/off.</li>
+<li><b>Every section has a show/hide switch:</b> hero, social proof, product spotlight, email gate, testimonials, urgency, guarantee, FAQ and more.</li>
+<li><b>Generate copy</b> rebuilds all section text from the niche in one click; <b>Apply preset</b> re-skins without touching your custom copy — the two never fight.</li>
+<li><b>Email-gated PDF:</b> the free guide unlocks with a short-lived token the moment a visitor subscribes; flip the <b>PDF gate</b> off to hand out the PDF with no email wall.</li>
+<li>Landing pages are <b>indexed too</b>: each <code>/lp/&lt;slug&gt;</code> appears in your <a class="tooltag" href="/sitemap.xml">🗺 Sitemap</a> with a self-referencing canonical.</li>
+</ul>
+<p>It is persuasion-engineered (Suby + Cialdini): live-data social proof, scarcity counters, an honest disclosure and a reciprocity offer — every Amazon link tagged with your affiliate code.</p>
+
+<h3 id="s4">7 · Step 4 — Send the 5-part buyer sequence</h3>
 <p>Every subscriber enters a 5-email sequence from the top pick: hook → social proof → objections → soft urgency → follow-up + review. Each carries your tagged Amazon link.</p>
 <ul class="step-list">
 <li>On <a class="tooltag" href="/admin/emails">📧 Emails</a> pick a recipient selector: All ready (up to 50), First 5, First 10 or First 25.</li>
@@ -335,14 +371,14 @@ def render_admin_manual(nav_html, totop_html):
 <li>Add the free PDF ebook to the sequence to lift engagement.</li>
 </ul>
 
-<h3 id="s5">7 · Step 5-6 — Ebook lead magnet + social posts</h3>
+<h3 id="s5">8 · Step 5-6 — Ebook lead magnet + social posts</h3>
 <p>The <a class="tooltag" href="/admin/ebooks">📕 Ebooks</a> page turns any niche into a designed PDF in one click. Free AI providers are built in (OpenCode, Mistral, NVIDIA); add an OpenAI key for extra polish. The <a class="tooltag" href="/admin/social">📣 Social</a> page generates a ready-to-post kit for X, Facebook, LinkedIn, Instagram, Pinterest and Threads — each with a <b>tracked link</b>, so every post's clicks are counted individually in <a class="tooltag" href="/admin/analytics">📊 Analytics</a>.</p>
 
-<h3 id="s6">8 · Step 7-8 — Launch + keep data fresh</h3>
+<h3 id="s6">9 · Step 7-8 — Launch + keep data fresh</h3>
 <p>Use <b>Launch marketing</b> on the <a class="tooltag" href="/tool">🛠 Workbench</a> to build the whole funnel in one click, then see a status strip (landing live · IndexNow queued · ebook ready · clicks tracking). The Workbench also has <b>DM scripts, review pipeline, boost campaigns, text links, Markdown and QR codes</b>.</p>
 <p>The <a class="tooltag" href="/admin/refresh">📡 Refresh</a> page keeps prices and ratings accurate — a background loop re-mines stale niches automatically, and you can <b>Refresh now</b> per niche or <b>Refresh all now</b>.</p>
 
-<h3 id="playbook">9 · Highest-form playbook</h3>
+<h3 id="playbook">10 · Highest-form playbook</h3>
 <ul class="step-list">
 <li>Set the <b>affiliate tag</b> and <b>SMTP</b> first — nothing else matters until those work.</li>
 <li><b>Stack traffic</b>: SEO (compounding) + social (fast) + email (cheap) + QR/landing pages (offline).</li>
@@ -351,12 +387,13 @@ def render_admin_manual(nav_html, totop_html):
 <li><b>Comply always</b>: opted-in email, FTC/Associates disclosure, direct tagged links.</li>
 </ul>
 
-<h3 id="checklist">10 · 30-minute zero-to-sale checklist</h3>
+<h3 id="checklist">11 · 30-minute zero-to-sale checklist</h3>
 <ul class="step-list">
 <li>Pick a seed (high demand, lower saturation)</li>
 <li>Mine it → review demand/saturation → save the niche</li>
 <li><a class="tooltag" href="/admin/seo">🔍 SEO</a> → confirm indexable, fix reds</li>
 <li><a class="tooltag" href="/admin/sem">🎯 SEM</a> → note long-tails + PAA prompts</li>
+<li><a class="tooltag" href="/admin/cms">🎨 Landings</a> → pick a preset, set toggles + section switches, generate copy</li>
 <li><a class="tooltag" href="/tool">🛠 Workbench</a> → Launch marketing</li>
 <li><a class="tooltag" href="/admin/ebooks">📕 Ebooks</a> → generate the PDF</li>
 <li><a class="tooltag" href="/admin/social">📣 Social</a> → publish 1-2 platforms</li>

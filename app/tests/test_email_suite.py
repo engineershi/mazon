@@ -475,11 +475,14 @@ class TestEmailSuite(unittest.TestCase):
         self.assertIn("User", html)
         self.assertIn("manual", html.lower())
         for tool in ("/dashboard", "/tool", "/keys", "/admin/emails",
-                     "/admin/ebooks", "/admin/analytics", "/admin/social",
-                     "/admin/sem", "/admin/seo", "/admin/refresh",
+                     "/admin/cms", "/admin/ebooks", "/admin/analytics",
+                     "/admin/social", "/admin/sem", "/admin/seo",
+                     "/admin/refresh",
                      "/admin/manual.pdf", "/n/air-fryer", "/lp/air-fryer"):
             self.assertIn(tool, html, tool)
         self.assertIn("Highest-form", html)
+        self.assertIn("Landing pages", html)
+        self.assertIn("Style templates in one click", html)
 
     def test_admin_manual_pdf_served(self):
         st, _, ctype, pdf = self._raw("/admin/manual.pdf", cookie=self.cookie)
