@@ -31,6 +31,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import amazon
 import ai
+import cms as cms_mod
+import cms_render
 import ebook as ebook_mod
 import indexnow
 import mailer
@@ -245,6 +247,7 @@ def _db():
         conn.commit()
     except sqlite3.OperationalError:
         conn.rollback()
+    cms_mod.ensure_tables(conn)
     return conn
 
 
@@ -566,6 +569,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 {chip('/admin/seo', '🔍 SEO', 'seo')}
 {chip('/admin/manual', '📖 Manual', 'manual')}
 {chip('/admin/refresh', '📡 Refresh', 'refresh')}
+{chip('/admin/cms', '🧩 CMS', 'cms')}
 {chip('/admin', '🗺 All pages', 'admin', accent=True)}
 {chip('/admin/logout', '⎋ Logout', 'logout')}
 </nav>"""
@@ -589,6 +593,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
                  btn("/admin/sem", "🎯 Search funnel (SEM)", "long-tail growth"),
                  btn("/admin/seo", "🔍 SEO audit", "indexability + schema"),
                  btn("/admin/manual", "📖 User manual", "visual + PDF guide"),
+                 btn("/admin/cms", "🧩 Lead page CMS", "edit sections &amp; style"),
                  btn("/admin/refresh", "📡 Data refresh", "manual + auto re-mine")]
         for pid, meta in amazon._SCRAPER_PROVIDERS.items():
             tools.append(btn("/keys/" + seo._clean(pid), meta["name"] + " key", pid))
@@ -727,6 +732,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._unsubscribe(q)
             if path == "/api/track":
                 return self._track_click()
+            if path == "/_gated/pdf":
+                return self._gated_pdf(q)
             if self._needs_admin(path) and not self._authed():
                 if path.startswith("/api/"):
                     return self._send(401, {"error": "unauthorized", "auth": False})
@@ -776,6 +783,13 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_manual()
             if path == "/admin/manual.pdf":
                 return self._admin_manual_pdf()
+            if path == "/admin/cms":
+                return self._admin_cms(q)
+            if path == "/api/cms/pages":
+                return self._cms_pages_api()
+            cms_page = re.match(r"^/api/cms/pages/([0-9]+)(/sections)?$", path)
+            if cms_page:
+                return self._cms_page_api(cms_page, q)
             if path == "/admin/refresh":
                 return self._admin_refresh(q)
             if path == "/api/sem":
@@ -882,6 +896,11 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._social_publish()
             if parsed.path == "/api/tools/launch":
                 return self._tools_launch()
+            if parsed.path == "/api/cms/page":
+                return self._cms_save_page()
+            cms_section = re.match(r"^/api/cms/pages/([0-9]+)/sections/([0-9]+)$", parsed.path)
+            if cms_section:
+                return self._cms_update_section(cms_section.group(1), cms_section.group(2))
             if parsed.path == "/api/subscribers":
                 return self._subscribers_json()
             if parsed.path == "/api/ai/test":
@@ -1107,13 +1126,39 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
         for n in self._all_niches():
             try:
                 if slug == seo._slugify(n["keyword"]):
-                    html = market_engine.build_landing_page(
-                        n["keyword"], n["products"], site_url=seo.BASE_URL)
+                    # Try CMS render first; fall back to the legacy template.
+                    html = self._cms_landing_html(n)
+                    if html is None:
+                        html = market_engine.build_landing_page(
+                            n["keyword"], n["products"], site_url=seo.BASE_URL)
                     return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             except Exception:
                 continue
         return self._send(404, b"<html><body><p>Landing page not found.</p></body></html>",
                           "text/html; charset=utf-8")
+
+    def _cms_landing_html(self, niche):
+        """Render a CMS-driven landing page for a niche. Returns None if CMS
+        rendering is disabled for this niche (fall back to legacy)."""
+        with _lock:
+            conn = _db()
+            try:
+                page = cms_mod.get_or_create_page(conn, niche["keyword"])
+                settings = page.get("settings") or {}
+                if settings.get("use_cms", True) is False:
+                    return None
+                sub_count = conn.execute(
+                    "SELECT COUNT(*) c FROM subscribers WHERE unsubscribed=0 AND confirmed=1 "
+                    "AND lower(keyword)=?", (niche["keyword"].strip().lower(),)
+                ).fetchone()["c"]
+                ctx = cms_mod.build_page_context(conn, niche["keyword"], {
+                    "products": niche.get("products") or [],
+                    "subscriber_count": sub_count,
+                })
+            finally:
+                conn.close()
+        return cms_render.render_landing_page_page(
+            ctx, niche["keyword"], site_url=seo.BASE_URL)
 
     # ------------------------------------------------------------------ marketing tools
     def _all_urls(self, extra=None):
@@ -1353,7 +1398,351 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
         return self._send(200, payload)
 
 
-# ------------------------------------------------------------------ social suite
+# ------------------------------------------------------------------ CMS suite
+    def _cms_pages_payload(self):
+        """List all CMS-managed pages with their niche keyword, status and stats."""
+        with _lock:
+            conn = _db()
+            try:
+                pages = cms_mod.list_pages(conn)
+                out = []
+                for p in pages:
+                    sections = cms_mod.get_sections(conn, p["id"])
+                    out.append({
+                        "id": p.get("id"),
+                        "keyword": p.get("keyword"),
+                        "slug": p.get("slug"),
+                        "enabled": bool(p.get("enabled", 1)),
+                        "section_count": len(sections),
+                        "live_url": "/lp/" + p.get("slug", ""),
+                        "updated_at": p.get("updated_at"),
+                    })
+            finally:
+                conn.close()
+        return {"pages": out}
+
+    def _cms_pages_api(self):
+        return self._send(200, self._cms_pages_payload())
+
+    def _cms_page_payload(self, page_id):
+        with _lock:
+            conn = _db()
+            try:
+                page = cms_mod._row_to_dict(conn.execute(
+                    "SELECT * FROM lead_pages WHERE id=?", (page_id,)).fetchone())
+                if not page:
+                    return None
+                sections = cms_mod.get_sections(conn, page["id"])
+                # merge defaults so the editor shows the full value set
+                full_sections = []
+                for s in sections:
+                    st = s.get("section_type")
+                    defaults = cms_mod._DEFAULT_SECTIONS.get(st, {})
+                    merged = dict(defaults)
+                    merged.update(s.get("content") or {})
+                    full_sections.append({
+                        "id": s.get("id"),
+                        "type": st,
+                        "label": cms_mod.SECTION_TYPES.get(st, {}).get("label", st),
+                        "icon": cms_mod.SECTION_TYPES.get(st, {}).get("icon", "🧩"),
+                        "fields": cms_mod.SECTION_TYPES.get(st, {}).get("fields", []),
+                        "enabled": bool(s.get("enabled", 1)),
+                        "sort_order": s.get("sort_order", 0),
+                        "content": merged,
+                    })
+                page["sections"] = full_sections
+                page["section_types"] = list(cms_mod.SECTION_TYPES.keys())
+                page["style_defaults"] = cms_mod.DEFAULT_STYLE
+                return page
+            finally:
+                conn.close()
+
+    def _cms_page_api(self, match, q):
+        page_id = int(match.group(1))
+        page = self._cms_page_payload(page_id)
+        if not page:
+            return self._send(404, {"error": "page not found"})
+        return self._send(200, page)
+
+    def _cms_save_page(self):
+        """Save page-level settings (style, settings, section_order)."""
+        body = self._body()
+        page_id = int(body.get("page_id") or 0)
+        with _lock:
+            conn = _db()
+            try:
+                row = conn.execute(
+                    "SELECT id FROM lead_pages WHERE id=?", (page_id,)).fetchone()
+                if not row:
+                    return self._send(404, {"error": "page not found"})
+                update = {}
+                if "style" in body:
+                    update["style"] = body["style"]
+                if "settings" in body:
+                    update["settings"] = body["settings"]
+                if "section_order" in body:
+                    update["section_order"] = body["section_order"]
+                if "enabled" in body:
+                    update["enabled"] = int(bool(body["enabled"]))
+                cms_mod.update_page(conn, page_id, update)
+            finally:
+                conn.close()
+        return self._send(200, self._cms_page_payload(page_id))
+
+    def _cms_update_section(self, page_id, section_id):
+        """Update one section's content/enabled/sort_order."""
+        page_id = int(page_id)
+        section_id = int(section_id)
+        body = self._body()
+        with _lock:
+            conn = _db()
+            try:
+                row = conn.execute(
+                    "SELECT id FROM lead_sections WHERE id=? AND page_id=?",
+                    (section_id, page_id)).fetchone()
+                if not row:
+                    return self._send(404, {"error": "section not found"})
+                update = {}
+                if "content" in body:
+                    update["content"] = body["content"]
+                if "enabled" in body:
+                    update["enabled"] = int(bool(body["enabled"]))
+                if "sort_order" in body:
+                    update["sort_order"] = int(body["sort_order"])
+                cms_mod.update_section(conn, section_id, update)
+            finally:
+                conn.close()
+        return self._send(200, self._cms_page_payload(page_id))
+
+    def _admin_cms(self, q):
+        """Admin content-management editor for lead pages."""
+        niches = [n["keyword"] for n in self._all_niches()]
+        keyword = (q.get("keyword") or [""])[0].strip() or (niches[0] if niches else "")
+        opts = "".join('<option value="%s"%s>%s</option>' % (seo._clean(k),
+                        ' selected' if k == keyword else "", seo._clean(k)) for k in niches)
+        page_id = None
+        page_payload = None
+        if keyword:
+            with _lock:
+                conn = _db()
+                try:
+                    p = cms_mod.get_or_create_page(conn, keyword)
+                    page_id = p["id"]
+                finally:
+                    conn.close()
+            page_payload = self._cms_page_payload(page_id)
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CMS — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+<style>
+.cms-layout {{ display:grid; grid-template-columns: 1fr 340px; gap: 20px; align-items:start; }}
+@media (max-width:860px) {{ .cms-layout {{ grid-template-columns:1fr; }} }}
+.field {{ margin-bottom:14px; }}
+.field label {{ font-weight:700; margin-bottom:6px; }}
+.section-editor {{ border:1px solid var(--border); border-radius:16px; padding:16px;
+  margin-bottom:14px; background:#fffdf8; }}
+.section-editor h3 {{ margin:0 0 12px; font-size:15px; }}
+.section-editor textarea {{ min-height:70px; }}
+.items-editor textarea {{ min-height:110px; font-family:ui-monospace,Menlo,monospace; font-size:12px; }}
+.cols2 {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+.color-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+.color-grid label {{ font-size:11.5px; }}
+.outline {{ border:1px solid var(--border); border-radius:12px; padding:12px; margin:10px 0; background:#fff; }}
+</style>
+</head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Lead page <span>CMS.</span></h1>
+<p class="tagline">Edit every element of a niche's landing page — style, sections, CTA, email-gated PDF download, persuasion elements — without touching code.</p></div>
+{self._admin_nav('cms')}
+</header>
+<main>
+<section class="card"><h2>🧩 Choose a niche</h2>
+<form class="row" method="get" action="/admin/cms">
+  <label>Niche <select name="keyword" onchange="this.form.submit()">{opts}</select></label>
+</form>
+{('<p class="hint">Select a saved niche to start editing its landing page. Each niche gets its own editable page with sensible, persuasion-engineered defaults.</p>' if not keyword else '')}
+</section>
+{self._cms_admin_editor_html(keyword, page_id, page_payload)}
+</main>
+<footer><p>CMS edits go live on the page immediately after saving. Uses the “How to Sell Like Crazy” and “Influence” playbook — reciprocity, commitment, social proof, authority, scarcity — all editable per section.</p></footer>
+{_TOTOP}
+<script>
+(function () {{
+  "use strict";
+  var PAGE_ID = {int(page_id or 0)};
+  var KEYWORD = {json.dumps(keyword or "")};
+  function $(id) {{ return document.getElementById(id); }}
+  function say(m, ok) {{
+    var el = $("save-msg");
+    if (!el) return;
+    el.textContent = m;
+    el.style.color = ok ? "#159a4b" : "#d64545";
+  }}
+  function collectStyle() {{
+    var st = {{}};
+    document.querySelectorAll("[data-style]").forEach(function (i) {{
+      st[i.getAttribute("data-style")] = i.value;
+    }});
+    st.font_family = $("cms-font") ? $("cms-font").value : "";
+    st.border_radius = $("cms-radius") ? $("cms-radius").value : "";
+    st.cta_gradient = $("cms-cta") ? $("cms-cta").value : "";
+    st.layout = $("cms-layout") ? $("cms-layout").value : "centered";
+    return st;
+  }}
+  function sectionContent(sec) {{
+    var content = {{}};
+    sec.querySelectorAll(".sec-input").forEach(function (txt) {{
+      var field = txt.getAttribute("data-field");
+      var raw = txt.value;
+      if (txt.classList.contains("items-editor")) {{
+        try {{ content[field] = JSON.parse(raw); }}
+        catch (e) {{ content[field] = raw; }}
+      }} else {{
+        content[field] = raw;
+      }}
+    }});
+    return content;
+  }}
+  function saveAll(ev) {{
+    ev && ev.preventDefault();
+    say("Saving…");
+    var body = {{ page_id: PAGE_ID, style: collectStyle() }};
+    var useCms = $("use-cms");
+    body.settings = {{ use_cms: useCms ? useCms.checked : true }};
+    var gate = $("cms-gate");
+    if (gate) body.settings.pdf_gated = gate.value === "1";
+    fetch("/api/cms/page", {{
+      method: "POST", headers: {{ "Content-Type": "application/json" }},
+      body: JSON.stringify(body)
+    }}).then(function (r) {{ return r.json(); }})
+      .then(function (d) {{ say("Page settings saved ✓", true); }})
+      .catch(function () {{ say("Save failed.", false); }});
+  }}
+  function saveSection(sec) {{
+    var sid = sec.getAttribute("data-sec");
+    var en = sec.querySelector(".sec-enable");
+    var body = {{ section_id: parseInt(sid, 10) }};
+    body.content = sectionContent(sec);
+    body.enabled = en ? en.checked : true;
+    say("Saving section…");
+    fetch("/api/cms/pages/" + PAGE_ID + "/sections/" + sid, {{
+      method: "POST", headers: {{ "Content-Type": "application/json" }},
+      body: JSON.stringify(body)
+    }}).then(function (r) {{ return r.json(); }})
+      .then(function (d) {{ say("Section saved ✓", true); }})
+      .catch(function () {{ say("Section save failed.", false); }});
+  }}
+  var saveAllBtn = $("save-all");
+  if (saveAllBtn) saveAllBtn.onclick = saveAll;
+  document.querySelectorAll(".section-editor").forEach(function (sec) {{
+    var btn = sec.querySelector(".sec-save");
+    if (btn) btn.onclick = function (ev) {{ ev.preventDefault(); saveSection(sec); }};
+  }});
+}})();
+</script>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _cms_admin_editor_html(self, keyword, page_id, page):
+        """The actual editor UI for one page. If no page payload, return nothing."""
+        if not page:
+            return ""
+        e = seo._clean
+        style = page.get("style") or {}
+        settings = page.get("settings") or {}
+        sections = page.get("sections") or []
+        live_url = "/lp/" + e(seo._slugify(keyword))
+        # Style fields
+        color_fields = {
+            "bg": style.get("bg"), "card_bg": style.get("card_bg"),
+            "accent": style.get("accent"), "accent2": style.get("accent2"),
+            "text": style.get("text"), "muted": style.get("muted"),
+        }
+        color_html = "".join(
+            '<label>{name}<input type="color" value="{v}" data-style="{k}"></label>'
+            .format(name=k.replace("_", " ").title(), k=k, v=e(v or "#ffffff"))
+            for k, v in color_fields.items())
+        # Section editors
+        section_editors = []
+        for s in sections:
+            fid = s["id"]
+            content = s.get("content") or {}
+            body_editor = ""
+            for field in s.get("fields", []):
+                val = content.get(field, "")
+                if isinstance(val, (dict, list)):
+                    import json as _json
+                    val = _json.dumps(val, indent=1)
+                    body_editor += ('<div class="field"><label>%s</label>'
+                                    '<textarea class="sec-input items-editor" data-field="%s" '
+                                    'data-sec="%d">%s</textarea></div>'
+                                    % (field.replace("_", " ").title(), field, fid, e(val)))
+                else:
+                    body_editor += ('<div class="field"><label>%s</label>'
+                                    '<textarea class="sec-input" data-field="%s" data-sec="%d">%s</textarea></div>'
+                                    % (field.replace("_", " ").title(), field, fid, e(val)))
+            section_editors.append(f"""
+<div class="section-editor" data-sec="{fid}">
+  <h3>{s['icon']} {e(s['label'])} <span class="badge" style="background:#eee9ff;color:#7c5cff">{e(s['type'])}</span></h3>
+  <div class="outline">
+    {body_editor}
+  </div>
+  <div class="row" style="margin-top:10px">
+    <label style="flex-direction:row;align-items:center;gap:8px">
+      <input type="checkbox" class="sec-enable" data-sec="{fid}" style="width:auto" {'checked' if s.get('enabled') else ''}> Show section
+    </label>
+    <button class="mini sec-save" data-sec="{fid}">Save section</button>
+  </div>
+</div>""")
+        section_html = "".join(section_editors) if section_editors else \
+            '<p class="hint">No sections yet — save this page to seed defaults.</p>'
+        use_cms = settings.get("use_cms", True)
+        return f"""
+<section class="card"><h2>⏱️ Quick actions</h2>
+<div class="row">
+  <a class="btn" href="{live_url}" target="_blank" rel="noopener">👁 View live landing page ↗</a>
+  <button class="warm" id="save-all">💾 Save all changes</button>
+  <label style="flex-direction:row;align-items:center;gap:8px;margin-left:10px">
+    <input type="checkbox" id="use-cms" style="width:auto" {'checked' if use_cms else ''}> Use CMS render
+  </label>
+</div>
+<p id="save-msg" class="msg"></p>
+</section>
+
+<section class="card"><h2>🎨 Style &amp; layout</h2>
+<div class="cms-layout">
+<div>
+  <div class="cols2 color-grid">{color_html}</div>
+  <div class="field" style="margin-top:14px"><label>Font family</label>
+    <input type="text" id="cms-font" value="{e(style.get('font_family',''))}" placeholder="CSS font stack"></div>
+  <div class="field"><label>Border radius</label>
+    <input type="text" id="cms-radius" value="{e(style.get('border_radius',''))}" placeholder="22px"></div>
+  <div class="field"><label>CTA gradient (CSS)</label>
+    <input type="text" id="cms-cta" value="{e(style.get('cta_gradient',''))}" placeholder="linear-gradient(...)"></div>
+  <div class="field"><label>Layout</label>
+    <select id="cms-layout">
+      <option value="centered" {'selected' if style.get('layout')=='centered' else ''}>Centered</option>
+      <option value="wide" {'selected' if style.get('layout')=='wide' else ''}>Wide</option>
+      <option value="split" {'selected' if style.get('layout')=='split' else ''}>Split</option>
+    </select></div>
+</div>
+<div>
+  <div class="field"><label>Email gate PDF enabled</label>
+    <select id="cms-gate">
+      <option value="1" {'selected' if settings.get('pdf_gated', True) else ''}>On — email to get PDF</option>
+      <option value="0" {'selected' if not settings.get('pdf_gated', True) else ''}>Off — direct PDF</option>
+    </select></div>
+</div>
+</div>
+</section>
+
+<section class="card"><h2>🧱 Sections</h2>
+<p class="hint" style="margin-top:-4px">Edit each section's content. Complex fields (benefits, FAQs, testimonials) use a compact JSON format you can edit inline.</p>
+{section_html}
+</section>
+"""
+
     def _saved_niche(self, keyword):
         keyword = (keyword or "").strip().lower()
         for n in self._all_niches():
@@ -1958,7 +2347,46 @@ fresh();
                 msg = "Done — you'll only hear from us when these picks change, and you can unsubscribe any time."
             conn.commit()
             conn.close()
-        return self._send(200, {"ok": True, "id": sid, "message": msg})
+        # Signed, short-lived token lets this just-opted-in visitor grab the
+        # gated PDF lead magnet immediately (Cialdini's reciprocity in action).
+        token = security.make_token("pdf:" + keyword, 10 * 60) if keyword else ""
+        return self._send(200, {"ok": True, "id": sid, "message": msg,
+                                "download_token": token})
+
+    def _gated_pdf(self, q):
+        """Public endpoint that serves the niche's PDF lead magnet:
+        - when a page's settings have pdf_gated=false the PDF is served freely
+          (reciprocity without an email wall);
+        - otherwise a token from /subscribe (HMAC-signed, scoped to the exact
+          keyword, short-lived) is required so only just-opted-in visitors can
+          grab the lead magnet.
+        """
+        keyword = (q.get("keyword") or [""])[0].strip()
+        if not keyword:
+            return self._send(403, {"error": "not authorized"})
+        gated = True
+        with _lock:
+            conn = _db()
+            page = cms_mod.get_page(conn, keyword)
+            if page and (page.get("settings") or {}).get("pdf_gated") is False:
+                gated = False
+            conn.close()
+        if gated:
+            token = (q.get("token") or [""])[0].strip()
+            if not token or security.verify_token(token) != "pdf:" + keyword:
+                return self._send(403, {"error": "not authorized"})
+        book = self._ebook_for(keyword)
+        if not book:
+            return self._send(404, {"error": "guide not found"})
+        data = book.get("pdf") or b""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % book.get("pdf_name", "guide.pdf"))
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+        return None
 
     def _unsubscribe(self, q):
         email = (q.get("e") or [""])[0].strip().lower()

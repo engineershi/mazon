@@ -39,9 +39,21 @@
       })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
-        if (!note) return;
-        if (d && d.ok) note.textContent = d.message || "You're in — check your inbox.";
-        else note.textContent = (d && d.error) || "That didn't work — please try again.";
+        if (note) {
+          note.style.display = "block";
+          if (d && d.ok) note.textContent = d.message || "You're in — check your inbox.";
+          else note.textContent = (d && d.error) || "That didn't work — please try again.";
+        }
+        /* Email gate: on success, unlock the gated PDF download. */
+        if (d && d.ok && form.classList.contains("gate-form")) {
+          var kw = (keyword && keyword.value) || slug;
+          var unlock = document.getElementById("gate-unlock");
+          if (unlock) {
+            unlock.href = "/_gated/pdf?keyword=" + encodeURIComponent(kw) +
+                          "&token=" + encodeURIComponent((d.download_token || ""));
+            unlock.style.display = "block";
+          }
+        }
       })
       .catch(function () { if (note) note.textContent = "Network error — please try again."; });
   });
