@@ -114,6 +114,9 @@ main { max-width: 1080px; margin: 0 auto; padding: 22px 24px 60px; }
   font-weight: 800;
   letter-spacing: -0.3px;
 }
+.blog-title h2 { margin-bottom: 6px; }
+.blog-title { text-decoration: none; color: inherit; }
+.blog-title:hover h2 { color: var(--accent); }
 .card > p { margin: 0 0 12px; color: var(--muted); }
 .card > p.hint { margin-top: -6px; }
 

@@ -588,8 +588,20 @@ class TestRoutes(unittest.TestCase):
         self.assertIn(b"<loc>", body)
         self.assertNotIn(b"/admin</loc>", body)
         self.assertIn(b"/lp/keto-snacks</loc>", body)
+        self.assertIn(b"/blog</loc>", body)
         for page in seo.STATIC_PAGES:
             self.assertIn(("/%s</loc>" % page).encode(), body)
+
+    def test_blog_landing_lists_niche_articles(self):
+        st, ctype, body = self._get("/blog")
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("text/html"), ctype)
+        html = body.decode("utf-8", "replace")
+        self.assertIn("<main data-niche=\"blog\"", html)
+        self.assertIn('href="/n/keto-snacks"', html)
+        self.assertIn("data-backed pick", html)
+        self.assertIn('rel="canonical"', html)
+        self.assertIn('href="/blog"', html)
 
     def test_company_pages_application_ready(self):
         for slug in seo.STATIC_PAGES:

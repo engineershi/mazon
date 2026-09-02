@@ -767,6 +767,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._send(200, seo.render_robots(), "text/plain; charset=utf-8")
             if path == "/sitemap.xml":
                 return self._send(200, self._sitemap(), "application/xml; charset=utf-8")
+            if path == "/blog":
+                return self._send(200, seo.render_blog(self._all_niches()), "text/html; charset=utf-8")
             key_body = indexnow.serve_key(path)
             if key_body is not None:
                 return self._send(200, key_body.encode("utf-8"), "text/plain; charset=utf-8")
@@ -1119,7 +1121,7 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 for r in rows]
 
     def _sitemap(self):
-        entries = [("/", "2026-08-28")]
+        entries = [("/", "2026-08-28"), ("/blog", "2026-08-28")]
         for page in seo.STATIC_PAGES:
             entries.append(("/" + page, "2026-08-28"))
         with _lock:

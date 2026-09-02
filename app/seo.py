@@ -123,7 +123,7 @@ def _footer():
   <p>pstore — comparison picks. Prices are indicative; check Amazon for the live price.</p>
   <p>As an Amazon Associate we earn from qualifying purchases.</p>
   <p>
-    <a href="/">Home</a> · <a href="/about">About</a> · <a href="/contact">Contact</a> ·
+    <a href="/">Home</a> · <a href="/blog">Blog</a> · <a href="/about">About</a> · <a href="/contact">Contact</a> ·
     <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/disclosure">Disclosure</a> ·
     <a href="/sitemap.xml">Sitemap</a>
   </p>
@@ -339,7 +339,8 @@ def render_landing(saved_niches):
 <a class="chip" href="#method">🔬 How we pick</a>
 <a class="chip" href="#notify">✉️ Stay updated</a>
 <a class="chip" href="#faq">❓ FAQ</a>
-</nav></header>
+ <a class="chip" href="/blog">📝 Blog</a>
+ </nav></header>
 <main data-niche="home" data-source="home" data-keyword="best amazon niche picks">
 <section class="card hero-home" id="top-picks">
   <h1 style="font-size:30px;line-height:1.15">Find the best <span style="color:var(--accent)">Amazon picks</span>, by niche — before you scroll once.</h1>
@@ -456,6 +457,42 @@ def indexable_urls(saved_niches, base_url=None):
         urls.append(base + "/n/" + _slugify(n["keyword"]))
         urls.append(base + "/lp/" + _slugify(n["keyword"]))
     return urls
+
+
+def render_blog(saved_niches):
+    """Public /blog landing: index of editorial articles, one per saved niche.
+    Each card links to the full ranked notebook (/n/<slug>) and is SEO-shaped
+    (title/desc/canonical + indexable)."""
+    niches = [n for n in (saved_niches or []) if n.get("products")]
+    head = _head("The blog", "Ranked buying guides, data methodology and honest picks, niche by niche.",
+                 "/blog", "/blog", noindex=len(niches) == 0)
+    cards = ""
+    for n in niches:
+        slug = _slugify(n["keyword"])
+        best = editorial.best_pick(n["products"])
+        title = "The best %s: a ranked, data-backed pick" % n["keyword"]
+        synopsis = (best or {}).get("title") or n["keyword"]
+        cards += f"""
+<article class="card">
+  <a class="blog-title" href="/n/{_clean(slug)}"><h2>{_clean(title)}</h2></a>
+  <p class="hint">Top pick · {_clean(synopsis[:90])}{"…" if len(synopsis) > 90 else ""}</p>
+  <p class="muted">{editorial.reading_minutes(n["keyword"], n["products"], best)} read · {len(n["products"] or 0)} products ranked from live Amazon data</p>
+</article>"""
+    if not cards:
+        cards = '<section class="card"><h2>Fresh guides on the way</h2><p class="hint">We\'re ranking new niches now. Check back soon or <a href="/">browse the picks</a>.</p></section>'
+    body = f"""<header id="top"><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
+<p class="tagline">{_clean(SITE_DESC)}</p>
+<nav><a href="/">🏠 Home</a><a href="/blog">📝 Blog</a><a href="/disclosure">Disclosure</a></nav></header>
+<main data-niche="blog" data-source="blog">
+<section class="hero-home card">
+  <h1 style="font-size:30px;line-height:1.15">The <span style="color:var(--accent)">blog</span>.</h1>
+  <p style="font-size:16px;color:var(--muted);max-width:720px">Every guide is a data-backed ranking of the best Amazon pick for that niche —
+  live price, rating and review signals, honest methodology. No filler.</p>
+</section>
+{cards}
+</main>
+""".encode("utf-8")
+    return head + body + _footer()
 
 
 def render_sitemap(entries):
