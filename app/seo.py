@@ -20,6 +20,22 @@ BASE_URL = os.environ.get("PSTORE_URL", "https://pstore-gxbv.onrender.com").rstr
 
 # Optional Google Search Console ownership token — emits <meta name="google-site-verification">.
 GOOGLE_SITE_VERIFICATION = os.environ.get("PSTORE_GOOGLE_SITE_VERIFICATION", "")
+# Runtime override set via the /keys hub (never written to disk) so a saved
+# token takes effect immediately without a restart.
+_GOOGLE_SITE_VERIFICATION_RUNTIME = None
+
+
+def set_google_site_verification(token):
+    """Set (or clear with "") the Google Search Console token for this process."""
+    global _GOOGLE_SITE_VERIFICATION_RUNTIME
+    _GOOGLE_SITE_VERIFICATION_RUNTIME = (token or "").strip()
+
+
+def google_site_verification():
+    """Effective token: runtime override first, else env (module-load) value."""
+    if _GOOGLE_SITE_VERIFICATION_RUNTIME is not None:
+        return _GOOGLE_SITE_VERIFICATION_RUNTIME
+    return GOOGLE_SITE_VERIFICATION
 # Organization identity shown in JSON-LD (schema.org Organization / Person).
 ORG_NAME = SITE_NAME
 ORG_URL = BASE_URL
@@ -90,8 +106,8 @@ def _head(title, desc, canonical, path, jsonld=None, og_image=None, noindex=Fals
         abs_img = og_image if str(og_image).startswith("http") else BASE_URL + og_image
         img_html = (f'<meta property="og:image" content="{_clean(abs_img)}">\n'
                     f'<meta name="twitter:image" content="{_clean(abs_img)}">\n')
-    gsc = (f'<meta name="google-site-verification" content="{_clean(GOOGLE_SITE_VERIFICATION)}">\n'
-           if GOOGLE_SITE_VERIFICATION else "")
+    gsc = (f'<meta name="google-site-verification" content="{_clean(google_site_verification())}">\n'
+           if google_site_verification() else "")
     rob = ('<meta name="robots" content="noindex,nofollow">\n' if noindex else "")
     head = f"""<!DOCTYPE html>
 <html lang="en">
@@ -581,7 +597,7 @@ def audit_sites(niches):
         "indexable": passable,
         "needs_work": len(rows) - passable,
         "site_url": BASE_URL,
-        "google_verification": bool(GOOGLE_SITE_VERIFICATION),
+        "google_verification": bool(google_site_verification()),
         "sitemap": "/sitemap.xml",
         "robots": "/robots.txt",
         "org": {"name": ORG_NAME, "url": ORG_URL},

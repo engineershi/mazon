@@ -829,6 +829,9 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._social_api(q)
             if path == "/keys":
                 return self._keys_page()
+            key_group = re.match(r"^/keys/([a-z0-9_-]+)/([a-z0-9_.-]+)$", path)
+            if key_group:
+                return self._keys_managed_page(key_group.group(1), key_group.group(2))
             key_provider = re.match(r"^/keys/([a-z0-9_-]+)$", path)
             if key_provider:
                 return self._keys_provider_page(key_provider.group(1))
@@ -948,6 +951,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._ai_test()
             if parsed.path == "/api/keys/test":
                 return self._keys_test()
+            if parsed.path == "/api/keys/save":
+                return self._keys_save()
             if parsed.path == "/api/ai/models":
                 return self._ai_models()
             if parsed.path == "/api/ai/config":
@@ -1250,13 +1255,22 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             'onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent)" '
             'title="Click to copy">%s</p></div>' % (k, v)
             for k, v in rows)
-        prov = amazon.scraper_status()["providers"]
-        prov_cards = "".join(
-            '<div class="sub"><h3>%s</h3>'
-            '<p class="key"><a href="/keys/%s">/keys/%s</a> · %s</p></div>'
-            % (pv["name"], pid, pid,
-               "key set" if pv["has_key"] else "no key set")
-            for pid, pv in prov.items())
+        # Every manage-able key group, each entry linking to its own page + the
+        # platform where the real key lives.
+        group_html = []
+        for g in self._managed_groups():
+            entries = "".join(
+                '<div class="sub"><h3>%s</h3>'
+                '<p class="key"><a href="%s">%s</a> · %s'
+                '%s</p></div>'
+                % (seo._clean(e["name"]), e["page"], e["page"],
+                   seo._clean(e["status"]),
+                   (" · <a href='%s' target='_blank' rel='noopener'>⚙ platform ↗</a>" % seo._clean(e["home"]))
+                   if e.get("home") else "")
+                for e in g["entries"])
+            group_html.append(
+                '<h2>%s</h2>\n<p class="hint">%s</p>%s' % (g["label"], g["hint"], entries))
+        groups = "\n".join(group_html)
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Keys — pstore</title><link rel="stylesheet" href="/style.css">
@@ -1267,14 +1281,15 @@ border-radius:10px;padding:10px 12px;margin:0;word-break:break-all;cursor:copy}}
 </head><body>
 <header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <div class="hero"><h1>Keys & <span>endpoints.</span></h1>
-<p class="tagline">Every key, URL and endpoint the tools need — click a value to copy it.</p></div>
+<p class="tagline">Every key, URL and endpoint the tools need — click a value to copy it, or open a key page to test & save.</p></div>
 {self._admin_nav('keys')}
 </header>
 <main><section class="card"><h2>🔑 Keys & endpoints</h2>{cards}
-<h2>🛢 Scraper provider keys</h2>
-<p class="hint">One short page per provider — see status, open its dashboard, paste or clear the key:</p>{prov_cards}
+<h2>🗝 Manage every key</h2>
+<p class="hint">Each key gets its own page — see status, open the platform console directly, test the key and save it here:</p>
+{groups}
 </section></main>
-<footer><p>Keep the IndexNow key secret — it proves who owns the site to the search engines.</p></footer>
+<footer><p>Keys saved here apply immediately and are kept for the running process; set the matching env var to make them permanent across restarts.</p></footer>
 {_TOTOP}
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
@@ -1362,9 +1377,283 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
 
     def _keys_test(self):
         body = self._body()
-        pid = str(body.get("pid") or "").strip()
+        group = str(body.get("group") or "scraper").strip().lower()
+        key_id = str(body.get("keyid") or body.get("pid") or "").strip().lower()
         key = str(body.get("key") or "").strip()
-        return self._send(200, amazon.test_scraper_key(pid, key))
+        if group == "ai":
+            return self._send(200, ai.test(key_id or "openai", key,
+                                           body.get("model"), body.get("base")))
+        if group == "oauth":
+            # Nothing from a live provider here — report whether the pair is set
+            # and valid; the real test is the provider's own dashboard.
+            conf = oauth.providers_configured()
+            names = {p: n for p, n, _d in conf}
+            if key_id == "google":
+                ok = bool(oauth.GOOGLE_CLIENT_ID and oauth.GOOGLE_CLIENT_SECRET)
+            elif key_id == "facebook":
+                ok = bool(oauth.FACEBOOK_APP_ID and oauth.FACEBOOK_APP_SECRET)
+            else:
+                ok = bool(names.get(key_id))
+            return self._send(200, {
+                "ok": ok, "provider": key_id,
+                "error": None if ok else ("%s credentials not configured" % key_id),
+                "detail": "configured via environment" if ok else
+                          "set OAUTH_* env vars (clear+restart to apply) or use the platform link above"})
+        if group == "site":
+            if key_id == "indexnow":
+                val = key or indexnow.key()
+                ok = bool(val) and len(val) == 32 and all(c in "0123456789abcdef" for c in val)
+                return self._send(200, {"ok": ok, "provider": "indexnow",
+                                        "error": None if ok else "IndexNow key must be 32 lowercase hex",
+                                        "key_file": indexnow.key_file_path() if bool(val) else None})
+            if key_id == "gsc":
+                val = key or seo.google_site_verification()
+                ok = bool(val.strip())
+                return self._send(200, {"ok": ok, "provider": "gsc",
+                                        "error": None if ok else
+                                        "no token set — grab it from Google Search Console's HTML-tag method",
+                                        "save": True})
+            return self._send(200, {"ok": False, "error": "unknown site token"})
+        return self._send(200, amazon.test_scraper_key(key_id, key))
+
+    def _keys_save(self):
+        """Persist a managed key for this process (runtime override; set the
+        matching env var to survive a restart). Returns the updated status."""
+        body = self._body()
+        group = str(body.get("group") or "scraper").strip().lower()
+        key_id = str(body.get("keyid") or body.get("pid") or "").strip().lower()
+        key = str(body.get("key") or "").strip()
+        if group == "ai":
+            out = ai.configure_runtime(key_id or "openai", key, body.get("model"),
+                                       body.get("base"))
+            return self._send(200, out)
+        if group == "site":
+            if key_id == "indexnow":
+                indexnow.set_key(key)
+                return self._send(200, {"ok": True, "provider": "indexnow",
+                                        "live": indexnow.key(),
+                                        "note": "applies now; set INDEXNOW_KEY env to persist"})
+            if key_id == "gsc":
+                seo.set_google_site_verification(key)
+                return self._send(200, {"ok": True, "provider": "gsc",
+                                        "set": bool(key),
+                                        "note": "applies now; set PSTORE_GOOGLE_SITE_VERIFICATION env to persist"})
+            return self._send(200, {"ok": False, "error": "unknown site token"})
+        if group == "market":
+            if key_id == "affiliate":
+                amazon.set_tag(key)
+                return self._send(200, {"ok": True, "provider": "affiliate",
+                                        "tag": amazon.AFFILIATE_TAG,
+                                        "note": "applies now; set PSTORE_TAG env to persist"})
+            if key_id == "market":
+                amazon.set_market(key)
+                return self._send(200, {"ok": True, "provider": "market",
+                                        "market": amazon.MARKET})
+        if group == "scraper":
+            if key_id in amazon._SCRAPER_PROVIDERS:
+                amazon.set_scraper_key(key_id, key)
+                return self._send(200, {"ok": True, "provider": key_id})
+        return self._send(200, {"ok": False, "error": "unknown key"})
+
+    # ------------------------------------------------------------------ managed keys hub
+    def _managed_groups(self):
+        """Metadata for every key group shown on /keys — each entry carries the
+        direct link to the platform where the owner manages the real key."""
+        scraper_prov = amazon.scraper_status()["providers"]
+        ai_prov = ai.providers()
+        return [
+            {
+                "id": "scraper",
+                "label": "🛢 Scraper providers",
+                "hint": "Data providers used to search & scrape Amazon listings. Each is its own page.",
+                "entries": [{
+                    "id": pid, "name": pv["name"], "env": amazon._SCRAPER_PROVIDERS[pid]["env_var"],
+                    "url": amazon._SCRAPER_PROVIDERS[pid].get("key_url", ""),
+                    "home": amazon._SCRAPER_PROVIDERS[pid].get("key_url", ""),
+                    "status": "key set" if pv.get("has_key") else "no key set",
+                    "page": "/keys/%s" % pid,
+                } for pid, pv in scraper_prov.items()],
+            },
+            {
+                "id": "ai",
+                "label": "🤖 AI (LLM) providers",
+                "hint": "Writes the ebook/headline copy. Paste a key, test it, and save.",
+                "entries": [{
+                    "id": pid, "name": m["label"], "env": m["key_env"],
+                    "url": m["home"], "home": m["home"],
+                    "hint": m.get("key_hint", ""),
+                    "status": ("active" if ai.active_provider() == pid else "set") if bool(ai.key_for(pid)) else "no key set",
+                    "page": "/keys/ai/%s" % pid,
+                } for pid, m in ai.PROVIDERS.items()],
+            },
+            {
+                "id": "oauth",
+                "label": "🔐 Sign-in (OAuth) keys",
+                "hint": "Optional Google / Facebook login for the admin. Configured via environment.",
+                "entries": [
+                    {"id": "google", "name": "Google", "env": "OAUTH_GOOGLE_CLIENT_ID + OAUTH_GOOGLE_CLIENT_SECRET",
+                     "url": "https://console.developers.google.com/apis/credentials",
+                     "home": "https://console.developers.google.com/apis/credentials",
+                     "status": "set" if oauth.GOOGLE_CLIENT_ID and oauth.GOOGLE_CLIENT_SECRET else "no key set",
+                     "page": "/keys/oauth/google"},
+                    {"id": "facebook", "name": "Facebook", "env": "OAUTH_FACEBOOK_APP_ID + OAUTH_FACEBOOK_APP_SECRET",
+                     "url": "https://developers.facebook.com/apps",
+                     "home": "https://developers.facebook.com/apps",
+                     "status": "set" if oauth.FACEBOOK_APP_ID and oauth.FACEBOOK_APP_SECRET else "no key set",
+                     "page": "/keys/oauth/facebook"},
+                ],
+            },
+            {
+                "id": "site",
+                "label": "🌐 Site ownership & indexing",
+                "hint": "Proves you own the site to search engines. Visible here, saved in memory, env-persisted.",
+                "entries": [
+                    {"id": "indexnow", "name": "IndexNow key", "env": "INDEXNOW_KEY",
+                     "url": "https://www.indexnow.org/", "home": "https://www.indexnow.org/",
+                     "status": ("%s" % indexnow.key()[-6:]) if indexnow.key() else "no key set",
+                     "page": "/keys/site/indexnow"},
+                    {"id": "gsc", "name": "Google Search Console token", "env": "PSTORE_GOOGLE_SITE_VERIFICATION",
+                     "url": "https://search.google.com/search-console",
+                     "home": "https://search.google.com/search-console",
+                     "status": "set" if seo.google_site_verification() else "not set",
+                     "page": "/keys/site/gsc"},
+                ],
+            },
+            {
+                "id": "market",
+                "label": "🛒 Marketplace & affiliates",
+                "hint": "Amazon marketplace + your Associates tag on every product link.",
+                "entries": [
+                    {"id": "affiliate", "name": "Amazon Associates tag", "env": "PSTORE_TAG",
+                     "url": "https://affiliate-program.amazon.com/account",
+                     "home": "https://affiliate-program.amazon.com/account",
+                     "status": amazon.AFFILIATE_TAG or "no tag set",
+                     "page": "/keys/market/affiliate"},
+                    {"id": "market", "name": "Amazon marketplace", "env": "PSTORE_MARKET",
+                     "url": "https://affiliate-program.amazon.com/account",
+                     "home": "https://affiliate-program.amazon.com/account",
+                     "status": amazon.MARKET or "default",
+                     "page": "/keys/market/market"},
+                ],
+            },
+        ]
+
+    def _managed_entry(self, group_id, entry_id):
+        for g in self._managed_groups():
+            if g["id"] == group_id:
+                for e in g["entries"]:
+                    if e["id"] == entry_id:
+                        return g, e
+        return None, None
+
+    def _keys_managed_page(self, group_id, entry_id):
+        """One managed-key page (mirrors the scraper provider page): current
+        status, a direct link to the platform, and an input to test + save."""
+        group, entry = self._managed_entry(group_id.lower(), entry_id.lower())
+        if not entry:
+            return self._send(404, b"<html><body><p>Unknown key.</p></body></html>",
+                              "text/html; charset=utf-8")
+        group_label = group["label"]
+        name = entry["name"]
+        env = entry.get("env", "")
+        home = entry.get("home", "")
+        key_url = entry.get("url", "")
+        masked = ""
+        cur = ""
+        editable = group_id.lower() in ("ai", "site", "market") or group_id.lower() == "scraper"
+        if group_id == "scraper":
+            cur = amazon._scraper_key(entry_id)
+            masked = (("••••" + cur[-4:]) if cur else "(no key set)")
+        elif group_id == "ai":
+            cur = ai.key_for(entry_id)
+            masked = (("••••" + cur[-4:]) if cur else "(no key set)")
+        elif group_id == "site":
+            if entry_id == "indexnow":
+                cur = indexnow.key()
+                masked = cur or "(no key set)"
+            else:
+                cur = seo.google_site_verification()
+                masked = cur or "(no key set)"
+        elif group_id == "market":
+            if entry_id == "affiliate":
+                cur = amazon.AFFILIATE_TAG or "(none set)"
+            else:
+                cur = amazon.MARKET or "(default)"
+            masked = cur
+        elif group_id == "oauth":
+            masked = ("configured" if entry["status"] == "set" else "(env not set)")
+        test_group = "scraper" if group_id == "scraper" else group_id
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{seo._clean(name)} — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+<style>.key{{font-family:ui-monospace,Menlo,monospace;font-size:13px;background:var(--bg);border:1px solid var(--border);
+border-radius:10px;padding:10px 12px;margin:0;word-break:break-all}}
+.masked{{font-size:16px;font-weight:700;letter-spacing:1px}}</style>
+</head><body>
+<header><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>{seo._clean(name)} <span>key.</span></h1>
+<p class="tagline">Paste or refresh this key, test it, then save it here.</p></div>
+{self._admin_nav('keys')}
+</header>
+<main>
+<section class="card"><h2>🎯 {seo._clean(group_label)} — {seo._clean(name)}</h2>
+<div class="sub"><h3>Current status</h3><p class="key masked">{seo._clean(masked)}</p>
+<p class="hint">{seo._clean(entry['status'])}{(' · env ' + seo._clean(env)) if env else ''}</p></div>
+<div class="sub"><h3>Manage your key at the platform</h3>
+<p class="hint">Get, reset or revoke the real key at the provider's own console — then paste it back here.</p>
+<p><a class="btn" href="{seo._clean(home)}" target="_blank" rel="noopener">Open {seo._clean(name)} console ↗</a></p>
+{('' if key_url == home else '<p class="hint">Direct reference: <a href="' + seo._clean(key_url) + '" target="_blank" rel="noopener">' + seo._clean(key_url) + '</a></p>')}
+</div>
+<div class="sub"><h3>Test the key</h3>
+<p class="hint">{'Fires a real, free request to confirm the provider accepts this key' if group_id in ('ai','scraper') else 'Checks the value is present and well-formed.'}</p>
+<button id="test" class="warm">▶ Test</button>
+<p id="tmsg" class="msg"></p></div>
+{('' if group_id == 'oauth' else f'''<div class="row">
+  <label>Value <input id="key" placeholder="paste or enter…" autocomplete="off" spellcheck="false"></label>
+  <button id="save" class="warm">Save</button>
+  <button id="clear">Clear</button></div>''')}
+<p id="msg" class="msg"></p>
+<a href="/keys" class="hint">← all keys</a>
+</section></main>
+<footer><p>Saved here applies to this process immediately; set <code>{seo._clean(env)}</code> as an environment variable to make it permanent across restarts.</p></footer>
+<script>
+function $(id){{return document.getElementById(id);}}
+async function post(path, payload){{
+  const r = await fetch(path, {{method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify(payload)}});
+  return r;
+}}
+const testBtn = $("test");
+if (testBtn) testBtn.onclick = async () => {{
+  const t = $("tmsg"), key = $("key") ? $("key").value.trim() : "";
+  t.textContent = "Testing…"; t.className = "msg";
+  let d, r;
+  try {{ r = await post("/api/keys/test", {{group:"{test_group}", keyid:"{entry_id}", key:key}}); d = await r.json(); }}
+  catch(e) {{ t.textContent = "✗ Could not reach the server."; return; }}
+  if (d.ok) {{ t.textContent = "✓ OK" + (d.latency_ms ? " (" + d.latency_ms + "ms)" : "") + (d.detail ? " · " + d.detail : ""); t.className = "msg ok"; }}
+  else {{ t.textContent = "✗ " + (d.error || "Test failed."); t.className = "msg err"; }}
+}};
+const saveBtn = $("save");
+if (saveBtn) saveBtn.onclick = async () => {{
+  const v = $("key").value.trim();
+  const r = await post("/api/keys/save", {{group:"{group_id}", keyid:"{entry_id}", key:v}});
+  const d = await r.json();
+  if (d.ok) {{ $("msg").textContent = "Saved ✓ " + (d.note || "applies now."); $("msg").className = "msg ok"; setTimeout(()=>location.reload(), 900); }}
+  else {{ $("msg").textContent = "Save failed: " + (d.error || "unknown"); $("msg").className = "msg err"; }}
+}};
+const clearBtn = $("clear");
+if (clearBtn) clearBtn.onclick = async () => {{
+  const r = await post("/api/keys/save", {{group:"{group_id}", keyid:"{entry_id}", key:""}});
+  const d = await r.json();
+  if (d.ok) {{ $("msg").textContent = "Cleared."; setTimeout(()=>location.reload(), 700); }}
+  else {{ $("msg").textContent = "Clear failed."; }}
+}};
+const inp = $("key");
+if (inp) inp.addEventListener("keydown", e => {{ if (e.key === "Enter" && saveBtn) saveBtn.onclick(); }});
+</script>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
     def _best_for_tools(self, q):
         items = []

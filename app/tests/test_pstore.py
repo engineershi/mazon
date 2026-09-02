@@ -668,6 +668,13 @@ class TestRoutes(unittest.TestCase):
         self.assertIn("/sitemap.xml", html)
         for pid in ("scraperapi", "outscraper", "serpapi"):
             self.assertIn("/keys/%s" % pid, html)
+        # every key group shows with its platform link + managed page
+        for frag in ("/keys/ai/openai", "/keys/ai/opencode", "/keys/ai/mistral",
+                     "/keys/ai/nvidia", "/keys/oauth/google", "/keys/oauth/facebook",
+                     "/keys/site/indexnow", "/keys/site/gsc",
+                     "/keys/market/affiliate", "/keys/market/market"):
+            self.assertIn(frag, html, frag)
+        self.assertIn("platform", html)
 
     def test_keys_provider_page(self):
         st, ctype, body = self._get("/keys/outscraper")
@@ -721,6 +728,89 @@ class TestRoutes(unittest.TestCase):
     def test_keys_unknown_provider_404(self):
         st, _, _ = self._get("/keys/nope")
         self.assertEqual(st, 404)
+
+    def test_managed_key_pages_render_with_platform_link(self):
+        import json as _json
+        from urllib.parse import urlencode
+        for path, needle in (
+            ("/keys/ai/openai", "platform.openai.com"),
+            ("/keys/ai/opencode", "opencode.ai"),
+            ("/keys/site/gsc", "search.google.com/search-console"),
+            ("/keys/site/indexnow", "indexnow.org"),
+            ("/keys/oauth/google", "console.developers.google.com"),
+            ("/keys/oauth/facebook", "developers.facebook.com"),
+            ("/keys/market/affiliate", "affiliate-program.amazon.com"),
+        ):
+            st, ctype, _sc, body = self._raw(path, cookie=self.cookie)
+            self.assertEqual(st, 200, path)
+            html = body.decode("utf-8", "replace")
+            self.assertIn(needle, html, path)
+            self.assertIn("/api/keys/test", html, path)
+            self.assertIn("/api/keys/save", html, path)
+            self.assertIn("console ↗", html, path)
+        # unknown managed key 404s
+        st, _, _, _ = self._raw("/keys/site/nope", cookie=self.cookie)
+        self.assertEqual(st, 404)
+
+    def test_keys_save_indexnow_runtime_override(self):
+        import json as _json
+        from urllib.parse import urlencode
+        saved = indexnow._RUNTIME_KEY
+        try:
+            body = urlencode({"group": "site", "keyid": "indexnow",
+                              "key": "a1b2c3d4e5f60718293a4b5c6d7e8f90"}).encode()
+            st, _, _, body = self._raw("/api/keys/save", "POST", body=body,
+                                       cookie=self.cookie)
+            self.assertEqual(st, 200)
+            d = _json.loads(body)
+            self.assertTrue(d["ok"], d)
+            self.assertEqual(indexnow.key(), "a1b2c3d4e5f60718293a4b5c6d7e8f90")
+            # auth gate
+            st, _, _, _ = self._raw("/api/keys/save", "POST", body=body)
+            self.assertEqual(st, 401)
+        finally:
+            indexnow._RUNTIME_KEY = saved
+
+    def test_keys_save_gsc_runtime_override(self):
+        import json as _json
+        from urllib.parse import urlencode
+        saved = seo._GOOGLE_SITE_VERIFICATION_RUNTIME
+        try:
+            body = urlencode({"group": "site", "keyid": "gsc",
+                              "key": "google-verification-token-123"}).encode()
+            st, _, _, body = self._raw("/api/keys/save", "POST", body=body,
+                                       cookie=self.cookie)
+            self.assertEqual(st, 200)
+            d = _json.loads(body)
+            self.assertTrue(d["ok"], d)
+            self.assertEqual(seo.google_site_verification(), "google-verification-token-123")
+            # now the landing head should emit the meta
+            st, _, body = self._get("/")
+            self.assertEqual(st, 200)
+            self.assertIn("google-site-verification", body.decode("utf-8", "replace"))
+        finally:
+            seo._GOOGLE_SITE_VERIFICATION_RUNTIME = saved
+
+    def test_keys_test_gsc_format(self):
+        import json as _json
+        from urllib.parse import urlencode
+        good = urlencode({"group": "site", "keyid": "gsc", "key": "tok"}).encode()
+        st, _, _, body = self._raw("/api/keys/test", "POST", body=good, cookie=self.cookie)
+        self.assertEqual(st, 200)
+        d = _json.loads(body)
+        self.assertTrue(d["ok"], d)
+
+    def test_ai_key_page_test_dispatches(self):
+        import json as _json
+        from urllib.parse import urlencode
+        st, _, _, body = self._raw(
+            "/api/keys/test", "POST",
+            body=urlencode({"group": "ai", "keyid": "openai", "key": ""}).encode(),
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        d = _json.loads(body)
+        self.assertFalse(d["ok"])
+        self.assertIn("no api key", d["error"].lower())
 
     def test_tools_workbench_payload(self):
         import json as _json

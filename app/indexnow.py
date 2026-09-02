@@ -23,11 +23,22 @@ import seo
 # Site-unique 32-hex key. Override via INDEXNOW_KEY env if you change it later.
 _DEFAULT_KEY = os.environ.get("INDEXNOW_KEY") or "0aa657c0ce459baba7a21e6d40e35351"
 
+# Runtime override set via the /keys hub so a saved key applies immediately.
+_RUNTIME_KEY = None
+
 ENDPOINT = "https://api.indexnow.org/indexnow"
+
+
+def set_key(key):
+    """Set (or clear with "") the active IndexNow key for this process."""
+    global _RUNTIME_KEY
+    _RUNTIME_KEY = (key or "").strip().lower()
 
 
 def key():
     """The active IndexNow key (lowercase 32-hex), or "" when unset."""
+    if _RUNTIME_KEY is not None:
+        return _RUNTIME_KEY
     return (_DEFAULT_KEY or "").strip().lower()
 
 
