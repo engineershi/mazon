@@ -780,6 +780,9 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._niche_page(path, q)
             if path.startswith("/lp/"):
                 return self._landing_page(path)
+            post = re.match(r"^/social/([a-z0-9-]+)/([A-Za-z0-9]+)$", path)
+            if post:
+                return self._social_post_page(post.group(1), post.group(2))
             og = re.match(r"^/og/([a-z0-9-]+)$", path)
             if og:
                 return self._og_image(og.group(1))
@@ -1510,29 +1513,42 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
                     "SELECT COUNT(*) c FROM clicks WHERE lower(slug)=? AND content=?",
                     (slug, str(c["code"]))).fetchone()["c"]
             conn.close()
+        code_from = {r["utm_content"]: r for r in rows if r.get("utm_content")}
         run_map = {r["name"]: r for r in rows}
         seen = set()
+
+        def social_path(code, published_ok=True):
+            if not code:
+                return None
+            if published_ok:
+                r = code_from.get(code)
+                if not r or r.get("status") != "published":
+                    return None
+            return "/social/" + slug + "/" + str(code)
+
+        def entry(c, r):
+            code = c.get("code") or r.get("utm_content") or ""
+            return {"name": c["name"], "id": c.get("id") or r.get("id"),
+                    "target": c.get("target", "landing"),
+                    "script": c.get("script", ""),
+                    "link": c.get("link", ""), "code": code,
+                    "qr": c.get("qr", ""), "runs": r.get("runs") or 0,
+                    "status": r.get("status") or "ready",
+                    "clicks": stat.get(code) or 0,
+                    "social": social_path(code),
+                    "updated_at": r.get("updated_at")}
+
         out = []
         for c in campaigns:
             r = run_map.get(c["name"]) or {}
             seen.add(c["name"])
-            out.append({"name": c["name"], "id": c.get("id"),
-                        "target": c.get("target", "landing"),
-                        "script": c.get("script", ""),
-                        "link": c.get("link", ""), "code": c.get("code", ""),
-                        "qr": c.get("qr", ""), "runs": r.get("runs") or 0,
-                        "status": r.get("status") or "ready",
-                        "clicks": stat.get(c.get("code")) or 0,
-                        "updated_at": r.get("updated_at")})
+            out.append(entry(c, r))
         for r in rows:
             if r["name"] in seen:
                 continue
-            out.append({"name": r["name"], "id": None, "target": "landing",
-                        "script": r["script"], "link": r["link"],
-                        "code": r["utm_content"], "qr": "", "runs": r["runs"] or 0,
-                        "status": r["status"],
-                        "clicks": stat.get(r["utm_content"]) or 0,
-                        "updated_at": r["updated_at"]})
+            c = {"name": r["name"], "link": r["link"], "code": r["utm_content"],
+                 "target": "landing", "script": r["script"], "qr": ""}
+            out.append(entry(c, r))
         return out
 
     def _boosts_api(self, q):
@@ -2290,6 +2306,47 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                 continue
         return self._send(404, {"error": "og image not found"})
 
+    def _social_post_page(self, slug, code):
+        """Public, standalone page for one published post. Renders the actual
+        post copy (platform + body) instead of redirecting to the landing page,
+        so the admin's "View live" / "open <a>" links show the real post."""
+        with _lock:
+            conn = _db()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM social_posts WHERE lower(slug)=? AND utm_content=? "
+                    "AND status='published' ORDER BY id DESC LIMIT 1",
+                    (slug.lower(), code)).fetchone()
+            finally:
+                conn.close()
+        if not row:
+            return self._send(404, "<h1>Post not found</h1>", "text/html; charset=utf-8")
+        d = dict(row)
+        keyword = d.get("keyword") or slug
+        title = d.get("name") or ("%s post" % d.get("platform"))
+        body = (d.get("body") or "").replace("\n", "<br>")
+        link = d.get("link") or "/lp/" + slug
+        when = (d.get("published_at") or d.get("created_at") or "").split(" ")[0]
+        page = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{seo._clean(title)} · pstore</title>
+<link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+</head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<nav><a href="/">Home</a><a href="/blog">Blog</a><a href="/n/{seo._clean(slug)}">Full review</a></nav></header>
+<main class="wrap" style="max-width:720px;margin:0 auto;padding:24px">
+<section class="card">
+  <p class="hint">📣 {seo._clean(d.get('platform') or 'Social')} · {seo._clean(when)}</p>
+  <h1>{seo._clean(title)}</h1>
+  <div style="font-size:15px;color:var(--text,#333);line-height:1.6">{body}</div>
+  <p class="key" style="margin-top:16px"><a href="{seo._clean(link)}" rel="noopener" target="_blank">{seo._clean(link)}</a></p>
+  <p class="hint">Best {seo._clean(keyword)} — researched live from Amazon.</p>
+</section>
+</main>
+</body></html>"""
+        return self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+
     def _social_api(self, q):
         keyword = (q.get("keyword") or [""])[0].strip()
         webhook = bool(self._webhook_url())
@@ -2403,7 +2460,7 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
 <div class="row">
 <button class="warm soc-pub" data-kw="{seo._clean(keyword)}" data-platform="{seo._clean(kit['platform'])}">Publish</button>
 <button class="soc-copy">Copy post</button>
-<a class="btn" target="_blank" rel="noopener" href="{seo._clean(kit['link'])}">View live ↗</a>
+<a class="btn" target="_blank" rel="noopener" href="/social/{seo._clean(slug)}/{seo._clean(kit['utm_content'])}">View live ↗</a>
 </div>
 </div>""")
         kit_html = "".join(kit_cards) if kit_cards else \
@@ -2413,7 +2470,8 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
             "<td class='ct'><a target='_blank' rel='noopener' href='%s'>open ↗</a></td></tr>"
             % (seo._clean(p["platform"]), seo._clean(p["name"]), seo._clean(p["utm_content"]),
                seo._clean(p["published_at"] or p["created_at"]),
-               stats.get(p["utm_content"]) or 0, seo._clean(p["link"]))
+               stats.get(p["utm_content"]) or 0,
+               "/social/" + seo._clean(p["slug"]) + "/" + seo._clean(p["utm_content"]))
             for p in published) or \
             "<tr><td colspan='6' class='hint'>Nothing published yet — hit Publish above.</td></tr>"
         body = f"""<!DOCTYPE html>

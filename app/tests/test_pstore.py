@@ -850,6 +850,42 @@ class TestRoutes(unittest.TestCase):
         self.assertIn("Boost", html)
         self.assertIn("boost", html.lower())
 
+    def test_public_post_page_renders_actual_post(self):
+        """The "View live" / "open <a>" buttons must lead to the actual published
+        post (/social/<slug>/<code>), not the landing page, and the post page
+        must be publicly reachable without a cookie."""
+        import json as _json
+        from urllib.parse import urlencode
+        st, _, _, body = self._raw("/api/boosts/run", "POST",
+                                   body=b"keyword=keto+snacks", cookie=self.cookie)
+        d = _json.loads(body)
+        first = d["boosts"][0]
+        st, _, _, body = self._raw(
+            "/api/boosts/social", "POST",
+            body=urlencode({"keyword": "keto snacks",
+                            "campaign": first["name"]}).encode(),
+            cookie=self.cookie)
+        self.assertEqual(st, 200, body)
+        out = _json.loads(body)
+        code = out["post"]["utm_content"]
+        # public page, no cookie -> the actual post copy, not a landing redirect
+        st, _, _, body = self._raw("/social/keto-snacks/" + code)
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        firstline = first["script"].split("\n")[0]
+        self.assertIn(firstline, html)
+        self.assertIn("noindex", html)
+        self.assertIn("keto", html.lower())
+        # admin social page's live links point at the post page, not /lp/
+        st, _, _, body = self._raw("/admin/social?keyword=keto+snacks", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        ah = body.decode("utf-8", "replace")
+        self.assertIn("/social/keto-snacks/" + code, ah)
+        self.assertNotIn("href=\"/lp/keto-snacks?", ah)
+        # a bogus code 404s
+        st, _, _, _ = self._raw("/social/keto-snacks/nope123")
+        self.assertEqual(st, 404)
+
     def test_boosts_to_social_requires_campaign(self):
         import json as _json
         st, _, _, body = self._raw("/api/boosts/social", "POST",

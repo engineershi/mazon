@@ -378,9 +378,9 @@ function renderFunnel(f, landing_url, socialKit){
       {t:"▶ Run", cls:"", act:()=>runBoost(bost.name, b)},,
       {t:"Copy", cls:"warm", act:()=>copyArea(ta, b)},
     ];
-    if (bost.link){
+    if (bost.link || bost.social){
       const a = document.createElement("a");
-      a.className="btn"; a.href=bost.link; a.target="_blank"; a.rel="noopener";
+      a.className="btn"; a.href=bost.social||bost.link; a.target="_blank"; a.rel="noopener";
       a.textContent="Open live ↗";
       row.appendChild(a);
       btns.push({t:"⟶ Social page", cls:"warm", act:()=>boostToSocial(bost.name)});
@@ -396,7 +396,8 @@ function renderFunnel(f, landing_url, socialKit){
     const linkP = document.createElement("p");
     linkP.className = "hint"; linkP.style.wordBreak="break-all";
     const a2 = document.createElement("a");
-    a2.href=bost.link; a2.target="_blank"; a2.rel="noopener"; a2.textContent=bost.link||"(no link yet — run once to mint one)";
+    a2.href=bost.social||bost.link; a2.target="_blank"; a2.rel="noopener";
+    a2.textContent=`Published post: ${bost.social||""}${bost.social?"":((bost.link||"(no post yet — run once, then ⟶ Social to publish)")+" · tracked link")}`;
     linkP.appendChild(a2);
     box.appendChild(linkP);
     blink.appendChild(box);
