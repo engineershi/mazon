@@ -927,6 +927,67 @@ class TestRoutes(unittest.TestCase):
                                 body=b'{"slug":"x","variants":[]}')
         self.assertEqual(st, 401)
 
+    def test_ab_autoclean_disables_losing_variant(self):
+        # a niche with two variants where v2 is far behind v1 on Amazon clicks
+        server._set_setting("ab.min_clicks", "4")
+        slug = "ab-clean-test"
+        with server._lock:
+            conn = server._db()
+            conn.execute("DELETE FROM clicks WHERE slug=?", (slug,))
+            conn.execute("DELETE FROM niche_variants WHERE lower(slug)=?", (slug,))
+            conn.execute(
+                "INSERT INTO niche_variants (slug, variant, headline, enabled) "
+                "VALUES (?,1,'Control',1),(?,2,'Loser',1)", (slug, slug))
+            for _ in range(5):
+                conn.execute("INSERT INTO clicks (slug, source, content) VALUES "
+                             "(?,'page','ab-1')", (slug,))
+            conn.execute("INSERT INTO clicks (slug, source, content) VALUES "
+                         "(?,'page','ab-2')", (slug,))
+            conn.commit()
+            conn.close()
+        try:
+            st, body = self._raw_json("/api/variants/autoclean", {}, cookie=self.cookie)
+        finally:
+            server._set_setting("ab.min_clicks", "")
+        self.assertEqual(st, 200)
+        d = json.loads(body)
+        self.assertTrue(d["ok"], d)
+        v2 = next(v for v in d["variants"] if v["slug"] == slug and v["variant"] == 2)
+        self.assertFalse(v2["enabled"])
+        v1 = next(v for v in d["variants"] if v["slug"] == slug and v["variant"] == 1)
+        self.assertTrue(v1["enabled"])
+
+    def test_ab_autoclean_keeps_close_variants(self):
+        # v2 at ~half of v1 (>=25%) is NOT disabled
+        slug = "ab-clean-keep"
+        with server._lock:
+            conn = server._db()
+            conn.execute("DELETE FROM clicks WHERE slug=?", (slug,))
+            conn.execute("DELETE FROM niche_variants WHERE lower(slug)=?", (slug,))
+            conn.execute(
+                "INSERT INTO niche_variants (slug, variant, headline, enabled) "
+                "VALUES (?,1,'A',1),(?,2,'B',1)", (slug, slug))
+            for _ in range(50):
+                conn.execute("INSERT INTO clicks (slug, content) VALUES (?,'ab-1')", (slug,))
+            for _ in range(30):
+                conn.execute("INSERT INTO clicks (slug, content) VALUES (?,'ab-2')", (slug,))
+            conn.commit()
+            conn.close()
+        st, body = self._raw_json("/api/variants/autoclean", {}, cookie=self.cookie)
+        self.assertEqual(st, 200)
+        d = json.loads(body)
+        self.assertTrue(d["ok"], d)
+        v2 = next(v for v in d["variants"] if v["slug"] == slug and v["variant"] == 2)
+        self.assertTrue(v2["enabled"])
+
+    def test_ab_autoclean_requires_auth(self):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.PORT, timeout=8)
+        conn.request("POST", "/api/variants/autoclean", body=b'{}',
+                     headers={"Content-Type": "application/json"})
+        resp = conn.getresponse(); resp.read(); conn.close()
+        self.assertEqual(resp.status, 401)
+
     def test_paapi_settings_config_roundtrip(self):
         import paapi
         paapi.configure("", "", "")

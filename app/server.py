@@ -1113,6 +1113,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._earnings_log()
             if parsed.path == "/api/variants/save":
                 return self._variants_save()
+            if parsed.path == "/api/variants/autoclean":
+                return self._variants_autoclean()
             if parsed.path == "/api/ai/models":
                 return self._ai_models()
             if parsed.path == "/api/ai/config":
@@ -4501,12 +4503,33 @@ if ($("r_save")) $("r_save").onclick = async () => {{
 {self._admin_nav('variants')}
 </header>
 <main>
+<section class="card"><h2>⚗️ Automatic cleanup</h2>
+<p class="hint">Once a niche accumulates enough real Amazon clicks, any headline variant converting under 25% of that niche's click leader is auto-disabled so it stops wasting impressions. Clicks per variant are shown in each card's table.</p>
+<button id="autoclean" class="warm">Run auto-cleanup now</button>
+<p id="cleanmsg" class="msg"></p></section>
 {'<section class="card"><p class="hint">Filtering by keyword: %s. <a href="/admin/variants">Show all →</a></p></section>' % seo._clean(keyword) if keyword else ''}
 {''.join(row)}
 </main>
 <footer><p>Leave a variant empty to disable it. The control (default) headline is always shown when no variants are set. Winner-takes-CTA after you see enough clicks.</p></footer>
 <script>
 const $$=s=>Array.prototype.slice.call(document.querySelectorAll(s));
+const ac=document.getElementById("autoclean");
+if(ac){{
+  ac.onclick=async function(){{
+    ac.disabled=true; ac.textContent="Running…";
+    const m=document.getElementById("cleanmsg"); m.className="msg"; m.textContent="Scanning variants…";
+    try{{
+      const r=await fetch("/api/variants/autoclean",{{method:"POST",headers:{{"Content-Type":"application/json"}}}});
+      const d=await r.json();
+      if(!d.ok){{ m.textContent="✗ "+(d.error||"failed"); }}
+      else{{
+        const n=d.variants.filter(v=>!v.enabled).length;
+        m.textContent="✓ Cleanup done. "+n+" variant(s) currently disabled. Reload to see updated click counts.";
+      }}
+    }}catch(e){{ m.textContent="✗ Could not reach the server."; }}
+    ac.disabled=false; ac.textContent="Run auto-cleanup now";
+  }};
+}}
 $$(".card[data-keyword]").forEach(function(card){{
   var btn=card.querySelector("button");
   if(!btn) return;
@@ -4531,6 +4554,106 @@ $$(".card[data-keyword]").forEach(function(card){{
 {_TOTOP}
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _ab_stats(self, slug):
+        """Per-variant Amazon-click counts for one niche from the click beacon
+        (variants tagged as 'ab-<n>' in UTM content). Returns {variant: clicks}
+        limited to variants that actually exist in niche_variants for slug."""
+        rows = []
+        with _lock:
+            conn = _db()
+            try:
+                rows = conn.execute(
+                    "SELECT variant FROM niche_variants WHERE lower(slug)=? "
+                    "AND enabled=1 AND headline != '' ORDER BY variant ASC",
+                    (slug.lower(),)).fetchall()
+            finally:
+                conn.close()
+        known = [r["variant"] for r in rows]
+        if not known:
+            return {}
+        stats = {}
+        with _lock:
+            conn = _db()
+            try:
+                for v in known:
+                    n = conn.execute(
+                        "SELECT COUNT(*) AS c FROM clicks WHERE lower(slug)=? "
+                        "AND content LIKE ?",
+                        (slug.lower(), "ab-%s%%" % v)).fetchone()["c"]
+                    stats[v] = n
+            finally:
+                conn.close()
+        return stats
+
+    def _ab_autoclean(self, min_clicks=None):
+        """A/B auto-cleanup: for each niche, when a headline variant has enough
+        combined traffic and converts far below the control, auto-disable it so
+        losers stop burning impressions. Returns the actions taken."""
+        if min_clicks is None:
+            try:
+                min_clicks = int(_get_setting("ab.min_clicks") or 40)
+            except (TypeError, ValueError):
+                min_clicks = 40
+        changed = []
+        with _lock:
+            conn = _db()
+            slugs = conn.execute("SELECT DISTINCT lower(slug) AS s FROM niche_variants "
+                                 "WHERE enabled=1").fetchall()
+            conn.close()
+        for r in slugs:
+            slug = r["s"]
+            stats = self._ab_stats(slug)
+            if not stats or sum(stats.values()) < min_clicks:
+                continue
+            best = max(stats, key=stats.get)
+            best_n = stats[best]
+            losers = [v for v, n in stats.items() if v != best and n < best_n * 0.25]
+            if not losers:
+                continue
+            with _lock:
+                conn = _db()
+                for v in losers:
+                    conn.execute(
+                        "UPDATE niche_variants SET enabled=0 "
+                        "WHERE lower(slug)=? AND variant=?", (slug, v))
+                conn.commit()
+                conn.close()
+            changed.append({"slug": slug, "disabled": losers,
+                            "clicks": dict(stats), "control": best})
+        return {"ok": True, "changed": changed,
+                "note": ("Disabled variants converting below 25%% of the leader "
+                         "once a niche reached %d lifetime clicks." % min_clicks)}
+
+    def _variants_autoclean(self):
+        """Admin: run A/B auto-cleanup on demand and report what got disabled."""
+        try:
+            self._ab_autoclean()
+        except Exception as exc:
+            return self._send(200, {"ok": False, "error": str(exc)})
+        # freshest stats for the report
+        return self._send(200, self._ab_summary())
+
+    def _ab_summary(self):
+        """Snapshot of every niche's variant health for the /admin/variants page."""
+        rows = []
+        with _lock:
+            conn = _db()
+            try:
+                vrows = conn.execute(
+                    "SELECT lower(slug) AS slug, variant, headline, enabled "
+                    "FROM niche_variants ORDER BY slug, variant").fetchall()
+            finally:
+                conn.close()
+        for r in vrows:
+            stats = self._ab_stats(r["slug"])
+            rows.append({
+                "slug": r["slug"], "variant": r["variant"],
+                "headline": r["headline"], "enabled": bool(r["enabled"]),
+                "clicks": stats.get(r["variant"], 0),
+            })
+        return {"ok": True, "variants": rows,
+                "note": "Run auto-cleanup to disable any variant under 25% of its niche's click leader (min 40 lifetime clicks)."}
 
     def _variants_save(self):
         """Admin: upsert a niche's headline variants."""
