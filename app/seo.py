@@ -446,6 +446,7 @@ def render_niche(keyword, niche, saved_niches=None, ab_headline=None, ab_variant
   {editorial.faq_html(keyword, best) if best else ""}
   <h2>The ranked list</h2>
   {ranked}
+  {editorial.upsell_block(items, keyword)}
   {editorial.comparison_html(items) if items else ""}
   {editorial.methodology_html()}
   {editorial.related_html(keyword, saved_niches) if saved_niches else ""}

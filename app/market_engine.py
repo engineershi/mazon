@@ -32,6 +32,22 @@ def _best_items(items, n=3):
     return ranked[:n]
 
 
+def _alternate_lines(items, exclude_asin, n=2):
+    """Compact '- <title> - link' lines for the runner-up products, excluding
+    the primary pick, to cross-sell on budget/spec grounds."""
+    lines = []
+    for it in _best_items(items, n + 1):
+        if not it.get("asin") or it["asin"] == exclude_asin:
+            continue
+        if len(lines) >= n:
+            break
+        price = _price(it)
+        lines.append("- %s (%s): %s" % (
+            _clip(it.get("title"), 48), price or "see price",
+            redirect_url(it["asin"])))
+    return "\n".join(lines)
+
+
 def pick_for_buyers(items):
     """Pick the single strongest product to push: most reviews, price tiebreak."""
     best = None
@@ -229,7 +245,10 @@ def build_landing_page(keyword, items, site_url=None):
 
 
 def build_email_sequence(keyword, items):
-    """5-email buyer sequence: value → proof → objection → urgency → review ask."""
+    """5-email buyer sequence: value → proof → objection → urgency → review ask.
+    Emails 1 & 5 also surface the runner-up alternatives so a reader who does
+    not click the main pick still has a buying path (raises conversion and
+    average order value)."""
     pick = pick_for_buyers(items)
     if not pick or not pick.get("asin"):
         return []
@@ -240,6 +259,11 @@ def build_email_sequence(keyword, items):
     reviews = pick.get("reviews")
     proof = f"⭐ {stars}/5 from {reviews:,} Amazon buyers" if (stars and reviews) else "highly rated on Amazon"
     social_head = f"What {reviews:,} buyers already think" if reviews else "What buyers already think"
+    alts = _alternate_lines(items, pick["asin"])
+    alt1 = ("\n\nPrefer a different budget or spec? Two matched alternatives:\n" + alts
+            ) if alts else ""
+    alt5 = ("\n\nStill on the fence? The two we'd pick next were:\n" + alts + "\n"
+            ) if alts else ""
     return [
         {"name": "Email 1 · Hook + value", "subject": f"Ignore if this isn't for you, but {title[:48]}…",
          "body": f"""Subject: Ignore if this isn't for you, but {title[:48]}…
@@ -251,7 +275,7 @@ I found a {keyword} buy that a LOT of other buyers already swear by ({proof}).
 My one-line take: it solves the problem, it's priced well{(' at ' + price) if price else ''}, and I'd buy it again without thinking.
 
 👉 Take a peek: {url}
-
+{alt1}
 No strings, no code — just the link. If it's not your thing, hit delete.
 
 — {{your_name}}"""},
@@ -303,8 +327,8 @@ Two things.
 
 1) If you grabbed it — enjoy it! When Amazon asks for a review, 30 seconds of your honest words helps other buyers a ton. (All we ever ask: honest.)
 
-2) If you didn't — here's the link one more time, it's genuinely the pick: {url}
-
+ 2) If you didn't — here's the link one more time, it's genuinely the pick: {url}
+{alt5}
 — {{your_name}}"""},
     ]
 

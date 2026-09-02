@@ -310,6 +310,38 @@ def pick_html(keyword, item, idx, items):
                stars, reviews, cta))
 
 
+def upsell_block(items, keyword=""):
+    """Cross-sell strip: the pick + the two runner-ups as compact 'also
+    consider' cards, so a visitor weighing options above the fold has every
+    buying path in easy reach — raises the chance of a same-session order and
+    total order value."""
+    scored = score_items(items or [])
+    def _link(it):
+        return it.get("url") or amazon.affiliate_url(it.get("asin") or "")
+    scored = [it for it, _s in scored if it.get("asin") and _link(it)]
+    if not scored:
+        return ""
+    pick = scored[0]
+    alt = scored[1:3]
+    def card(it, tag):
+        price = _price(it)
+        label = "Check price on Amazon" + (" — %s" % price if price else "")
+        return ('<div class="pick subpick"><span class="badge">%s</span>'
+                '<strong>%s</strong>'
+                '<a class="btn" href="%s" data-asin="%s" target="_blank" '
+                'rel="nofollow sponsored noopener">%s</a></div>'
+                % (_clean(tag), _clean(_display(it)), _clean(_link(it)),
+                   _clean(it.get("asin") or ""), label))
+    pieces = [card(pick, "Top pick")]
+    pieces += [card(it, "Also consider") for it in alt]
+    heading = ("Complete the %s shortlist — the pick and the two names that ran it close."
+               % _clean(keyword)) if keyword else \
+              "The pick and the two that ran it close."
+    return ('<div class="card" data-role="upsell"><h2>🛒 And also worth a look</h2>'
+            '<p class="hint">%s</p><div class="picks ups">%s</div></div>'
+            % (heading, "".join(pieces)))
+
+
 def comparison_html(items):
     rows = comparison_rows(items, top_asin=(best_pick(items) or {}).get("asin"))
     body = "".join(

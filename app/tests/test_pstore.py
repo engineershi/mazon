@@ -250,6 +250,26 @@ class TestSalesFunnel(unittest.TestCase):
         self.assertIn("reviews", f)
         self.assertTrue(f["stages"])
 
+    def test_email_sequence_includes_alternates(self):
+        seq = market_engine.build_email_sequence("keto snacks", self.items)
+        # email 1 and 5 cross-sell runner-ups without cloaked links
+        for body in (seq[0]["body"], seq[4]["body"]):
+            self.assertIn("https://www.amazon.com/dp/B0KETO5678?tag=yourname-20", body)
+            self.assertNotIn("/go/", body)
+        # the primary pick is still pushed on email 1
+        self.assertIn("B0KETO1234", seq[0]["body"])
+
+    def test_upsell_block_renders_pick_and_alternates(self):
+        html = editorial.upsell_block(self.items, "keto snacks")
+        self.assertIn('data-role="upsell"', html)
+        self.assertIn("Top pick", html)
+        self.assertIn("Also consider", html)
+        self.assertIn("keto snacks", html)
+        self.assertIn('data-asin="B0KETO1234"', html)
+        self.assertIn('data-asin="B0KETO5678"', html)
+        self.assertIn('rel="nofollow sponsored noopener"', html)
+        self.assertEqual(editorial.upsell_block([]), "")
+
 
 class TestEditorial(unittest.TestCase):
     PRODUCTS = [
@@ -906,6 +926,12 @@ class TestRoutes(unittest.TestCase):
         st, _, _, _ = self._raw("/api/variants/save", "POST",
                                 body=b'{"slug":"x","variants":[]}')
         self.assertEqual(st, 401)
+
+    def test_seo_page_embeds_upsell_block(self):
+        st, _, _, body = self._raw("/n/keto-snacks")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn('data-role="upsell"', html)
 
     def test_render_niche_with_ab_headline(self):
         html = seo.render_niche("keto snacks", {"products": []}, ab_headline="Custom A/B H1",
