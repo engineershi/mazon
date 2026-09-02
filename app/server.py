@@ -34,6 +34,7 @@ import ai
 import cms as cms_mod
 import cms_render
 import ebook as ebook_mod
+import earnings
 import indexnow
 import mailer
 import manual
@@ -269,6 +270,14 @@ def _db():
         conn.commit()
     except sqlite3.OperationalError:
         conn.rollback()
+    conn.execute("""CREATE TABLE IF NOT EXISTS earnings_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        month TEXT NOT NULL,
+        orders INTEGER DEFAULT 0,
+        earnings REAL DEFAULT 0,
+        note TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
     cms_mod.ensure_tables(conn)
     return conn
 
@@ -955,6 +964,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._keys_test()
             if parsed.path == "/api/keys/save":
                 return self._keys_save()
+            if parsed.path == "/api/earnings/config":
+                return self._earnings_config()
+            if parsed.path == "/api/earnings/log":
+                return self._earnings_log()
             if parsed.path == "/api/ai/models":
                 return self._ai_models()
             if parsed.path == "/api/ai/config":
@@ -3721,7 +3734,22 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
             event_pages = conn.execute(
                 "SELECT page, COUNT(*) c FROM events WHERE name='view' "
                 "GROUP BY page ORDER BY c DESC LIMIT 10").fetchall()
+            month_rows = conn.execute(
+                "SELECT month, orders, earnings FROM earnings_records "
+                "ORDER BY month DESC LIMIT 24").fetchall()
             conn.close()
+        # Earnings estimate from the recorded click volume + config, plus the
+        # real orders/earnings logged straight from the Associates dashboard.
+        est = earnings.estimate(total, "")
+        real = [{"month": r["month"], "orders": r["orders"], "earnings": r["earnings"]}
+                for r in month_rows]
+        real_summary = earnings.monthly_summary(real)
+        earn_note = ("tuned" if (earnings._runtime.get("commission_pct") or
+                                 earnings._runtime.get("avg_order") or
+                                 earnings._runtime.get("order_rate"))
+                     else "defaults (%.1f%% on $%.0f AOV @ %.2f%% order rate) — tune below"
+                     % (earnings.commission_pct(""), earnings.avg_order(""),
+                        earnings.order_rate("") * 100))
         slug_rows = "".join(
             "<tr><td>%s</td><td class='ct'>%s</td></tr>" % (seo._clean(r["slug"]), r["c"])
             for r in top_slugs) or "<tr><td colspan='2' class='hint'>No clicks yet.</td></tr>"
@@ -3764,6 +3792,31 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
   <div class="feature"><h3>{stats['active']}</h3><p class="hint">active subscribers</p></div>
   <div class="feature"><h3>{stats['emails_sent']}</h3><p class="hint">emails sent</p></div>
 </div></section>
+<section class="card"><h2>💰 Earnings & conversion</h2>
+<div class="row" style="align-items:stretch">
+  <div class="feature"><h3>${est['commission_est']:.2f}</h3><p class="hint">est. commission this period</p></div>
+  <div class="feature"><h3>{est['orders_est']:.0f}</h3><p class="hint">est. orders @ {est['order_rate']*100:.1f}%</p></div>
+  <div class="feature"><h3>${real_summary['total_earnings']:.2f}</h3><p class="hint">real earnings (logged)</p></div>
+  <div class="feature"><h3>{real_summary['total_orders']}</h3><p class="hint">real orders (logged)</p></div>
+</div>
+<p class="hint" style="margin-top:8px">Config: {seo._clean(earn_note)}. Commission % is a {earnings.commission_pct(''):,.1f}% of ${earnings.avg_order(''):,.0f} average order at {earnings.order_rate('')*100:,.2f}% order rate — tune the three fields to your real Associates numbers and save.</p>
+<div class="row" style="align-items:end;margin-top:6px">
+  <label>Commission % <input id="e_pct" type="number" step="0.1" min="0" value="{earnings.commission_pct(''):.1f}"></label>
+  <label>Avg order $ <input id="e_aov" type="number" step="1" min="0" value="{earnings.avg_order(''):.0f}"></label>
+  <label>Order rate % <input id="e_rate" type="number" step="0.01" min="0" value="{earnings.order_rate('')*100:.2f}"></label>
+  <button id="e_save" class="warm">Save config</button>
+</div>
+<p class="msg" id="e_msg"></p>
+<div class="sub"><h3>Log real results from your Associates dashboard</h3>
+<div class="row" style="align-items:end">
+  <label>Month (YYYY-MM) <input id="r_month" placeholder="2026-09" value="{datetime.date.today().strftime('%Y-%m')}"></label>
+  <label>Orders <input id="r_orders" type="number" min="0" placeholder="0"></label>
+  <label>Earnings $ <input id="r_earn" type="number" step="0.01" min="0" placeholder="0.00"></label>
+  <button id="r_save" class="warm">Log month</button>
+</div>
+<div class="table-wrap" style="margin-top:8px"><table class="plain"><thead><tr><th>Month</th><th>Orders</th><th>Earnings</th></tr></thead><tbody>
+{''.join('<tr><td>%s</td><td class="ct">%d</td><td class="ct">$%.2f</td></tr>' % (seo._clean(m['month']), m['orders'], m['earnings']) for m in real_summary["months"]) or '<tr><td colspan="3" class="hint">Nothing logged yet — add this month’s real orders + earnings from Amazon Associates.</td></tr>'}
+</tbody></table></div></div></section>
 <section class="card"><h2>👀 Page views by URL</h2>
 <div class="table-wrap"><table class="plain"><thead><tr><th>Page</th><th>Views</th></tr></thead><tbody>{ev_page_rows}</tbody></table></div></section>
 <section class="card"><h2>⚡ Lead-page interactions</h2>
@@ -3781,9 +3834,70 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
 </main>
 <footer><p>Views + interactions are captured privacy-first (IP hashes only) via /api/pageview; clicks via /api/track. Promo/countdown/sticky/gate elements are auto-tagged so you can see exactly which page behavior earns engagement and conversions.</p></footer>
 <script src="/table-flow.js" defer></script>
+<script>
+const $=s=>document.getElementById(s);
+async function postj(p, obj){{ const r=await fetch(p,{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(obj)}}); return r.json(); }}
+if ($("e_save")) $("e_save").onclick = async () => {{
+  const m=$("e_msg"); m.textContent="Saving…"; m.className="msg";
+  try{{
+    const d=await postj("/api/earnings/config",{{commission_pct:parseFloat($("e_pct").value),avg_order:parseFloat($("e_aov").value),order_rate:parseFloat($("e_rate").value)/100}});
+    m.textContent=d.ok?"✓ Config saved — estimate updated.":("✗ "+(d.error||"failed")); m.className=d.ok?"msg":"msg";
+  }}catch(e){{ m.textContent="✗ Could not reach the server."; }}
+}};
+if ($("r_save")) $("r_save").onclick = async () => {{
+  const m=$("r_msg")||$("e_msg"); m.textContent="Saving…"; m.className="msg";
+  try{{
+    const d=await postj("/api/earnings/log",{{month:$("r_month").value.trim(),orders:parseInt($("r_orders").value||"0",10),earnings:parseFloat($("r_earn").value||"0")}});
+    m.textContent=d.ok?"✓ Logged. Refresh to see the table update.":("✗ "+(d.error||"failed")); m.className=d.ok?"msg":"msg";
+  }}catch(e){{ m.textContent="✗ Could not reach the server."; }}
+}};
+</script>
 {_TOTOP}
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _earnings_config(self):
+        """Admin: tune the commission estimator (runtime, non-persistent)."""
+        body = self._body()
+        keys = ("commission_pct", "avg_order", "order_rate")
+        try:
+            vals = {k: float(body.get(k) or 0) for k in keys}
+        except (TypeError, ValueError):
+            return self._send(200, {"ok": False, "error": "Numbers required."})
+        if not (vals["commission_pct"] >= 0 and vals["avg_order"] > 0
+                and 0 <= vals["order_rate"] <= 1):
+            return self._send(200, {"ok": False, "error": "Out of range."})
+        earnings.configure(commission_pct=vals["commission_pct"],
+                           avg_order=vals["avg_order"], order_rate=vals["order_rate"])
+        return self._send(200, {"ok": True})
+
+    def _earnings_log(self):
+        """Admin: record a month's real orders + earnings from the dashboard."""
+        body = self._body()
+        month = str(body.get("month") or "").strip()[:7]
+        if not re.match(r"^\d{4}-\d{2}$", month):
+            return self._send(200, {"ok": False, "error": "Month must be YYYY-MM."})
+        try:
+            orders = max(int(body.get("orders") or 0), 0)
+            earnings_amt = max(float(body.get("earnings") or 0), 0.0)
+        except (TypeError, ValueError):
+            return self._send(200, {"ok": False, "error": "Numbers required."})
+        with _lock:
+            conn = _db()
+            cur = conn.execute(
+                "SELECT id FROM earnings_records WHERE month=? ORDER BY id DESC LIMIT 1",
+                (month,)).fetchone()
+            if cur:
+                conn.execute(
+                    "UPDATE earnings_records SET orders=?, earnings=? WHERE id=?",
+                    (orders, earnings_amt, cur["id"]))
+            else:
+                conn.execute(
+                    "INSERT INTO earnings_records (month, orders, earnings) VALUES (?,?,?)",
+                    (month, orders, earnings_amt))
+            conn.commit()
+            conn.close()
+        return self._send(200, {"ok": True})
 
 
 def main():

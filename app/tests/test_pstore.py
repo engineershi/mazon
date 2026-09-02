@@ -16,6 +16,7 @@ import seo
 import indexnow
 import security
 import server
+import earnings
 
 amazon.CACHE_TTL = 0
 amazon.MIN_INTERVAL = 0.0
@@ -811,6 +812,56 @@ class TestRoutes(unittest.TestCase):
         d = _json.loads(body)
         self.assertFalse(d["ok"])
         self.assertIn("no api key", d["error"].lower())
+
+    def test_earnings_config_save(self):
+        import json as _json
+        from urllib.parse import urlencode
+        saved = dict(earnings._runtime)
+        try:
+            st, _, _, body = self._raw(
+                "/api/earnings/config", "POST",
+                body=urlencode({"commission_pct": "9", "avg_order": "80",
+                                "order_rate": "0.04"}).encode(),
+                cookie=self.cookie)
+            self.assertEqual(st, 200)
+            d = _json.loads(body)
+            self.assertTrue(d["ok"], d)
+            self.assertAlmostEqual(earnings.commission_pct(""), 9.0)
+            self.assertAlmostEqual(earnings.avg_order(""), 80.0)
+            self.assertAlmostEqual(earnings.order_rate(""), 0.04)
+        finally:
+            earnings._runtime.clear()
+            earnings._runtime.update(saved)
+        # auth gate
+        st, _, _, _ = self._raw("/api/earnings/config", "POST",
+                                body=b"commission_pct=9&avg_order=80&order_rate=0.04")
+        self.assertEqual(st, 401)
+
+    def test_earnings_log_month(self):
+        import json as _json
+        from urllib.parse import urlencode
+        st, _, _, body = self._raw(
+            "/api/earnings/log", "POST",
+            body=urlencode({"month": "2026-08", "orders": "12", "earnings": "45.5"}).encode(),
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        d = _json.loads(body)
+        self.assertTrue(d["ok"], d)
+        # bad month format rejected
+        st, _, _, body = self._raw(
+            "/api/earnings/log", "POST",
+            body=urlencode({"month": "aug", "orders": "1", "earnings": "1"}).encode(),
+            cookie=self.cookie)
+        d = _json.loads(body)
+        self.assertFalse(d["ok"])
+
+    def test_analytics_page_has_earnings(self):
+        st, _, _, body = self._raw("/admin/analytics", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn("Earnings", html)
+        self.assertIn("est. commission", html)
+        self.assertIn("/api/earnings/config", html)
 
     def test_tools_workbench_payload(self):
         import json as _json
