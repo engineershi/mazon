@@ -264,7 +264,71 @@ class TestSocialSuite(unittest.TestCase):
             t.join(timeout=2)
             stub.server_close()
 
-    def test_og_image_served_for_saved_niche(self):
+    def test_schedule_single_platform_spaced(self):
+        st, _, ctype, data = self._raw(
+            "/api/social/schedule", "POST",
+            body=json.dumps({"keyword": "keto snacks", "platform": "all", "hours": 24}),
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        res = json.loads(data)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["scheduled"], len(social.PLATFORMS))
+        self.assertEqual(res["platform"], "all")
+        with server._lock:
+            conn = server._db()
+            rows = conn.execute(
+                "SELECT platform, status, scheduled_at FROM social_posts "
+                "WHERE slug=? AND status='scheduled' ORDER BY scheduled_at",
+                (seo._slugify("keto snacks"),)).fetchall()
+            conn.close()
+        self.assertEqual(len(rows), len(social.PLATFORMS))
+        ats = [r["scheduled_at"] for r in rows]
+        self.assertEqual(sorted(ats), ats)          # spaced, not all at once
+        self.assertEqual(set(r["status"] for r in rows), {"scheduled"})
+        self.assertNotIn("", ats)
+
+    def test_schedule_requires_auth(self):
+        st, _, _, _ = self._raw(
+            "/api/social/schedule", "POST",
+            body=json.dumps({"keyword": "keto snacks", "platform": "all"}))
+        self.assertEqual(st, 401)
+
+    def test_flush_publishes_only_due_scheduled_posts(self):
+        # schedule kit 1 of 'all' to a past time so only it is due
+        st, _, _, data = self._raw(
+            "/api/social/schedule", "POST",
+            body=json.dumps({"keyword": "keto snacks", "platform": "all", "hours": 24}),
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        with server._lock:
+            conn = server._db()
+            kinfo = conn.execute(
+                "SELECT id FROM social_posts WHERE status='scheduled' "
+                "ORDER BY scheduled_at LIMIT 1").fetchone()
+            k = conn.execute(
+                "SELECT MIN(scheduled_at) AS least FROM social_posts "
+                "WHERE status='scheduled'").fetchone()["least"]
+            conn.execute("UPDATE social_posts SET scheduled_at=? WHERE id=?",
+                         ("2000-01-01 00:00:00", kinfo["id"]))
+            conn.commit()
+            conn.close()
+        st, _, _, data = self._raw(
+            "/api/social/flush", "POST", body=b"{}",
+            headers={"Content-Type": "application/json"}, cookie=self.cookie)
+        self.assertEqual(st, 200)
+        res = json.loads(data)
+        self.assertEqual(res["published_now"], 1)
+        with server._lock:
+            conn = server._db()
+            due = conn.execute(
+                "SELECT status FROM social_posts WHERE id=?",
+                (kinfo["id"],)).fetchone()["status"]
+            still = conn.execute(
+                "SELECT COUNT(*) AS n FROM social_posts WHERE status='scheduled'"
+            ).fetchone()["n"]
+            conn.close()
+        self.assertEqual(due, "published")
+        self.assertEqual(res["still_pending"], still)   # the rest remain queued
         st, _, ctype, data = self._raw("/og/keto-snacks")
         self.assertEqual(st, 200)
         self.assertTrue(ctype.startswith("image/svg+xml"))

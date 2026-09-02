@@ -231,9 +231,15 @@ def _db():
         link TEXT,
         utm_content TEXT,
         status TEXT DEFAULT 'draft',
+        scheduled_at TEXT,
         created_at TEXT DEFAULT (datetime('now')),
         published_at TEXT
     )""")
+    try:
+        conn.execute("ALTER TABLE social_posts ADD COLUMN scheduled_at TEXT")
+        conn.commit()
+    except Exception:
+        pass
     conn.execute("""CREATE TABLE IF NOT EXISTS boosts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         slug TEXT NOT NULL,
@@ -955,6 +961,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._sequence_send()
             if parsed.path == "/api/social/publish":
                 return self._social_publish()
+            if parsed.path == "/api/social/schedule":
+                return self._social_schedule()
+            if parsed.path == "/api/social/flush":
+                return self._social_flush()
             if parsed.path == "/api/tools/launch":
                 return self._tools_launch()
             if parsed.path == "/api/boosts/run":
@@ -2775,6 +2785,95 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                                 "stats": stats, "webhook": bool(self._webhook_url()),
                                 "keyword": keyword})
 
+    def _schedule_times(self, count, hours=24):
+        """Spread `count` posts evenly across the next `hours` (rate-limit
+        friendly) so a niche's batch doesn't burst the platform all at once."""
+        now = datetime.datetime.utcnow()
+        times = []
+        for i in range(count):
+            delta = float(hours) * (i + 1) / float(max(count, 1))
+            times.append(now + datetime.timedelta(hours=delta))
+        return [t.strftime("%Y-%m-%d %H:%M:%S") for t in times]
+
+    def _social_schedule(self):
+        """Queue a niche's post kits as future, spaced publishes (rate-limit
+        friendly). Webhook fires only when each post comes due via flush."""
+        body = self._body()
+        keyword = str(body.get("keyword") or "").strip()
+        platform = str(body.get("platform") or "all").strip()
+        hours = int(body.get("hours") or 24)
+        if not keyword:
+            return self._send(400, {"error": "keyword required"})
+        kits = self._social_kits(keyword)
+        if not kits:
+            return self._send(404, {"error": "no saved niche or top pick for that keyword"})
+        if platform and platform != "all" and platform not in social.PLATFORMS:
+            return self._send(400, {"error": "unknown platform"})
+        pick = kits if platform == "all" else \
+            [k for k in kits if k["platform"] == platform]
+        if not pick:
+            return self._send(400, {"error": "platform produced no kit"})
+        slug = seo._slugify(keyword)
+        times = self._schedule_times(len(pick), hours=hours)
+        with _lock:
+            conn = _db()
+            ids = []
+            for kit, at in zip(pick, times):
+                row = conn.execute(
+                    "SELECT id FROM social_posts WHERE lower(slug)=? AND utm_content=?",
+                    (slug, kit["utm_content"])).fetchone()
+                if row:
+                    conn.execute(
+                        "UPDATE social_posts SET status='scheduled', scheduled_at=?, "
+                        "name=?, body=?, link=? WHERE id=?",
+                        (at, kit["name"], kit["body"], kit["link"], row["id"]))
+                    ids.append(row["id"])
+                else:
+                    cur = conn.execute(
+                        "INSERT INTO social_posts (slug, keyword, platform, name, body, "
+                        "link, utm_content, status, scheduled_at) "
+                        "VALUES (?,?,?,?,?,?,?,'scheduled',?)",
+                        (slug, keyword, kit["platform"], kit["name"], kit["body"],
+                         kit["link"], kit["utm_content"], at))
+                    ids.append(cur.lastrowid)
+            conn.commit()
+            conn.close()
+        # list scheduled posts so the UI can show the plan
+        _, stats = self._social_db(keyword, slug, kits)
+        return self._send(200, {"ok": True, "scheduled": len(ids),
+                                "platform": platform, "hours": hours,
+                                "stats": stats, "keyword": keyword})
+
+    def _social_flush(self):
+        """Publish every due scheduled post now: flip status->published, fire the
+        webhook (spaced), and return what went out. Safe to call on a timer."""
+        now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT id, slug, platform, name, body, link FROM social_posts "
+                "WHERE status='scheduled' AND scheduled_at IS NOT NULL "
+                "AND scheduled_at <= ? ORDER BY scheduled_at", (now,)).fetchall()
+            due = [dict(r) for r in rows]
+            for r in due:
+                conn.execute(
+                    "UPDATE social_posts SET status='published', published_at=?, "
+                    "scheduled_at=NULL WHERE id=?", (now, r["id"]))
+            conn.commit()
+            conn.close()
+        if due:
+            self._webhook_publish([
+                {"platform": r["platform"], "name": r["name"] or "",
+                 "body": r["body"] or "", "link": r["link"] or ""} for r in due])
+        with _lock:
+            conn = _db()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM social_posts WHERE status='scheduled'"
+            ).fetchone()["n"]
+            conn.close()
+        return self._send(200, {"ok": True, "published_now": len(due),
+                                "still_pending": pending})
+
     def _admin_social(self, q):
         niches = [n["keyword"] for n in self._all_niches()]
         keyword = (q.get("keyword") or [""])[0].strip() or (niches[0] if niches else "")
@@ -2800,12 +2899,17 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                     badge = "<span class='badge' style='background:#e6ffe8;color:#1e8e3e'>published %s</span>" % \
                         seo._clean(p.get("published_at") or "")
                     break
+                if p["utm_content"] == kit["utm_content"] and p["status"] == "scheduled":
+                    badge = "<span class='badge' style='background:#fff6e0;color:#c77d00'>scheduled %s</span>" % \
+                        seo._clean(p.get("scheduled_at") or "")
+                    break
             kit_cards.append(f"""<div class="sub soc-kit">
 <h3>📣 {seo._clean(kit['platform'])} <span class="who">· {seo._clean(kit['name'])}</span> {badge} <span class="who">· {hashing} click(s) on this post</span></h3>
 <textarea readonly rows="5">{seo._clean(kit['body'])}</textarea>
 <p class="key" title="Tracked link (UTM) — every share uses this exact URL">{seo._clean(kit['link'])}</p>
 <div class="row">
-<button class="warm soc-pub" data-kw="{seo._clean(keyword)}" data-platform="{seo._clean(kit['platform'])}">Publish</button>
+<button class="warm soc-pub" data-kw="{seo._clean(keyword)}" data-platform="{seo._clean(kit['platform'])}">Publish now</button>
+<button class="soc-sched" data-kw="{seo._clean(keyword)}" data-platform="{seo._clean(kit['platform'])}">Schedule (24h)</button>
 <button class="soc-copy">Copy post</button>
 <a class="btn" target="_blank" rel="noopener" href="/social/{seo._clean(slug)}/{seo._clean(kit['utm_content'])}">View live ↗</a>
 </div>
@@ -2847,7 +2951,9 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
 <section class="card"><h2>✅ Published posts &amp; clicks</h2>
 <p class="hint">Each code counts clicks on the landing page with that exact UTM tag — so you can see, per post, who clicked through.</p>
 <div class="table-wrap"><table class="plain"><thead><tr><th>Platform</th><th>Post</th><th>Code</th><th>Published</th><th>Clicks</th><th>Live</th></tr></thead>
-<tbody>{pub_rows}</tbody></table></div></section>
+<tbody>{pub_rows}</tbody></table></div>
+<button class="warm" id="flush">Flush due scheduled posts</button>
+<p id="flushout" class="msg"></p></section>
 </main>
 <footer><p>Posts only use real scraped data (title, price, stars, reviews) — no fabricated claims. Landing page carries the courier beacon, so every tap is attributed.</p></footer>
 <script src="/table-flow.js" defer></script>
@@ -2864,9 +2970,31 @@ async function pub(btn){{
     : (d && d.error) || "Publish failed.";
   setTimeout(()=>location.reload(), 900);
 }}
+async function sched(btn){{
+  $("out").textContent = "Scheduling…";
+  const r = await fetch("/api/social/schedule", {{method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify({{keyword: btn.dataset.kw, platform: btn.dataset.platform, hours: 24}})}});
+  const d = await r.json().catch(()=>({{ok:false}}));
+  $("out").textContent = d && d.ok
+    ? "Scheduled " + d.scheduled + " post(s) for “" + d.keyword + "” across the next 24h."
+    : (d && d.error) || "Schedule failed.";
+  setTimeout(()=>location.reload(), 900);
+}}
+async function flush(){{
+  $("flushout").textContent = "Flushing…";
+  const r = await fetch("/api/social/flush", {{method:"POST", headers:{{"Content-Type":"application/json"}}}});
+  const d = await r.json().catch(()=>({{ok:false}}));
+  $("flushout").textContent = d && d.ok
+    ? "Published " + d.published_now + " due post(s) now; " + d.still_pending + " still queued."
+    : "Flush failed.";
+  setTimeout(()=>location.reload(), 900);
+}}
 document.addEventListener("click", (e)=>{{
   const p = e.target.closest(".soc-pub");
   if (p){{ pub(p); return; }}
+  const s = e.target.closest(".soc-sched");
+  if (s){{ sched(s); return; }}
+  if (e.target.closest("#flush")){{ flush(); return; }}
   const c = e.target.closest(".soc-copy");
   if (c){{
     const box = c.closest(".soc-kit");
