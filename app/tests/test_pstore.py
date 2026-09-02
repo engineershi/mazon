@@ -974,6 +974,82 @@ class TestRoutes(unittest.TestCase):
         self.assertIn('name="webhook"', html)
         self.assertIn('name="access_key"', html)
 
+    def test_opportunities_lists_clicked_winners(self):
+        # seed click data pointing at a saved niche
+        with server._lock:
+            conn = server._db()
+            conn.execute("DELETE FROM clicks")
+            conn.execute(
+                "INSERT INTO clicks (slug, source, asin) VALUES "
+                "('keto-snacks','social','B0KETO1234'),"
+                "('keto-snacks','social','B0KETO5678')")
+            conn.commit()
+            conn.close()
+        orig = amazon.autosuggest
+        amazon.autosuggest = lambda q, limit=12: ["keto snacks bars", "keto chips"]
+        try:
+            st, _, _, data = self._raw("/api/opportunities", cookie=self.cookie)
+        finally:
+            amazon.autosuggest = orig
+        self.assertEqual(st, 200)
+        d = json.loads(data)
+        winners = {w["slug"]: w for w in d["winners"]}
+        self.assertIn("keto-snacks", winners)
+        self.assertEqual(winners["keto-snacks"]["clicks"], 2)
+        self.assertIn("unbuilt", winners["keto-snacks"])
+        # auth gate
+        st2, _, _, _ = self._raw("/api/opportunities")
+        self.assertEqual(st2, 401)
+
+    def test_opportunities_expand_creates_pages(self):
+        # stub mining to return a related term + product so expand auto-saves it
+        import niche as niche_mod
+        def fake_mine(seed, top=8, max_niches=5):
+            return [
+                {"keyword": seed, "products": [], "score": 1, "saturation": 0},
+                {"keyword": seed + " bars", "products": [
+                    {"asin": "B0KETO1234", "title": "Keto Bar", "reviews": 50}],
+                 "score": 1, "saturation": 0},
+            ], {"seed": seed}
+        orig = niche_mod.mine_niche
+        niche_mod.mine_niche = fake_mine
+        try:
+            st, data = self._raw_json(
+                "/api/opportunities/expand", {"slug": "keto-snacks", "count": 2},
+                cookie=self.cookie)
+        finally:
+            niche_mod.mine_niche = orig
+        self.assertEqual(st, 200)
+        d = json.loads(data)
+        self.assertTrue(d["ok"])
+        self.assertEqual(d["seed"], "keto snacks")
+        self.assertEqual(d["count"], 1)
+        self.assertEqual(d["created"][0]["keyword"], "keto snacks bars")
+        self.assertEqual(d["created"][0]["products"], 1)
+
+    def test_opportunities_expand_requires_auth(self):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.PORT, timeout=8)
+        conn.request("POST", "/api/opportunities/expand",
+                     body=b'{"slug":"keto-snacks"}',
+                     headers={"Content-Type": "application/json"})
+        resp = conn.getresponse(); resp.read(); conn.close()
+        self.assertEqual(resp.status, 401)
+
+    def test_admin_opportunities_page(self):
+        orig = amazon.autosuggest
+        amazon.autosuggest = lambda q, limit=12: ["keto snacks bars"]
+        try:
+            st, _, _, data = self._raw("/admin/opportunities", cookie=self.cookie)
+        finally:
+            amazon.autosuggest = orig
+        self.assertEqual(st, 200)
+        html = data.decode("utf-8", "replace")
+        self.assertIn("Build", html)
+        st2, location, _, _ = self._raw("/admin/opportunities")
+        self.assertEqual(st2, 302)
+        self.assertTrue(location.startswith("/admin/login"))
+
     def test_seo_page_embeds_upsell_block(self):
         st, _, _, body = self._raw("/n/keto-snacks")
         self.assertEqual(st, 200)

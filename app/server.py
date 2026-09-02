@@ -723,6 +723,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 {chip('/admin/ebooks', '📕 Ebooks', 'ebooks')}
 {chip('/admin/analytics', '📊 Analytics', 'analytics')}
 {chip('/admin/apikeys', '🔌 API Keys', 'apikeys')}
+{chip('/admin/opportunities', '📈 Grow', 'opportunities')}
 {chip('/admin/variants', '⚗️ A/B Tests', 'variants')}
 {chip('/admin/social', '📣 Social', 'social')}
 {chip('/admin/sem', '🎯 SEM', 'sem')}
@@ -945,6 +946,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_variants(q)
             if path == "/admin/apikeys":
                 return self._admin_apikeys(q)
+            if path == "/admin/opportunities":
+                return self._admin_opportunities(q)
             if path == "/admin/social":
                 return self._admin_social(q)
             if path == "/admin/sem":
@@ -1024,6 +1027,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._tools(q)
             if path == "/api/boosts":
                 return self._boosts_api(q)
+            if path == "/api/opportunities":
+                return self._opportunities(q)
             self._send(404, {"error": "not found"})
         except Exception as e:
             self._send(500, {"error": str(e)})
@@ -1112,6 +1117,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._ai_models()
             if parsed.path == "/api/ai/config":
                 return self._ai_config()
+            if parsed.path == "/api/opportunities/expand":
+                return self._opportunities_expand()
             self._send(404, {"error": "not found"})
         except Exception as e:
             self._send(500, {"error": str(e)})
@@ -1303,6 +1310,112 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             conn.close()
         return [{"keyword": r["keyword"], "products": json.loads(r["products"] or "[]")}
                 for r in rows]
+
+    def _top_clicked_niches(self, limit=10):
+        """Aggregate Amazon-click traffic by niche (joining clicks.slug to the
+        saved niche keyword). Returns [{slug, keyword, clicks}] most to least."""
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT c.slug, COUNT(*) AS clicks FROM clicks c "
+                "WHERE c.slug != '' AND c.asin != '' "
+                "GROUP BY c.slug ORDER BY clicks DESC LIMIT ?", (limit,)).fetchall()
+            conn.close()
+        ranked = []
+        for r in rows:
+            kw = self._keyword_for_slug(r["slug"])
+            if kw:
+                ranked.append({"slug": r["slug"], "keyword": kw, "clicks": r["clicks"]})
+        return ranked
+
+    def _keyword_for_slug(self, slug):
+        from seo import _slugify
+        with _lock:
+            conn = _db()
+            rows = conn.execute("SELECT keyword FROM niches").fetchall()
+            conn.close()
+        for r in rows:
+            if _slugify(r["keyword"]) == slug:
+                return r["keyword"]
+        for n in seo.STATIC_PAGES:
+            if _slugify(n) == slug:
+                return n
+        return ""
+
+    def _opportunities_data(self):
+        """Compute the revenue-loop payload (winners + note) without emitting an
+        HTTP response, so the page and the API share one source of truth."""
+        winners = self._top_clicked_niches(limit=12)
+        if not winners:
+            return {"winners": [], "note": "No click data yet — publish social posts and IndexNow your pages to seed the loop."}
+        existing_kw = {n["keyword"].lower() for n in self._all_niches()}
+        out = []
+        for w in winners:
+            try:
+                ideas = amazon.autosuggest(w["keyword"], limit=12)
+            except Exception:
+                ideas = []
+            terms = []
+            for idea in ideas:
+                k = (idea or "").strip().lower()
+                if k and len(k) >= 4 and k not in existing_kw:
+                    terms.append(k)
+            out.append({
+                "slug": w["slug"], "keyword": w["keyword"], "clicks": w["clicks"],
+                "unbuilt": len(terms), "suggestions": terms[:6],
+            })
+        return {"winners": out,
+                "note": "Unbuilt terms are real Amazon autosuggestions around a proven winner — expand to auto-create those pages."}
+
+    def _opportunities(self, q):
+        """Revenue loop, read side: the niches already pulling real Amazon clicks
+        (they're proven), each with how many related, not-yet-built keyword terms
+        are waiting to be turned into pages."""
+        return self._send(200, self._opportunities_data())
+
+    def _opportunities_expand(self):
+        """Auto-create new niche pages for a proven winner's related terms.
+        Mines products live, saves each new niche, and tells IndexNow so the
+        page is crawled fast. Returns the newly created niches."""
+        body = self._body()
+        slug = str(body.get("slug") or "").strip().lower()
+        count = int(body.get("count") or 3)
+        count = max(1, min(count, 6))
+        if not slug:
+            return self._send(400, {"error": "slug required"})
+        kw = self._keyword_for_slug(slug)
+        if not kw:
+            return self._send(404, {"error": "no saved niche for that slug"})
+        existing_kw = {n["keyword"].lower() for n in self._all_niches()}
+        try:
+            niches, meta = niche.mine_niche(kw, top=6)
+        except Exception:
+            return self._send(500, {"error": "mining failed"})
+        created = []
+        for n in niches[1:]:  # skip the seed itself
+            k = (n["keyword"] or "").strip().lower()
+            if not k or len(k) < 4 or k in existing_kw:
+                continue
+            if len(created) >= count:
+                break
+            if not n.get("products"):
+                continue
+            with _lock:
+                conn = _db()
+                conn.execute(
+                    "INSERT INTO niches (keyword, market, score, saturation, products) "
+                    "VALUES (?,?,?,?,?)",
+                    (n["keyword"], amazon.MARKET, n.get("score"), n.get("saturation"),
+                     json.dumps(n["products"])))
+                conn.commit()
+                conn.close()
+            existing_kw.add(k)
+            self._push_indexnow(n["keyword"])
+            created.append({"keyword": n["keyword"], "products": len(n["products"]),
+                            "slug": seo._slugify(n["keyword"]),
+                            "score": n.get("score"), "saturation": n.get("saturation")})
+        return self._send(200, {"ok": True, "seed": kw, "created": created,
+                                "count": len(created)})
 
     def _sitemap(self):
         entries = [("/", "2026-08-28"), ("/blog", "2026-08-28")]
@@ -3456,6 +3569,72 @@ async function soc_save(){{
         aren't echoed in plaintext in the form."""
         v = _get_setting("social.key." + key)
         return (v[:4] + "••••") if v else "paste API key/token"
+
+    def _admin_opportunities(self, q):
+        """Grow page: proven niches (real clicks) + one-click expansion that
+        auto-builds new pages for their related, not-yet-built search terms."""
+        note = ""
+        winners_html = ""
+        try:
+            payload = self._opportunities_data()
+            note = payload.get("note", "")
+            winners = payload.get("winners", [])
+        except Exception:
+            winners = []
+            note = "Opportunities unavailable right now — try again in a moment."
+        cards = []
+        for w in winners:
+            sugg = "".join("<li><code>%s</code></li>" % seo._clean(s)
+                           for s in w["suggestions"][:6]) or "<li>none found</li>"
+            cards.append(
+                '<div class="sub"><h3>%s <span class="who">· %d Amazon clicks</span></h3>'
+                '<p class="hint">Click through on <b>/%s</b> proves demand. %d related term%s not yet built:</p>'
+                '<ul class="pilos">%s</ul>'
+                '<button class="warm grow" data-slug="%s">Build %d new page(s)</button></div>'
+                % (seo._clean(w["keyword"]), w["clicks"], seo._clean(w["slug"]),
+                   w["unbuilt"], "" if w["unbuilt"] == 1 else "s", sugg,
+                   seo._clean(w["slug"]), min(6, max(w["unbuilt"], 1))))
+        winners_html = "".join(cards) or \
+            '<p class="hint">No proven winners yet. Publish social posts and get pages indexed — clicks here become build targets.</p>'
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grow — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+<style>.pilos {{ list-style:none; padding:0; margin:8px 0; }} .pilos li {{ margin:2px 0; }}</style>
+</head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Turn clicks into <span>more pages.</span></h1>
+<p class="tagline">{note}</p></div>
+{self._admin_nav('opportunities')}
+</header>
+<main>
+<section class="card"><h2>📈 Build on your winners</h2>
+<p class="hint">Each niche below already pulled real Amazon clicks. "Build" mines its related search terms live, saves new pockets as pages, and pings IndexNow so Google finds them fast.</p>
+<div class="cols">{winners_html}</div>
+<p id="out" class="msg"></p>
+</section>
+</main>
+<footer><p>New pages are created from live Amazon autosuggest terms around a proven niche — demand-driven, not guessed.</p></footer>
+<script>
+function $(id){{return document.getElementById(id);}}
+document.addEventListener("click", async (e)=>{{
+  const b = e.target.closest(".grow");
+  if (!b) return;
+  const old = b.textContent; b.disabled = true; b.textContent = "Building…";
+  $("out").textContent = "Mining and creating pages…";
+  const r = await fetch("/api/opportunities/expand", {{method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify({{slug: b.dataset.slug, count: 6}})}});
+  const d = await r.json().catch(()=>({{ok:false}}));
+  if (d && d.ok) {{
+    $("out").textContent = "Created " + d.count + " page(s) from “" + d.seed + "”: " + d.created.map(x=>x.slug).join(", ");
+  }} else {{
+    $("out").textContent = (d && (d.error || d.message)) || "Build failed.";
+    b.disabled = false; b.textContent = old;
+  }}
+}});
+</script>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
     def _admin_sem(self, q):
         niches = [n["keyword"] for n in self._all_niches()]
