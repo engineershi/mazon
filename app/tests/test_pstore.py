@@ -1148,6 +1148,25 @@ class TestRoutes(unittest.TestCase):
         html = body.decode("utf-8", "replace")
         self.assertIn('data-role="upsell"', html)
 
+    def test_niche_render_cache_adds_cache_control(self):
+        # in prod cache-awareness (CACHE_TTL>0) the /n/ page ships Cache-Control
+        old_ttl, amazon.CACHE_TTL = amazon.CACHE_TTL, 3600
+        server._render_cache.clear()
+        try:
+            import http.client
+            conn = http.client.HTTPConnection("127.0.0.1", self.PORT, timeout=5)
+            conn.request("GET", "/n/keto-snacks")
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            cc = resp.getheader("Cache-Control") or ""
+            self.assertIn("public", cc.lower())
+            self.assertIn("max-age=", cc.lower())
+            resp.read()
+            conn.close()
+        finally:
+            amazon.CACHE_TTL = old_ttl
+            server._render_cache.clear()
+
     def test_render_niche_with_ab_headline(self):
         html = seo.render_niche("keto snacks", {"products": []}, ab_headline="Custom A/B H1",
                             ab_variant=2)

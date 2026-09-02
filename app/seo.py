@@ -11,6 +11,7 @@ import html
 import json
 import os
 import re
+import hashlib
 
 import editorial
 
@@ -406,6 +407,17 @@ ordering — deals change constantly.</p></div>
 </main>
 """.encode("utf-8")
     return head + body + _footer()
+
+
+def _variant_key(n):
+    """Stable short content key for a saved niche that changes when its
+    products/source refresh, so the /n/ render cache invalidates on update."""
+    items = n.get("products") or []
+    stub = "%s|%s|%s|%s|%s" % (
+        n.get("keyword", ""), n.get("source", ""), n.get("updated", ""),
+        len(items),
+        (items[0].get("asin") if items else "") if items else "")
+    return hashlib.md5(stub.encode("utf-8")).hexdigest()[:8]
 
 
 def render_niche(keyword, niche, saved_niches=None, ab_headline=None, ab_variant=0):

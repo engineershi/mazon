@@ -87,6 +87,33 @@ _REFRESH_MAX_PER_CYCLE = int(os.environ.get("PSTORE_REFRESH_MAX", "3"))
 _REFRESHING = set()  # keyword -> in-flight guard so a niche isn't double-mined
 _refresh_lock = threading.Lock()
 
+# In-memory render cache for the hot SEO pages (/n/ + /lp/) so crawler storms
+# don't re-mine/re-render the same niche repeatedly. Keyed by role+slug+variant
+# so A/B variants keep their identity; entries expire to stay fresh.
+_render_cache = {}
+_render_cache_lock = threading.Lock()
+RENDER_CACHE_DEFAULT_TTL = 300.0
+
+
+def _render_cache_get(key):
+    with _render_cache_lock:
+        hit = _render_cache.get(key)
+        if not hit:
+            return None
+        if hit[0] < time.time():
+            _render_cache.pop(key, None)
+            return None
+        return hit[1]
+
+
+def _render_cache_put(key, value, ttl):
+    with _render_cache_lock:
+        _render_cache[key] = (time.time() + ttl, value)
+        if len(_render_cache) > 400:  # bounded
+            now = time.time()
+            for k in [k for k, v in _render_cache.items() if v[0] < now]:
+                _render_cache.pop(k, None)
+
 
 def _refresh_stale_candidates(now):
     """Return keywords of saved niches that are stale (never refreshed or past
@@ -486,6 +513,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_cached(self, body, ctype, max_age=RENDER_CACHE_DEFAULT_TTL):
+        """Send a public HTML response tagged with a Cache-Control lifetime so
+        crawlers and CDNs reuse it (the /n/ render cache is keyed by content and
+        expires itself, so this stale window is bounded and safe)."""
+        data = body if isinstance(body, bytes) else body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=%d" % int(max_age))
         self.end_headers()
         self.wfile.write(data)
 
@@ -996,18 +1035,18 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                     return self._send(200, fh.read(), "application/javascript; charset=utf-8")
             if path == "/style.css":
                 with open(os.path.join(STATIC, "style.css"), "rb") as fh:
-                    return self._send(200, fh.read(), "text/css; charset=utf-8")
+                    return self._send_cached(fh.read(), "text/css; charset=utf-8", 600)
             if path == "/courier.js":
                 with open(os.path.join(STATIC, "courier.js"), "rb") as fh:
-                    return self._send(200, fh.read(),
-                                      "application/javascript; charset=utf-8")
+                    return self._send_cached(fh.read(),
+                                             "application/javascript; charset=utf-8", 600)
             if path == "/table-flow.js":
                 with open(os.path.join(STATIC, "table-flow.js"), "rb") as fh:
-                    return self._send(200, fh.read(),
-                                      "application/javascript; charset=utf-8")
+                    return self._send_cached(fh.read(),
+                                             "application/javascript; charset=utf-8", 600)
             if path == "/ui.js":
                 with open(os.path.join(STATIC, "ui.js"), "rb") as fh:
-                    return self._send(200, fh.read(),
+                    return self._send_cached(fh.read(),
                                       "application/javascript; charset=utf-8")
             if path == "/api/settings":
                 return self._send(200, self._settings())
@@ -1465,13 +1504,27 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
 
     def _niche_page(self, path, q):
         slug = path[len("/n/"):].rstrip("/") or "niche"
+        aware = amazon.CACHE_TTL > 0  # tests set CACHE_TTL=0 -> bypass render cache
+        try:
+            ttl = float(_get_setting("render_cache_ttl") or RENDER_CACHE_DEFAULT_TTL)
+        except (TypeError, ValueError):
+            ttl = RENDER_CACHE_DEFAULT_TTL
+        cache_key = None
         all_niches = self._all_niches()
         for n in all_niches:
             try:
                 if slug == seo._slugify(n["keyword"]):
                     headline, vno = self._variant_for(slug)
+                    cache_key = ("/n/", slug, amazon.MARKET, vno, headline,
+                                 seo._variant_key(n))
+                    cached = _render_cache_get(cache_key) if aware else None
+                    if cached is not None:
+                        return self._send_cached(cached, "text/html; charset=utf-8", ttl)
                     res = seo.render_niche(n["keyword"], n, saved_niches=all_niches,
                                            ab_headline=headline, ab_variant=vno)
+                    if aware:
+                        _render_cache_put(cache_key, res, ttl)
+                        return self._send_cached(res, "text/html; charset=utf-8", ttl)
                     return self._send(200, res, "text/html; charset=utf-8")
             except Exception:
                 continue
