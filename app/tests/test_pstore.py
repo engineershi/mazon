@@ -927,6 +927,20 @@ class TestRoutes(unittest.TestCase):
                                 body=b'{"slug":"x","variants":[]}')
         self.assertEqual(st, 401)
 
+    def test_paapi_settings_config_roundtrip(self):
+        import paapi
+        paapi.configure("", "", "")
+        st, body = self._raw_json(
+            "/api/settings", {"paapi": {"access_key": "AKIAX", "secret_key": "SEC",
+                                        "partner_tag": "tag-20"}},
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        d = json.loads(body)
+        self.assertTrue(d["paapi"]["ready"])
+        # auth gate
+        st2, _ = self._raw_json("/api/settings", {"paapi": {}})
+        self.assertEqual(st2, 401)
+
     def test_seo_page_embeds_upsell_block(self):
         st, _, _, body = self._raw("/n/keto-snacks")
         self.assertEqual(st, 200)

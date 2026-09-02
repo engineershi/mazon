@@ -41,6 +41,7 @@ import manual
 import market_engine
 import niche
 import oauth
+import paapi
 import seo
 import security
 import sem
@@ -384,6 +385,7 @@ class Handler(BaseHTTPRequestHandler):
             "markets": amazon._MARKETPLACES,
             "affiliate_tag": amazon.AFFILIATE_TAG,
             "scraper": amazon.scraper_status(),
+            "paapi": paapi.status(),
             "marketing": market_engine.status_blurb(),
             "mailer": {
                 "configured": mailer.configured(),
@@ -1047,6 +1049,13 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             for pid, key in (body.get("scraper") or {}).items():
                 if pid in amazon._SCRAPER_PROVIDERS and key is not None:
                     amazon.set_scraper_key(pid, key)
+            p = body.get("paapi")
+            if isinstance(p, dict):
+                paapi.configure(
+                    p.get("access_key", ""),
+                    p.get("secret_key", ""),
+                    p.get("partner_tag", ""),
+                )
         return self._send(200, self._settings())
 
     def _save_niche(self):
@@ -1298,6 +1307,7 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 sum(1 for p in amazon.scraper_status()["providers"].values()
                     if p["has_key"]),
                 len(amazon.scraper_status()["providers"]))),
+            ("PA-API", "ready" if paapi.ready() else "not configured (optional)"),
         ]
         cards = "".join(
             '<div class="sub"><h3>%s</h3><p class="key" '
