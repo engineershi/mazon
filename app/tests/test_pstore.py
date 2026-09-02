@@ -1059,12 +1059,75 @@ class TestRoutes(unittest.TestCase):
         st, location, _, data = self._raw("/admin/apikeys")
         self.assertEqual(st, 302)
         self.assertTrue(location.startswith("/admin/login"))
+        # seed a secret so the masking behaviour is visible
+        server._set_setting("paapi.secret_key", "SuperSecretKeyValue")
         st, _, _, data = self._raw("/admin/apikeys", cookie=self.cookie)
         self.assertEqual(st, 200)
         html = data.decode("utf-8", "replace")
         self.assertIn("PA-API", html)
         self.assertIn('name="webhook"', html)
         self.assertIn('name="access_key"', html)
+        # PA-API secret is not echoed in plaintext but shown masked
+        self.assertNotIn("SuperSecretKeyValue", html)
+        self.assertIn("••••", html)
+        # the four twitter OAuth sub-fields are rendered
+        self.assertIn('data-tw="1"', html)
+
+    def test_ai_key_and_scraper_key_persist_to_db(self):
+        # AI key survives via DB: persist, then re-init rehydrates the runtime
+        import ai as _ai
+        st, body = self._raw_json("/api/keys/save",
+                                  {"group": "ai", "keyid": "openai",
+                                   "key": "sk-test-xyz", "model": "gpt-4o"},
+                                  cookie=self.cookie)
+        self.assertEqual(st, 200)
+        d = json.loads(body)
+        self.assertTrue(d.get("ok"))
+        self.assertEqual(server._get_setting("ai.key.openai"), "sk-test-xyz")
+        # simulate a restart: reload runtime from the DB
+        _ai._RUNTIME.clear()
+        server._init()
+        cfg = _ai._runtime("openai")
+        self.assertEqual(cfg.get("key"), "sk-test-xyz")
+        # scraper key persists too
+        st2, _ = self._raw_json("/api/keys/save",
+                                {"group": "scraper", "keyid": "scraperapi",
+                                 "key": "scraper-secret"},
+                                cookie=self.cookie)
+        self.assertEqual(server._get_setting("scraper.key.scraperapi"), "scraper-secret")
+
+    def test_twitter_subkeys_map_in_publish_key_getter(self):
+        server._set_setting("social.key.twitter", "BASE")
+        server._set_setting("social.key.twitter.client_id", "CK")
+        server._set_setting("social.key.twitter.client_secret", "CS")
+        server._set_setting("social.key.twitter.access_token", "AT")
+        server._set_setting("social.key.twitter.access_token_secret", "ATS")
+        kv = server._publish_key_getter()
+        # single-token platforms resolve any field to the base key
+        self.assertEqual(kv("pinterest", "token"), server._get_setting("social.key.pinterest"))
+        # twitter resolves each slot to its distinct sub-key
+        self.assertEqual(kv("twitter", "client_id"), "CK")
+        self.assertEqual(kv("twitter", "client_secret"), "CS")
+        self.assertEqual(kv("twitter", "access_token"), "AT")
+        self.assertEqual(kv("twitter", "access_token_secret"), "ATS")
+        # unknown sub-field falls back to the base value
+        self.assertEqual(kv("twitter", "bogus"), "BASE")
+        server._set_setting("social.key.twitter", "")
+        for f in ("client_id", "client_secret", "access_token", "access_token_secret"):
+            server._set_setting("social.key.twitter.%s" % f, "")
+
+    def test_paapi_partial_save_preserves_other_fields(self):
+        # save all three, then re-save only partner_tag (as the masked JS does):
+        # the untouched access/secret keys must not be blanked
+        self._raw_json("/api/settings",
+                       {"paapi": {"access_key": "AKIAX", "secret_key": "SEC",
+                                  "partner_tag": "tag-20"}},
+                       cookie=self.cookie)
+        self._raw_json("/api/settings", {"paapi": {"partner_tag": "tag-21"}},
+                       cookie=self.cookie)
+        self.assertEqual(server._get_setting("paapi.access_key"), "AKIAX")
+        self.assertEqual(server._get_setting("paapi.secret_key"), "SEC")
+        self.assertEqual(server._get_setting("paapi.partner_tag"), "tag-21")
 
     def test_opportunities_lists_clicked_winners(self):
         # seed click data pointing at a saved niche

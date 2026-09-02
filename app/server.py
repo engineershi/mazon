@@ -216,9 +216,18 @@ def _refresh_all_worker(kws):
 
 def _publish_key_getter():
     """Wire the persisted social API keys (from the /admin/apikeys settings KV)
-    into the native posting gateway. Maps composer platform key -> settings key."""
+    into the native posting gateway. Maps the composer's (platform, field) into
+    the settings key that holds that credential:
+      * Twitter / X needs four OAuth 1.0a creds stored as `social.key.twitter.<field>`
+        (client_id, client_secret, access_token, access_token_secret).
+      * Every other platform publishes a single token stored as `social.key.<platform>`,
+        so each candidate field name resolves to that one value."""
     def kv(ns, name):
-        return _get_setting("social.key." + ns, "")
+        base = _get_setting("social.key." + ns, "")
+        if ns != "twitter":
+            return base
+        sub = _get_setting("social.key.twitter.%s" % name, "")
+        return sub or base
     return kv
 
 
@@ -482,6 +491,24 @@ def _init():
             _get_setting("paapi.secret_key"),
             _get_setting("paapi.partner_tag"),
         )
+    except Exception:
+        pass
+    # Rehydrate key groups that were persisted via the UI so they survive a
+    # restart/redeploy (env vars still take priority at read time). Scraper
+    # keys + AI provider keys come back into the in-memory runtime modules.
+    try:
+        for pid, meta in (amazon._SCRAPER_PROVIDERS or {}).items():
+            v = _get_setting("scraper.key." + pid)
+            if v:
+                amazon.set_scraper_key(pid, v)
+    except Exception:
+        pass
+    try:
+        for p in ai.PROVIDERS:
+            k = _get_setting("ai.key." + p)
+            if k:
+                ai.configure_runtime(p, k, _get_setting("ai.model." + p) or "",
+                                     _get_setting("ai.base." + p) or "")
     except Exception:
         pass
 
@@ -1168,6 +1195,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._refresh_all_post()
             if parsed.path == "/api/settings":
                 return self._save_settings()
+            if parsed.path == "/api/settings/test":
+                return self._settings_test()
             if parsed.path == "/api/indexnow":
                 return self._indexnow_post()
             if parsed.path == "/api/sequence/send":
@@ -1270,27 +1299,39 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
 
     def _save_settings(self):
         body = self._body()
+        # Read persisted PA-API values BEFORE taking _lock so we can preserve
+        # unsubmitted fields (calling _get_setting inside the lock would deadlock).
+        _paapi_prior = {f: _get_setting("paapi.%s" % f) for f in
+                        ("access_key", "secret_key", "partner_tag")}
+        _scraper_saved = dict(body.get("scraper") or {})
         with _lock:
             if body.get("market"):
                 amazon.set_market(body["market"])
             if "affiliate_tag" in body:
                 amazon.set_tag(body["affiliate_tag"])
-            for pid, key in (body.get("scraper") or {}).items():
+            for pid, key in _scraper_saved.items():
                 if pid in amazon._SCRAPER_PROVIDERS and key is not None:
                     amazon.set_scraper_key(pid, key)
             p = body.get("paapi")
             if isinstance(p, dict):
+                # Apply only the fields actually submitted; fall back to the
+                # persisted value so editing one field never blanks the others.
                 paapi.configure(
-                    p.get("access_key", ""),
-                    p.get("secret_key", ""),
-                    p.get("partner_tag", ""),
+                    p.get("access_key", _paapi_prior["access_key"]),
+                    p.get("secret_key", _paapi_prior["secret_key"]),
+                    p.get("partner_tag", _paapi_prior["partner_tag"]),
                 )
         # Persist API-key style settings to DB (survive restart). These calls
         # take _lock themselves, so they must stay OUTSIDE the block above.
+        for pid, key in _scraper_saved.items():
+            if pid in amazon._SCRAPER_PROVIDERS and key is not None:
+                _set_setting("scraper.key." + pid, key)
         if isinstance(p, dict):
-            _set_setting("paapi.access_key", p.get("access_key", ""))
-            _set_setting("paapi.secret_key", p.get("secret_key", ""))
-            _set_setting("paapi.partner_tag", p.get("partner_tag", ""))
+            # Only persist the PA-API fields the operator actually submitted, so
+            # the masked (unchanged) fields are never overwritten with blanks.
+            for f in ("access_key", "secret_key", "partner_tag"):
+                if f in p:
+                    _set_setting("paapi.%s" % f, p.get(f) or "")
         s = body.get("social")
         if isinstance(s, dict):
             if "webhook" in s:
@@ -1298,8 +1339,44 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             for platform in social.PLATFORMS:
                 nk = social._key(platform)
                 if nk in (s.get("keys") or {}):
-                    _set_setting("social.key." + nk, (s.get("keys") or {}).get(nk) or "")
+                    _set_setting("social.key." + nk,
+                                 (s.get("keys") or {}).get(nk) or "")
+            # Twitter / X needs four credentials; the apikeys form posts them
+            # under keys["twitter.client_id"] etc. Persist each distinctly so the
+            # native OAuth 1.0a signing gets the right value per slot.
+            tw = s.get("twitter") or {}
+            for f in ("client_id", "client_secret", "access_token", "access_token_secret"):
+                if f in tw:
+                    _set_setting("social.key.twitter.%s" % f, tw[f])
         return self._send(200, self._settings())
+
+    def _settings_test(self):
+        """Verifies the saved PA-API credentials against the live Product
+        Advertising API by looking up a well-known ASIN. Returns ok even before
+        the credentials really work only if we can't reach AWS (offline) — the
+        readiness flag comes from paapi.ready() either way."""
+        if not paapi.ready():
+            return self._send(200, {
+                "ok": False, "provider": "paapi",
+                "error": "PA-API not configured — save the three PA-API values first.",
+            })
+        try:
+            item = paapi.lookup("B08N5WRWNW")
+            if item and item.get("source") == "paapi":
+                return self._send(200, {
+                    "ok": True, "provider": "paapi",
+                    "detail": "AWS accepted keys (lookup of sample ASIN returned: %s)"
+                              % (item.get("title") or "ok"),
+                })
+            return self._send(200, {
+                "ok": False, "provider": "paapi",
+                "error": "AWS rejected the credentials or returned no item.",
+            })
+        except Exception as e:
+            return self._send(200, {
+                "ok": False, "provider": "paapi",
+                "error": "test failed: %s" % (str(e)[:200]),
+            })
 
     def _save_niche(self):
         body = self._body()
@@ -1955,6 +2032,14 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
         if group == "ai":
             out = ai.configure_runtime(key_id or "openai", key, body.get("model"),
                                        body.get("base"))
+            if out.get("ok"):
+                # persist so the key survives restart/redeploy (env still wins
+                # at read time, but a UI-pasted key must not vanish on deploy)
+                p = (key_id or "openai").strip().lower()
+                _set_setting("ai.key." + p, key)
+                _set_setting("ai.model." + p, str(body.get("model") or "").strip())
+                if body.get("base"):
+                    _set_setting("ai.base." + p, str(body.get("base")).strip())
             return self._send(200, out)
         if group == "site":
             if key_id == "indexnow":
@@ -1981,6 +2066,7 @@ $("key").addEventListener("keydown", e => {{ if (e.key === "Enter") $("save").on
         if group == "scraper":
             if key_id in amazon._SCRAPER_PROVIDERS:
                 amazon.set_scraper_key(key_id, key)
+                _set_setting("scraper.key." + key_id, key)
                 return self._send(200, {"ok": True, "provider": key_id})
         return self._send(200, {"ok": False, "error": "unknown key"})
 
@@ -3722,21 +3808,33 @@ fresh();
         s = self._settings()["social"]
         pa_fields = [
             ("access_key", "Client key", "AWS access key",
-             _get_setting("paapi.access_key")),
+             _get_setting("paapi.access_key"), "paapi.access_key"),
             ("secret_key", "Secret key", "AWS secret key",
-             _get_setting("paapi.secret_key")),
+             _get_setting("paapi.secret_key"), "paapi.secret_key"),
             ("partner_tag", "Partner tag", "Associates tag, e.g. pstore-20",
-             _get_setting("paapi.partner_tag")),
+             _get_setting("paapi.partner_tag"), "paapi.partner_tag"),
         ]
         pa_rows = "".join(
             '<label>%s <input type="password" name="%s" value="%s" placeholder="%s" '
-            'autocomplete="off"></label>' % (lbl, n, seo._clean(v), ph)
-            for n, lbl, ph, v in pa_fields)
+            'autocomplete="off" data-masked="1" data-skey="%s"></label>'
+            % (lbl, n, self._maskkv(n, skey), ph, skey)
+            for n, lbl, ph, v, skey in pa_fields)
         key_rows = "".join(
             '<label>%s <input type="password" name="key_%s" value="%s" '
             'placeholder="API key/token" autocomplete="off" data-masked="1"></label>'
             % (seo._clean(p), seo._clean(social._key(p)), self._maskkv(social._key(p)))
             for p in social.PLATFORMS)
+        tw_meta = [
+            ("twitter.client_id", "Consumer key (API key)", "Twitter client_id"),
+            ("twitter.client_secret", "Consumer secret (API secret)", "client_secret"),
+            ("twitter.access_token", "Access token", "access_token"),
+            ("twitter.access_token_secret", "Access token secret", "access_token_secret"),
+        ]
+        tw_rows = "".join(
+            '<label>%s <input type="password" name="key_%s" value="%s" '
+            'placeholder="%s" autocomplete="off" data-masked="1" data-tw="1"></label>'
+            % (lbl, f, self._maskkv(f, "social.key.twitter.%s" % f), ph)
+            for f, lbl, ph in tw_meta)
         webhook_val = seo._clean(_get_setting("social.webhook"))
         pa_ready = "✅ ready" if pa["ready"] else "⚠️ incomplete — add the three PA-API values"
         body = f"""<!DOCTYPE html>
@@ -3754,7 +3852,9 @@ fresh();
 <p class="hint">Status: {pa_ready}. Enables official, richer product lookups instead of the public scraper. Get these at the Amazon Associates <b>Product Advertising API</b> console.</p>
 <form class="cols-form" id="fpa" onsubmit="return pa_save();">
   {pa_rows}
-  <div class="row"><button class="btn">Save PA-API</button><span id="paout" class="msg"></span></div>
+  <div class="row"><button class="btn">Save PA-API</button>
+  <button type="button" class="btn" onclick="pa_test();">Test PA-API</button>
+  <span id="paout" class="msg"></span></div>
 </form>
 </section>
 <section class="card"><h2>📣 Social publishing keys</h2>
@@ -3762,6 +3862,8 @@ fresh();
 <form class="cols-form" id="fsoc" onsubmit="return soc_save();">
   <label>Webhook URL <input type="url" name="webhook" value="{webhook_val}" placeholder="https://hook.example/hook (Zapier/Make)"></label>
   {key_rows}
+  <h3>Twitter / X (optional, 4 fields)</h3>
+  <div class="row">{tw_rows}</div>
   <div class="row"><button class="btn">Save social keys</button><span id="socout" class="msg"></span></div>
 </form>
 </section>
@@ -3773,28 +3875,35 @@ async function post(url, data){{
   const r = await fetch(url, {{method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify(data)}});
   return r.json().catch(()=>({{ok:false}}));
 }}
-function only_when_filled(n){{
-  const el = document.querySelector('[name="'+n+'"]');
-  return el && el.value ? el.value : "";
+function collect_filled(sel){{
+  const d = {{}};
+  document.querySelectorAll(sel).forEach(el => {{
+    const key = el.name.replace(/^key_/, "");
+    if (el.value && el.value.indexOf("•") === -1) d[key] = el.value;
+  }});
+  return d;
 }}
 async function pa_save(){{
   $("paout").textContent = "Saving…";
-  const d = await post("/api/settings", {{paapi: {{
-    access_key: only_when_filled("access_key"),
-    secret_key: only_when_filled("secret_key"),
-    partner_tag: only_when_filled("partner_tag")
-  }}}});
+  const pa = collect_filled("#fpa input[data-masked]");
+  const d = await post("/api/settings", {{paapi: pa}});
   $("paout").textContent = d && d.ok ? "Saved ✓" : ((d && d.error) || "Save failed");
+  return false;
+}}
+async function pa_test(){{
+  $("paout").textContent = "Testing…";
+  const d = await post("/api/settings/test", {{paapi: true}});
+  $("paout").textContent = d && d.ok ? ("Test ✓ " + (d.detail || "")) : ((d && d.error) || "Test failed");
   return false;
 }}
 async function soc_save(){{
   $("socout").textContent = "Saving…";
-  const keys = {{}};
-  const els = document.querySelectorAll("#fsoc input[data-masked]");
-  els.forEach(el => {{ if (el.value && el.value.indexOf("•") === -1) keys[el.name.replace(/^key_/, "")] = el.value; }});
+  const keys = collect_filled("#fsoc input[data-masked]:not([data-tw])");
+  const twitter = collect_filled("#fsoc input[data-tw]");
   const d = await post("/api/settings", {{social: {{
     webhook: document.querySelector('[name="webhook"]').value,
-    keys: keys
+    keys: keys,
+    twitter: twitter
   }}}});
   $("socout").textContent = d && d.ok ? "Saved ✓" : ((d && d.error) || "Save failed");
   return false;
@@ -3803,10 +3912,10 @@ async function soc_save(){{
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
-    def _maskkv(self, key):
+    def _maskkv(self, key, skey=None):
         """Short masked placeholder for an already-stored key so existing values
         aren't echoed in plaintext in the form."""
-        v = _get_setting("social.key." + key)
+        v = _get_setting(skey or ("social.key." + key))
         return (v[:4] + "••••") if v else "paste API key/token"
 
     def _admin_opportunities(self, q):
