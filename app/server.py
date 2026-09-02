@@ -2616,12 +2616,11 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
         body = (d.get("body") or "").replace("\n", "<br>")
         link = d.get("link") or "/lp/" + slug
         when = (d.get("published_at") or d.get("created_at") or "").split(" ")[0]
+        desc = (("%s · pstore" % keyword)[:160]) if keyword else title
+        head = seo._head(title, desc, "/social/%s/%s" % (slug, code),
+                         "/social/%s/%s" % (slug, code), noindex=True)
         page = f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{seo._clean(title)} · pstore</title>
-<link rel="stylesheet" href="/style.css">
-<meta name="robots" content="noindex,nofollow">
-</head><body>
+<html lang="en"><head>{head.decode("utf-8")}</head><body>
 <header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
 <nav><a href="/">Home</a><a href="/blog">Blog</a><a href="/n/{seo._clean(slug)}">Full review</a></nav></header>
 <main class="wrap" style="max-width:720px;margin:0 auto;padding:24px">
@@ -2831,12 +2830,22 @@ document.addEventListener("click", (e)=>{{
     def _admin_seo(self):
         """SEO audit hub: indexability of every saved niche + site-level config."""
         audit = self._seo_audit_payload()
+        with _lock:
+            _conn = _db()
+            try:
+                active_subs = _conn.execute(
+                    "SELECT COUNT(*) c FROM subscribers WHERE confirmed=1 AND unsubscribed=0"
+                ).fetchone()["c"]
+            finally:
+                _conn.close()
         strip = (
             '<div class="feature"><h3>%d</h3><p class="hint">niches saved</p></div>'
             '<div class="feature"><h3>%d</h3><p class="hint">fully indexable</p></div>'
             '<div class="feature"><h3>%d</h3><p class="hint">need work</p></div>'
+            '<div class="feature"><h3>%d</h3><p class="hint">active subscribers</p></div>'
             '<div class="feature"><h3>%s</h3><p class="hint">Search Console token</p></div>'
             % (audit["count"], audit["indexable"], audit["needs_work"],
+               active_subs,
                "✓ set" if audit["google_verification"] else "—"))
         rows = ""
         for r in audit["niches"]:
@@ -2866,6 +2875,19 @@ document.addEventListener("click", (e)=>{{
                      '<a href="/keys/site/indexnow">/keys/site/indexnow ↗</a></p></div>'
                      '<div class="feature"><h3>✓</h3><p class="hint">Sitemap submit<br>'
                      '<a href="/keys">all keys hub ↗</a></p></div></div>')
+        engine_link = lambda name, url: (
+            '<tr><td>%s</td><td class="key ct"><a href="%s" target="_blank" rel="noopener">%s ↗</a></td>'
+            '<td class="key ct" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent)" '
+            'title="click to copy">%s</td></tr>'
+            % (name, seo._clean(url), name, seo._clean(audit['sitemap'])))
+        engines = ("".join([
+            engine_link("Google Search Console",
+                        "https://search.google.com/search-console?resource_id=" + urllib.parse.quote(audit['site_url'], safe="")
+                        + "&hl=en"),
+            engine_link("Bing / IndexNow", "https://www.bing.com/indexnow"),
+            engine_link("Yandex Webmaster", "https://webmaster.yandex.com/"),
+            engine_link("Yahoo (via Bing)", "https://www.bing.com/webmasters"),
+        ]))
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SEO audit — pstore</title><link rel="stylesheet" href="/style.css">
@@ -2883,6 +2905,11 @@ document.addEventListener("click", (e)=>{{
 <p class="hint" style="margin-top:10px">Search Console owner token: {gsc_state}</p>
 <p class="hint" style="margin-top:6px">Sitemap <a href="{seo._clean(audit['sitemap'])}">{seo._clean(audit['sitemap'])}</a> · Robots <a href="{seo._clean(audit['robots'])}">{seo._clean(audit['robots'])}</a> · Canonical base <code>{seo._clean(audit['site_url'])}</code></p>
 {site_keys}
+<div class="sub"><h3>🚀 Push to the engines now</h3>
+<p class="hint">Ping IndexNow with every live URL ({audit['count']} niches → {len(self._all_urls())} URLs). Bing, Yandex, Naver & Seznam crawl in minutes. To also reach Google, verify ownership via <a href="/keys/site/gsc">/keys/site/gsc</a> and submit the sitemap in Search Console.</p>
+<button id="submitNow" class="warm">▶ Submit all URLS to IndexNow</button>
+<p id="inmsg" class="msg"></p>
+<div class="table-wrap"><table class="plain"><thead><tr><th>Engine</th><th>Console / submit</th><th>Sitemap to submit (click to copy)</th></tr></thead><tbody>{engines}</tbody></table></div></div>
 </section>
 <section class="card"><h2>📄 Per-niche checks</h2>
 <p class="hint" style="margin-top:-4px">Green = passes the live-page rule. Red = the page is served with that gap today. Titles 30–60 chars, descriptions 70–160.</p>
@@ -2891,6 +2918,17 @@ document.addEventListener("click", (e)=>{{
 </tr></thead><tbody>{rows}</tbody></table></div></section>
 </main>
 <footer><p>Audit reflects the live pages, not aspirational settings. Set the Search Console and IndexNow keys under <a href="/keys">Keys ↗</a> — pick <code>PSTORE_GOOGLE_SITE_VERIFICATION</code> env or save it there for the running process.</p></footer>
+<script>
+const $=s=>document.getElementById(s);
+if ($("submitNow")) $("submitNow").onclick = async () => {{
+  const m = $("inmsg"); m.textContent = "Submitting all URLs…"; m.className = "msg";
+  let d, r;
+  try {{ r = await fetch("/api/indexnow", {{method:"POST", headers:{{"Content-Type":"application/json"}}, body:"{{}}"}}); d = await r.json(); }}
+  catch(e) {{ m.textContent = "✗ Could not reach the server."; return; }}
+  m.textContent = (d.ok ? "✓ IndexNow " : "✗ ") + (d.message || "");
+  m.className = d.ok ? "msg" : "msg";
+}};
+</script>
 <script src="/table-flow.js" defer></script>
 {_TOTOP}
 </body></html>"""

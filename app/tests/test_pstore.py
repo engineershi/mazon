@@ -966,6 +966,11 @@ class TestRoutes(unittest.TestCase):
         self.assertIn(firstline, html)
         self.assertIn("noindex", html)
         self.assertIn("keto", html.lower())
+        # full social-rich preview meta on the public post page
+        self.assertIn('property="og:title"', html)
+        self.assertIn('property="og:description"', html)
+        self.assertIn('name="twitter:card"', html)
+        self.assertIn('rel="canonical"', html)
         # admin social page's live links point at the post page, not /lp/
         st, _, _, body = self._raw("/admin/social?keyword=keto+snacks", cookie=self.cookie)
         self.assertEqual(st, 200)

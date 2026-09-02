@@ -172,6 +172,13 @@ class TestSemSeoSite(unittest.TestCase):
         self.assertIn('href="/keys/site/gsc"', html)
         self.assertIn('href="/keys/site/indexnow"', html)
         self.assertIn('href="/keys"', html)
+        # push-to-engines controls
+        self.assertIn('id="submitNow"', html)
+        self.assertIn("IndexNow", html)
+        self.assertIn("search.google.com/search-console", html)
+        self.assertIn("Yandex", html)
+        self.assertIn("Bing", html)
+        self.assertIn("active subscribers", html)
 
     def test_admin_sem_page(self):
         kw = self._pick_niche()
