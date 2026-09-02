@@ -46,6 +46,7 @@ import seo
 import security
 import sem
 import social
+import publish
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
@@ -209,6 +210,28 @@ def _refresh_all_worker(kws):
             pass
 
 
+def _publish_key_getter():
+    """Wire the persisted social API keys (from the /admin/apikeys settings KV)
+    into the native posting gateway. Maps composer platform key -> settings key."""
+    def kv(ns, name):
+        return _get_setting("social.key." + ns, "")
+    return kv
+
+
+def _publish_native(kits):
+    """Best-effort native per-platform posting for a batch of kits. Uses the
+    keys the operator pasted on /admin/apikeys; platforms without keys report
+    'skipped' (so the caller falls back to the webhook). Never raises. Returns
+    the list of publish results so callers can count real posts."""
+    if not kits:
+        return []
+    return publish.publish_batch(list(kits), _publish_key_getter())
+
+
+def _native_posted_count(results):
+    return sum(1 for r in results or [] if r and r.get("ok") and r.get("via") == "native")
+
+
 def _webhook_fire(kits):
     """Module-level, background, fire-and-forget SOCIAL_WEBHOOK POST for each
     kit (used by the timer loop; the HTTP handler uses its own instance method
@@ -251,9 +274,24 @@ def _flush_due_social(hook=None, now=None):
                     "scheduled_at=NULL WHERE id=?", (stamp, r["id"]))
             conn.commit()
             conn.close()
-        if due and hook:
-            hook([{"platform": r["platform"], "name": r["name"] or "",
-                   "body": r["body"] or "", "link": r["link"] or ""} for r in due])
+        # Try native per-platform posting with the operator's pasted keys; only
+        # the platforms that had no creds (skipped) fall through to the webhook.
+        due_kits = [{"platform": r["platform"], "name": r["name"] or "",
+                     "body": r["body"] or "", "link": r["link"] or "",
+                     "slug": r["slug"] or ""} for r in due]
+        webhook_kits = due_kits
+        try:
+            if due_kits:
+                results = _publish_native(due_kits)
+                posted = {str(r.get("slug")) + "|" + str(r.get("platform"))
+                          for r in results if r.get("ok") and r.get("via") == "native"}
+                if posted:
+                    webhook_kits = [k for k in due_kits
+                                    if (str(k.get("slug")) + "|" + str(k.get("platform"))) not in posted]
+        except Exception:
+            webhook_kits = due_kits
+        if webhook_kits and hook:
+            hook(webhook_kits)
         with _lock:
             conn = _db()
             pending = conn.execute(
@@ -2309,7 +2347,7 @@ if (inp) inp.addEventListener("keydown", e => {{ if (e.key === "Enter" && saveBt
                      kit["link"], c["code"], now))
             conn.commit()
             conn.close()
-        self._webhook_publish([kit])
+        self._publish_kits_best_effort([kit])
         _, stats = self._social_db(keyword, slug, None)
         return self._send(200, {"ok": True, "post": kit,
                                 "clicks": c["clicks"], "stats": stats})
@@ -3018,6 +3056,25 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                                 "published": published, "stats": stats,
                                 "webhook": webhook})
 
+    def _publish_kits_best_effort(self, kits):
+        """Publish kits: native per-platform POST with pasted keys first; any
+        platform without creds (skipped) falls back to the webhook. Never raises
+        and never blocks the response. Returns the native results."""
+        if not kits:
+            return []
+        results = []
+        try:
+            results = _publish_native(kits)
+            posted = {str(r.get("slug")) + "|" + str(r.get("platform"))
+                      for r in results if r.get("ok") and r.get("via") == "native"}
+            fallback = [k for k in kits
+                        if (str(k.get("slug")) + "|" + str(k.get("platform"))) not in posted]
+        except Exception:
+            fallback = list(kits)
+        if fallback:
+            self._webhook_publish(fallback)
+        return results
+
     def _webhook_publish(self, kits):
         """Fire-and-forget SOCIAL_WEBHOOK POSTs for each published kit, so
         Zapier/Make/browser tools (or a future native API) can post for real.
@@ -3080,10 +3137,11 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                     ids.append(cur.lastrowid)
             conn.commit()
             conn.close()
-        self._webhook_publish(pick_list)
+        results = self._publish_kits_best_effort(pick_list)
         _, stats = self._social_db(keyword, slug, kits)
         return self._send(200, {"ok": True, "published": len(ids), "posts": pick_list,
                                 "stats": stats, "webhook": bool(self._webhook_url()),
+                                "native": _native_posted_count(results),
                                 "keyword": keyword})
 
     def _schedule_times(self, count, hours=24):
