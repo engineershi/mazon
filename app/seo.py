@@ -408,7 +408,7 @@ ordering — deals change constantly.</p></div>
     return head + body + _footer()
 
 
-def render_niche(keyword, niche, saved_niches=None):
+def render_niche(keyword, niche, saved_niches=None, ab_headline=None, ab_variant=0):
     """Crawlable niche page in the answer-first review layout: breadcrumbs,
     byline, human intro, ranked picks with honest pros/cons, comparison table,
     methodology + trust, FAQ, related niches."""
@@ -431,13 +431,15 @@ def render_niche(keyword, niche, saved_niches=None):
     og = BASE_URL + "/og/" + _slugify(keyword)
     head = _head(title, desc, canonical, canonical, jsonld=jsonld, og_image=og,
                  noindex=not bool(items))
+    headline = ab_headline or ("Best %s: ranked picks" % keyword)
+    ab_attr = (' data-variant="%s"' % ab_variant) if ab_variant else ""
     body = f"""
 <header id="top"><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
 <nav><a href="/">🏠 Home</a><a href="/about">About</a><a href="/disclosure">Disclosure</a><a href="/lp/{_clean(_slugify(keyword))}">One-pager →</a></nav></header>
-<main data-niche="{_clean(_slugify(keyword))}" data-source="niche" data-keyword="{_clean(keyword)}">
+<main data-niche="{_clean(_slugify(keyword))}" data-source="niche" data-keyword="{_clean(keyword)}"{ab_attr}>
 <div class="card">
   {editorial.breadcrumbs_html(keyword)}
-  <h1>Best {_clean(keyword)}: ranked picks</h1>
+  <h1>{_clean(headline)}</h1>
   {editorial.byline_html(keyword, items, best) if best else ""}
   <p class="lede">{_clean(editorial.intro(keyword, items))}</p>
   {editorial.trust_block_html()}

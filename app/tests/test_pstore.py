@@ -558,6 +558,21 @@ class TestRoutes(unittest.TestCase):
         conn.close()
         return status, location, set_cookie, data
 
+    @classmethod
+    def _raw_json(cls, path, payload, cookie=None):
+        """POST a JSON body (proper Content-Type) and return (status, body)."""
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", cls.PORT, timeout=5)
+        headers = {"Content-Type": "application/json"}
+        if cookie:
+            headers["Cookie"] = cookie
+        conn.request("POST", path, body=json.dumps(payload).encode("utf-8"), headers=headers)
+        resp = conn.getresponse()
+        status = resp.status
+        data = resp.read()
+        conn.close()
+        return status, data
+
     def _get(self, path, cookie=None):
         if cookie is None:
             cookie = self.cookie
@@ -862,6 +877,41 @@ class TestRoutes(unittest.TestCase):
         self.assertIn("Earnings", html)
         self.assertIn("est. commission", html)
         self.assertIn("/api/earnings/config", html)
+
+    def test_variants_page_and_save(self):
+        import json as _json
+        # save an A/B variant for the keto niche
+        st, body = self._raw_json(
+            "/api/variants/save",
+            {"slug": "keto-snacks", "variants": [
+                {"variant": 1, "variant_headline": "Keto snacks in 12 picks, compared",
+                 "enabled": 1}]},
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        d = _json.loads(body)
+        self.assertTrue(d["ok"], d)
+        # variants admin page lists it
+        st, _, _, body = self._raw("/admin/variants?keyword=keto+snacks", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn("keto-snacks", html)
+        self.assertIn("variant", html.lower())
+        # a niche page served with the variant carries data-variant + headline
+        st, _, _, body = self._raw("/n/keto-snacks")
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn('data-variant="1"', html)
+        self.assertIn("Keto snacks in 12 picks", html)
+        # auth gate on save
+        st, _, _, _ = self._raw("/api/variants/save", "POST",
+                                body=b'{"slug":"x","variants":[]}')
+        self.assertEqual(st, 401)
+
+    def test_render_niche_with_ab_headline(self):
+        html = seo.render_niche("keto snacks", {"products": []}, ab_headline="Custom A/B H1",
+                            ab_variant=2)
+        self.assertIn("Custom A/B H1", html.decode("utf-8", "replace"))
+        self.assertIn('data-variant="2"', html.decode("utf-8", "replace"))
 
     def test_tools_workbench_payload(self):
         import json as _json

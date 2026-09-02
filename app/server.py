@@ -278,6 +278,14 @@ def _db():
         note TEXT,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS niche_variants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL,
+        variant INTEGER DEFAULT 1,
+        headline TEXT,
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
     cms_mod.ensure_tables(conn)
     return conn
 
@@ -595,6 +603,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 {chip('/admin/emails', '📧 Emails', 'emails')}
 {chip('/admin/ebooks', '📕 Ebooks', 'ebooks')}
 {chip('/admin/analytics', '📊 Analytics', 'analytics')}
+{chip('/admin/variants', '⚗️ A/B Tests', 'variants')}
 {chip('/admin/social', '📣 Social', 'social')}
 {chip('/admin/sem', '🎯 SEM', 'sem')}
 {chip('/admin/seo', '🔍 SEO', 'seo')}
@@ -620,6 +629,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
                  btn("/admin/emails", "📧 Email capture & auto-send", "opt-in"),
                  btn("/admin/ebooks", "📕 AI ebook generator", "PDF lead magnet"),
                  btn("/admin/analytics", "📊 Click tracking & analytics", "beacons"),
+                 btn("/admin/variants", "⚗️ A/B headline tests", "per-niche split test"),
                  btn("/admin/social", "📣 Social publishing", "tracked posts"),
                  btn("/admin/sem", "🎯 Search funnel (SEM)", "long-tail growth"),
                  btn("/admin/seo", "🔍 SEO audit", "indexability + schema"),
@@ -811,6 +821,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_emails(q)
             if path == "/admin/analytics":
                 return self._admin_analytics()
+            if path == "/admin/variants":
+                return self._admin_variants(q)
             if path == "/admin/social":
                 return self._admin_social(q)
             if path == "/admin/sem":
@@ -968,6 +980,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._earnings_config()
             if parsed.path == "/api/earnings/log":
                 return self._earnings_log()
+            if parsed.path == "/api/variants/save":
+                return self._variants_save()
             if parsed.path == "/api/ai/models":
                 return self._ai_models()
             if parsed.path == "/api/ai/config":
@@ -1164,14 +1178,34 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
     def _landing(self):
         return seo.render_landing(self._all_niches())
 
+    def _variant_for(self, slug):
+        """Deterministic per-visitor A/B headline: stable by client hash so a
+        visitor always sees the same headline variant, but the cohort splits.
+        Returns (headline, variant_index) or (None, 0) when no variants set."""
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT variant, headline FROM niche_variants "
+                "WHERE lower(slug)=? AND enabled=1 "
+                "AND headline IS NOT NULL AND headline != '' "
+                "ORDER BY variant ASC", (slug.lower(),)).fetchall()
+            conn.close()
+        if not rows:
+            return None, 0
+        idx = int(security.ip_token(self._client_ip()) or "0", 16) % len(rows)
+        rows.sort(key=lambda r: r["variant"])
+        return rows[idx]["headline"], rows[idx]["variant"]
+
     def _niche_page(self, path, q):
         slug = path[len("/n/"):].rstrip("/") or "niche"
         all_niches = self._all_niches()
         for n in all_niches:
             try:
                 if slug == seo._slugify(n["keyword"]):
-                    return self._send(200, seo.render_niche(n["keyword"], n, saved_niches=all_niches),
-                                      "text/html; charset=utf-8")
+                    headline, vno = self._variant_for(slug)
+                    res = seo.render_niche(n["keyword"], n, saved_niches=all_niches,
+                                           ab_headline=headline, ab_variant=vno)
+                    return self._send(200, res, "text/html; charset=utf-8")
             except Exception:
                 continue
         return self._send(404, seo.render_niche(slug, {"products": [], "source": ""}),
@@ -3898,6 +3932,118 @@ if ($("r_save")) $("r_save").onclick = async () => {{
             conn.commit()
             conn.close()
         return self._send(200, {"ok": True})
+
+    def _admin_variants(self, q):
+        """A/B headline split-tests: per-niche alternative H1s. Variants are
+        served deterministically per visitor (stable A/B split) and every click
+        on the page is tagged ab-<variant> in analytics so you can pick a
+        winner by conversion, not vibes."""
+        keyword = (q.get("keyword") or [""])[0].strip()
+        niches = self._all_niches()
+        row = []
+        for n in niches:
+            s = seo._slugify(n["keyword"])
+            if keyword and s != seo._slugify(keyword):
+                continue
+            with _lock:
+                conn = _db()
+                vars_ = conn.execute(
+                    "SELECT * FROM niche_variants WHERE lower(slug)=? ORDER BY variant ASC",
+                    (s.lower(),)).fetchall()
+                click_by = dict(conn.execute(
+                    "SELECT content, COUNT(*) c FROM clicks WHERE lower(slug)=? AND content LIKE 'ab-%' "
+                    "GROUP BY content", (s.lower(),)).fetchall())
+                conn.close()
+            vrows = ""
+            if not vars_:
+                vrows = ('<tr data-slug="%s"><td class="vno">1</td><td><input class="vhead" placeholder="Alternative headline (e.g. %s in %d picks, compared)" value=""></td>'
+                         '<td class="ct">—</td><td><label><input type="checkbox" class="ven" checked> on</label></td></tr>'
+                         % (seo._clean(s), seo._clean(n["keyword"].title()), len(n.get("products") or [])))
+            else:
+                for v in vars_:
+                    key = "ab-%s" % v["variant"]
+                    vrows += ('<tr data-slug="%s"><td class="vno">%s</td><td><input class="vhead" value="%s"></td>'
+                              '<td class="ct">%d</td><td><label><input type="checkbox" class="ven" %s> on</label></td></tr>'
+                              % (seo._clean(s), v["variant"], seo._clean(v["headline"] or ""),
+                                 click_by.get(key, 0), "checked" if v["enabled"] else ""))
+            row.append('<section class="card" data-keyword="%s"><h2>%s <span class="hint">(/%s)</span></h2>'
+                       '<div class="table-wrap"><table class="plain"><thead><tr><th>Variant</th><th>Headline</th>'
+                       '<th>Clicks</th><th>On</th></tr></thead><tbody>%s</tbody></table></div>'
+                       '<p class="msg"></p><button class="warm">Save variants</button></section>'
+                       % (seo._clean(s), seo._clean(n["keyword"].title()), seo._clean(s), vrows))
+        if not row:
+            row = ['<p class="hint">No niches yet — mine one on the dashboard first.</p>']
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A/B headline tests — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+</head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>A/B <span>headline tests.</span></h1>
+<p class="tagline">Give each niche alternative H1s. Visitors are split ~50/50 deterministically, and clicks carry an <code>ab-&lt;variant&gt;</code> tag so you pick the winner by conversion.</p></div>
+{self._admin_nav('variants')}
+</header>
+<main>
+{'<section class="card"><p class="hint">Filtering by keyword: %s. <a href="/admin/variants">Show all →</a></p></section>' % seo._clean(keyword) if keyword else ''}
+{''.join(row)}
+</main>
+<footer><p>Leave a variant empty to disable it. The control (default) headline is always shown when no variants are set. Winner-takes-CTA after you see enough clicks.</p></footer>
+<script>
+const $$=s=>Array.prototype.slice.call(document.querySelectorAll(s));
+$$(".card[data-keyword]").forEach(function(card){{
+  var btn=card.querySelector("button");
+  if(!btn) return;
+  btn.onclick=async function(){{
+    var rows=card.querySelectorAll("tr[data-slug]");
+    var payload={{slug:card.getAttribute("data-keyword"),variants:[]}};
+    rows.forEach(function(tr){{
+      var v=parseInt(tr.querySelector(".vno").textContent,10)||1;
+      var head=tr.querySelector(".vhead").value.trim();
+      var on=tr.querySelector(".ven").checked?1:0;
+      payload.variants.push({{variant:v,variant_headline:head,enabled:on}});
+    }});
+    var m=card.querySelector(".msg"); m.className="msg"; m.textContent="Saving…";
+    try{{
+      var r=await fetch("/api/variants/save",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});
+      var d=await r.json(); m.textContent=d.ok?"✓ Saved.":("✗ "+(d.error||"failed"));
+    }}catch(e){{ m.textContent="✗ Could not reach the server."; }}
+  }};
+}});
+</script>
+<script src="/table-flow.js" defer></script>
+{_TOTOP}
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _variants_save(self):
+        """Admin: upsert a niche's headline variants."""
+        body = self._body()
+        slug = str(body.get("slug") or "").strip().lower()[:120]
+        variants = body.get("variants") or []
+        if not slug:
+            return self._send(200, {"ok": False, "error": "Missing slug."})
+        cleaned = []
+        for v in variants:
+            if not isinstance(v, dict):
+                continue
+            try:
+                no = int(v.get("variant") or 1)
+            except (TypeError, ValueError):
+                no = 1
+            head = str(v.get("variant_headline") or "").strip()[:160]
+            enabled = int(bool(v.get("enabled")))
+            cleaned.append((no, head, enabled))
+        with _lock:
+            conn = _db()
+            conn.execute("DELETE FROM niche_variants WHERE lower(slug)=?", (slug,))
+            for no, head, enabled in cleaned:
+                if head:
+                    conn.execute(
+                        "INSERT INTO niche_variants (slug, variant, headline, enabled) "
+                        "VALUES (?,?,?,?)", (slug, no, head, enabled))
+            conn.commit()
+            conn.close()
+        return self._send(200, {"ok": True, "saved": len([c for c in cleaned if c[1]])})
 
 
 def main():

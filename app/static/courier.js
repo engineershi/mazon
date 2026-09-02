@@ -12,6 +12,11 @@
   var params = new URLSearchParams(location.search || "");
   var utmSource = params.get("utm_source") || "";
   var utmContent = params.get("utm_content") || "";
+  /* A/B headline variant (set by the server on <main data-variant>: stick the
+     variant id into click attribution even when there is no UTM content, so the
+     analytics report can score which headline converts. */
+  var abVariant = main ? main.getAttribute("data-variant") || "" : "";
+  if (!utmContent && abVariant) utmContent = "ab-" + abVariant;
 
   /* ---- email opt-in: <form class="courier">, POST /subscribe, JSON ---- */
   document.addEventListener("submit", function (ev) {
