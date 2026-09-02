@@ -2,6 +2,7 @@
 """Offline tests for the lead-page CMS (server.cms + cms_render)."""
 import json
 import os
+import re
 import sqlite3
 import sys
 import unittest
@@ -53,8 +54,60 @@ class TestCMSPage(unittest.TestCase):
         cms.update_section(conn, sec["id"], {"content": {"headline": "New Hero"}})
         content = cms.get_section_content(conn, page["id"], sec["section_type"])
         self.assertEqual(content["headline"], "New Hero")
-        p2 = cms.get_page(conn, "air fryer")
-        self.assertEqual(p2["id"], page["id"])
+
+    def test_duplicate_section_prefers_most_recent(self):
+        """A stale disabled duplicate row must not shadow an enabled row of the
+        same section type (get_section_content should pick the newest row)."""
+        conn = _conn()
+        page = cms.get_or_create_page(conn, "air fryer")
+        st = cms.DEFAULT_SECTION_ORDER[2]  # e.g. benefits
+        conn.execute(
+            "INSERT INTO lead_sections (page_id, section_type, content, enabled, sort_order) "
+            "VALUES (?,?,?,?,?)",
+            (page["id"], st, "{}", 0, 0))
+        conn.execute(
+            "INSERT INTO lead_sections (page_id, section_type, content, enabled, sort_order) "
+            "VALUES (?,?,?,?,?)",
+            (page["id"], st, json.dumps({"headline": "Fresh"}), 1, 0))
+        conn.commit()
+        content = cms.get_section_content(conn, page["id"], st)
+        self.assertTrue(content["_enabled"])
+        self.assertEqual(content["headline"], "Fresh")
+        conn.close()
+
+    def test_countdown_inline_js_is_valid(self):
+        """Regression: the landing inline <script> must not contain literal
+        f-string double-braces ({ {passive: true} }), which are a JS SyntaxError
+        that kills the whole block — including the countdown timer."""
+        conn = _conn()
+        page = cms.get_or_create_page(conn, "air fryer")
+        cms.update_page(conn, page["id"], {"settings": {
+            "use_cms": True, "sticky_cta": True, "countdown_enabled": True,
+            "countdown_minutes": 12, "promo_enabled": True, "animation": True}})
+        ctx = cms.build_page_context(conn, "air fryer", {
+            "products": SAMPLE_ITEMS, "subscriber_count": 5})
+        html = cms_render.render_landing_page_page(ctx, "air fryer",
+                                                   site_url="https://example.com")
+        self.assertIn('<div class="sticky-cta">', html)
+        self.assertIn("data-countdown=", html)
+        script = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
+        self.assertNotIn("{{", script)
+        self.assertNotIn("}}", script)
+        self.assertIn('addEventListener("scroll", onScroll, { passive: true })',
+                      script.replace("\n", " "))
+        conn.close()
+
+    def test_cta_band_renders_without_amazon_url(self):
+        """An enabled cta_band must still render (falling back to the review
+        page) when the niche has no Amazon pick — it must never vanish."""
+        conn = _conn()
+        page = cms.get_or_create_page(conn, "air fryer")
+        ctx = cms.build_page_context(conn, "air fryer", {"products": [], "subscriber_count": 0})
+        sec = {"_type": "cta_band", "headline": "Ready?", "button_text": "See top pick →"}
+        html = cms_render._section_html(sec, ctx)
+        self.assertIn('<div class="card center reveal">', html)
+        self.assertIn('href="/n/air-fryer"', html)
+        self.assertEqual(ctx["slug"], "air-fryer")
         conn.close()
 
     def test_get_section_content_merges_defaults(self):

@@ -491,7 +491,15 @@ def _section_html(section, ctx):
         sub = section.get("subheadline", "")
         btn = section.get("button_text", "See top pick →")
         if not amazon_url:
-            return ""
+            # No live Amazon pick yet — still render the card (with the niche's
+            # review page as the target) so an enabled section never vanishes.
+            fallback = "/n/" + (ctx.get("slug") or "")
+            return f"""
+  <div class="card center reveal">
+    <h2>{e(head)}</h2>
+    <p class="muted">{e(sub)}</p>
+    <a class="cta" href="{e(fallback)}" rel="noopener">{e(btn)}</a>
+  </div>"""
         return f"""
   <div class="card center reveal">
     <h2>{e(head)}</h2>
@@ -548,13 +556,13 @@ def render_landing_page_page(context, keyword, site_url=None):
     if sticky:
         sticky_js = """  /* sticky floating CTA after the hero is gone */
   var bar = document.querySelector(".sticky-cta");
-  if (bar) {{
+  if (bar) {
     var hero = document.querySelector("main .hero") || document.querySelector(".wrap");
     var threshold = hero ? hero.offsetTop + hero.offsetHeight : 360;
-    function onScroll() {{ document.body.classList.toggle("show-sticky", window.scrollY > threshold); }}
-    window.addEventListener("scroll", onScroll, {{ passive: true }});
+    function onScroll() { document.body.classList.toggle("show-sticky", window.scrollY > threshold); }
+    window.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
-  }}"""
+  }"""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>

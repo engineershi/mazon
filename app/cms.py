@@ -433,9 +433,14 @@ def get_sections(conn, page_id):
 
 
 def get_section_content(conn, page_id, section_type):
-    """Get merged content for a section type (CMS override + defaults)."""
+    """Get merged content for a section type (CMS override + defaults).
+
+    If duplicate rows exist for the same (page, type), prefer the most recently
+    inserted one (highest id) — this keeps a stale disabled duplicate from
+    shadowing an enabled row and matches the row the editor last wrote."""
     row = conn.execute(
-        "SELECT * FROM lead_sections WHERE page_id=? AND section_type=?",
+        "SELECT * FROM lead_sections WHERE page_id=? AND section_type=? "
+        "ORDER BY id DESC LIMIT 1",
         (page_id, section_type)).fetchone()
     defaults = _DEFAULT_SECTIONS.get(section_type, {})
     if row:
@@ -486,7 +491,8 @@ def update_section(conn, section_id, data):
 def upsert_section(conn, page_id, section_type, content=None, enabled=True, sort_order=0):
     """Insert or update a section for a page."""
     row = conn.execute(
-        "SELECT id FROM lead_sections WHERE page_id=? AND section_type=?",
+        "SELECT id FROM lead_sections WHERE page_id=? AND section_type=? "
+        "ORDER BY id DESC LIMIT 1",
         (page_id, section_type)).fetchone()
     if row:
         update_section(conn, row["id"], {
@@ -557,6 +563,7 @@ def build_page_context(conn, keyword, niche_data):
         "asin": "",
         "amazon_url": "",
         "product_title": "",
+        "slug": _slug(keyword),
     }
     if pick:
         ctx["asin"] = pick.get("asin", "")
