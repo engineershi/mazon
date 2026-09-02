@@ -238,6 +238,32 @@ def _flush_due_social(hook=None, now=None):
         return 0, 0
 
 
+def _get_setting(key, default=""):
+    try:
+        with _lock:
+            conn = _db()
+            row = conn.execute("SELECT value FROM settings WHERE key=?",
+                               (key,)).fetchone()
+            conn.close()
+    except Exception:
+        return default
+    return row["value"] if row else default
+
+
+def _set_setting(key, value):
+    try:
+        with _lock:
+            conn = _db()
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value or ""))
+            conn.commit()
+            conn.close()
+    except Exception:
+        pass
+
+
 def _social_flush_loop(interval=60):
     """Daemon: flush due scheduled posts automatically every `interval` seconds
     so owners don't have to click Flush. Stops when interval <= 0."""
@@ -304,6 +330,10 @@ def _db():
         conn.commit()
     except Exception:
         pass
+    conn.execute("""CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS boosts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         slug TEXT NOT NULL,
@@ -367,6 +397,16 @@ def _init():
     with _lock:
         conn = _db()
         conn.close()
+    # Restore API keys/settings persisted via the UI (env still wins at
+    # read time): PA-API creds and the social webhook survive restarts.
+    try:
+        paapi.configure(
+            _get_setting("paapi.access_key"),
+            _get_setting("paapi.secret_key"),
+            _get_setting("paapi.partner_tag"),
+        )
+    except Exception:
+        pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -456,6 +496,13 @@ class Handler(BaseHTTPRequestHandler):
             "affiliate_tag": amazon.AFFILIATE_TAG,
             "scraper": amazon.scraper_status(),
             "paapi": paapi.status(),
+            "social": {
+                "webhook": bool(_get_setting("social.webhook")),
+                "keys": {
+                    social._key(platform): bool(_get_setting("social.key." + social._key(platform)))
+                    for platform in social.PLATFORMS
+                },
+            },
             "marketing": market_engine.status_blurb(),
             "mailer": {
                 "configured": mailer.configured(),
@@ -675,6 +722,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 {chip('/admin/emails', '📧 Emails', 'emails')}
 {chip('/admin/ebooks', '📕 Ebooks', 'ebooks')}
 {chip('/admin/analytics', '📊 Analytics', 'analytics')}
+{chip('/admin/apikeys', '🔌 API Keys', 'apikeys')}
 {chip('/admin/variants', '⚗️ A/B Tests', 'variants')}
 {chip('/admin/social', '📣 Social', 'social')}
 {chip('/admin/sem', '🎯 SEM', 'sem')}
@@ -895,6 +943,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_analytics()
             if path == "/admin/variants":
                 return self._admin_variants(q)
+            if path == "/admin/apikeys":
+                return self._admin_apikeys(q)
             if path == "/admin/social":
                 return self._admin_social(q)
             if path == "/admin/sem":
@@ -1130,6 +1180,20 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                     p.get("secret_key", ""),
                     p.get("partner_tag", ""),
                 )
+        # Persist API-key style settings to DB (survive restart). These calls
+        # take _lock themselves, so they must stay OUTSIDE the block above.
+        if isinstance(p, dict):
+            _set_setting("paapi.access_key", p.get("access_key", ""))
+            _set_setting("paapi.secret_key", p.get("secret_key", ""))
+            _set_setting("paapi.partner_tag", p.get("partner_tag", ""))
+        s = body.get("social")
+        if isinstance(s, dict):
+            if "webhook" in s:
+                _set_setting("social.webhook", s.get("webhook") or "")
+            for platform in social.PLATFORMS:
+                nk = social._key(platform)
+                if nk in (s.get("keys") or {}):
+                    _set_setting("social.key." + nk, (s.get("keys") or {}).get(nk) or "")
         return self._send(200, self._settings())
 
     def _save_niche(self):
@@ -3297,6 +3361,101 @@ fresh();
     def _sem_api(self, q):
         keyword = (q.get("keyword") or [""])[0].strip()
         return self._send(200, self._sem_payload(keyword))
+
+    def _admin_apikeys(self, q):
+        """One page to paste third-party API keys via the UI (no env/restart
+        needed): PA-API (official Amazon product data) and per-platform social
+        posting keys + webhook. Values persist to DB and survive restarts."""
+        pa = paapi.status()
+        s = self._settings()["social"]
+        pa_fields = [
+            ("access_key", "Client key", "AWS access key",
+             _get_setting("paapi.access_key")),
+            ("secret_key", "Secret key", "AWS secret key",
+             _get_setting("paapi.secret_key")),
+            ("partner_tag", "Partner tag", "Associates tag, e.g. pstore-20",
+             _get_setting("paapi.partner_tag")),
+        ]
+        pa_rows = "".join(
+            '<label>%s <input type="password" name="%s" value="%s" placeholder="%s" '
+            'autocomplete="off"></label>' % (lbl, n, seo._clean(v), ph)
+            for n, lbl, ph, v in pa_fields)
+        key_rows = "".join(
+            '<label>%s <input type="password" name="key_%s" value="%s" '
+            'placeholder="API key/token" autocomplete="off" data-masked="1"></label>'
+            % (seo._clean(p), seo._clean(social._key(p)), self._maskkv(social._key(p)))
+            for p in social.PLATFORMS)
+        webhook_val = seo._clean(_get_setting("social.webhook"))
+        pa_ready = "✅ ready" if pa["ready"] else "⚠️ incomplete — add the three PA-API values"
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API Keys — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+</head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Paste your <span>API keys</span> once.</h1>
+<p class="tagline">No env vars, no restart. Keys are stored on this instance and used on the next request.</p></div>
+{self._admin_nav('apikeys')}
+</header>
+<main>
+<section class="card"><h2>🛒 Amazon PA-API (official product data)</h2>
+<p class="hint">Status: {pa_ready}. Enables official, richer product lookups instead of the public scraper. Get these at the Amazon Associates <b>Product Advertising API</b> console.</p>
+<form class="cols-form" id="fpa" onsubmit="return pa_save();">
+  {pa_rows}
+  <div class="row"><button class="btn">Save PA-API</button><span id="paout" class="msg"></span></div>
+</form>
+</section>
+<section class="card"><h2>📣 Social publishing keys</h2>
+<p class="hint">Per-platform {len(social.PLATFORMS)} keys power native posting. Leave blank to skip that platform. Enable native posting by pasting each platform's API key/token here; real posting also fires <code>SOCIAL_WEBHOOK</code> if set.</p>
+<form class="cols-form" id="fsoc" onsubmit="return soc_save();">
+  <label>Webhook URL <input type="url" name="webhook" value="{webhook_val}" placeholder="https://hook.example/hook (Zapier/Make)"></label>
+  {key_rows}
+  <div class="row"><button class="btn">Save social keys</button><span id="socout" class="msg"></span></div>
+</form>
+</section>
+</main>
+<footer><p>Keys are stored locally on this install; the live AWS/social account credentials never leave your instance. API keys are shown masked; only overwrite a field to change it.</p></footer>
+<script>
+function $(id){{return document.getElementById(id);}}
+async function post(url, data){{
+  const r = await fetch(url, {{method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify(data)}});
+  return r.json().catch(()=>({{ok:false}}));
+}}
+function only_when_filled(n){{
+  const el = document.querySelector('[name="'+n+'"]');
+  return el && el.value ? el.value : "";
+}}
+async function pa_save(){{
+  $("paout").textContent = "Saving…";
+  const d = await post("/api/settings", {{paapi: {{
+    access_key: only_when_filled("access_key"),
+    secret_key: only_when_filled("secret_key"),
+    partner_tag: only_when_filled("partner_tag")
+  }}}});
+  $("paout").textContent = d && d.ok ? "Saved ✓" : ((d && d.error) || "Save failed");
+  return false;
+}}
+async function soc_save(){{
+  $("socout").textContent = "Saving…";
+  const keys = {{}};
+  const els = document.querySelectorAll("#fsoc input[data-masked]");
+  els.forEach(el => {{ if (el.value && el.value.indexOf("•") === -1) keys[el.name.replace(/^key_/, "")] = el.value; }});
+  const d = await post("/api/settings", {{social: {{
+    webhook: document.querySelector('[name="webhook"]').value,
+    keys: keys
+  }}}});
+  $("socout").textContent = d && d.ok ? "Saved ✓" : ((d && d.error) || "Save failed");
+  return false;
+}}
+</script>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _maskkv(self, key):
+        """Short masked placeholder for an already-stored key so existing values
+        aren't echoed in plaintext in the form."""
+        v = _get_setting("social.key." + key)
+        return (v[:4] + "••••") if v else "paste API key/token"
 
     def _admin_sem(self, q):
         niches = [n["keyword"] for n in self._all_niches()]

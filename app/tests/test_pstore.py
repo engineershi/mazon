@@ -937,9 +937,42 @@ class TestRoutes(unittest.TestCase):
         self.assertEqual(st, 200)
         d = json.loads(body)
         self.assertTrue(d["paapi"]["ready"])
+        # persisted to DB so it survives a restart (env still wins)
+        self.assertEqual(server._get_setting("paapi.access_key"), "AKIAX")
+        self.assertEqual(server._get_setting("paapi.partner_tag"), "tag-20")
         # auth gate
         st2, _ = self._raw_json("/api/settings", {"paapi": {}})
         self.assertEqual(st2, 401)
+
+    def test_social_settings_persist_keys_and_webhook(self):
+        # clear prior
+        server._set_setting("social.key.twitter", "")
+        server._set_setting("social.webhook", "")
+        payload = {
+            "social": {
+                "webhook": "https://hook.example/zap",
+                "keys": {"twitter": "token-ABC", "pinterest": ""},
+            }
+        }
+        st, body = self._raw_json("/api/settings", payload, cookie=self.cookie)
+        self.assertEqual(st, 200)
+        d = json.loads(body)
+        self.assertTrue(d["social"]["webhook"])
+        self.assertTrue(d["social"]["keys"]["twitter"])
+        # persisted
+        self.assertEqual(server._get_setting("social.webhook"), "https://hook.example/zap")
+        self.assertEqual(server._get_setting("social.key.twitter"), "token-ABC")
+
+    def test_admin_apikeys_page(self):
+        st, location, _, data = self._raw("/admin/apikeys")
+        self.assertEqual(st, 302)
+        self.assertTrue(location.startswith("/admin/login"))
+        st, _, _, data = self._raw("/admin/apikeys", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        html = data.decode("utf-8", "replace")
+        self.assertIn("PA-API", html)
+        self.assertIn('name="webhook"', html)
+        self.assertIn('name="access_key"', html)
 
     def test_seo_page_embeds_upsell_block(self):
         st, _, _, body = self._raw("/n/keto-snacks")
