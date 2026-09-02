@@ -134,6 +134,42 @@ class TestTopics(unittest.TestCase):
         if topics:
             self.assertIn("/n/keto-snacks/%s" % topics[0]["slug"], sitemap)
 
+    def test_opportunities_expose_longtail_tree(self):
+        # prove a click so the winner appears
+        with server._lock:
+            c = server._db()
+            c.execute("INSERT INTO clicks (slug, asin) VALUES ('keto-snacks', 'B0KETO')")
+            c.commit(); c.close()
+        orig = amazon.autosuggest
+        amazon.autosuggest = lambda kw, limit=12: ["keto snack bars", "b"]
+        try:
+            payload = server.Handler._opportunities_data(server.Handler.__new__(server.Handler))
+        finally:
+            amazon.autosuggest = orig
+        winner = next((w for w in payload["winners"]
+                       if w["slug"] == "keto-snacks"), None)
+        self.assertIsNotNone(winner)
+        self.assertIn("topic_count", winner)
+        self.assertIn("topic_urls", winner)
+        topics = server.Handler._topics_for(server.Handler.__new__(server.Handler), "keto-snacks")
+        if topics:
+            self.assertGreaterEqual(winner["topic_count"], 1)
+
+    def test_render_cache_is_hard_capped(self):
+        # cache stays hard-bounded even when every entry is unexpired, so a
+        # growing /n/ tree can't leak memory over time
+        orig = dict(server._render_cache)
+        server._render_cache.clear()
+        try:
+            ttl = 300.0
+            for i in range(430):
+                server._render_cache_put(("t", i), "<html>%d</html>" % i, ttl)
+            self.assertLessEqual(len(server._render_cache), 400)
+            self.assertIn(("t", 429), server._render_cache)
+        finally:
+            server._render_cache.clear()
+            server._render_cache.update(orig)
+
 
 if __name__ == "__main__":
     import unittest

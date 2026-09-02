@@ -114,6 +114,10 @@ def _render_cache_put(key, value, ttl):
             now = time.time()
             for k in [k for k, v in _render_cache.items() if v[0] < now]:
                 _render_cache.pop(k, None)
+            # still over the cap because everything is young -> evict oldest
+            while len(_render_cache) > 300:
+                oldest = min(_render_cache.items(), key=lambda kv: kv[1][0])
+                _render_cache.pop(oldest[0], None)
 
 
 def _refresh_stale_candidates(now):
@@ -1510,6 +1514,9 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             out.append({
                 "slug": w["slug"], "keyword": w["keyword"], "clicks": w["clicks"],
                 "unbuilt": len(terms), "suggestions": terms[:6],
+                "topic_count": len(self._topics_for(w["slug"])),
+                "topic_urls": ["/n/%s/%s" % (w["slug"], t["slug"])
+                               for t in self._topics_for(w["slug"])[:10]],
             })
         return {"winners": out,
                 "note": "Unbuilt terms are real Amazon autosuggestions around a proven winner — expand to auto-create those pages."}
@@ -3818,16 +3825,26 @@ async function soc_save(){{
         for w in winners:
             sugg = "".join("<li><code>%s</code></li>" % seo._clean(s)
                            for s in w["suggestions"][:6]) or "<li>none found</li>"
+            topics = w.get("topic_urls") or []
+            tree = ("<p class='hint'><b>%d long-tail page%s built</b>: %s</p>" %
+                    (w.get("topic_count", 0),
+                     "" if w.get("topic_count", 0) == 1 else "s",
+                     " · ".join("<a href='%s'>%s</a>" % (u, u.rsplit("/", 1)[-1])
+                                for u in topics[:6]) or "none yet")) if topics else \
+                "<p class='hint'><b>0 long-tail pages built</b> — layer them under this winner.</p>"
             cards.append(
                 '<div class="sub"><h3>%s <span class="who">· %d Amazon clicks</span></h3>'
                 '<p class="hint">Click through on <b>/%s</b> proves demand. %d related term%s not yet built:</p>'
                 '<ul class="pilos">%s</ul>'
+                '%s'
                 '<button class="warm grow" data-slug="%s">Build %d new page(s)</button>'
-                '<button class="warm lt" data-slug="%s">Build long-tail pages</button></div>'
+                '<button class="warm lt" data-slug="%s">%s</button></div>'
                 % (seo._clean(w["keyword"]), w["clicks"], seo._clean(w["slug"]),
-                   w["unbuilt"], "" if w["unbuilt"] == 1 else "s", sugg,
+                   w["unbuilt"], "" if w["unbuilt"] == 1 else "s", sugg, tree,
                    seo._clean(w["slug"]), min(6, max(w["unbuilt"], 1)),
-                   seo._clean(w["slug"])))
+                   seo._clean(w["slug"]),
+                   ("Build long-tail pages" if w.get("topic_count", 0) == 0
+                    else "+%d more long-tail page(s)" % min(6, w.get("topic_count", 0)))))
         winners_html = "".join(cards) or \
             '<p class="hint">No proven winners yet. Publish social posts and get pages indexed — clicks here become build targets.</p>'
         body = f"""<!DOCTYPE html>
