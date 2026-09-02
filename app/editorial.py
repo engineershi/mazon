@@ -49,6 +49,14 @@ def _median(values):
     return vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
 
 
+def _as_float(v):
+    try:
+        fv = float(v)
+        return fv if fv == fv else 0.0  # NaN guard
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _review_hum(reviews):
     if isinstance(reviews, (int, float)) and reviews >= 1000:
         return "%sk" % round(reviews / 1000.0)
@@ -74,7 +82,8 @@ def score_items(items):
         p = it.get("price")
         if isinstance(p, (int, float)) and med:
             s += max(min((med - p) / med, 1.0), -1.0)
-        scored.append((s, it.get("reviews") or 0, -(it.get("price") or 0.0), it))
+        p0 = _as_float(p)
+        scored.append((s, it.get("reviews") or 0, -p0, it))
     scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
     return [(t[3], t[0]) for t in scored]
 
@@ -283,6 +292,34 @@ def trust_block_html():
             '<a href="/contact">Contact</a>.</p></div>')
 
 
+def urgency_html():
+    """Conversion nudge under the verdict: prices are live and change often,
+    so the decision window is real."""
+    return ('<p class="hint urgency" data-ev="urgency"><b>Prices pulled live from '
+            'Amazon.</b> They change often and deals sell out — check the price '
+            'on Amazon before you order.</p>')
+
+
+def sticky_cta_html(keyword, best):
+    """Sticky bottom CTA that appears once the visitor scrolls past the picks:
+    hands them straight to the #1 pick's Amazon page. Returns '' when there's
+    no best pick to send to."""
+    if not (best or {}).get("url"):
+        return ""
+    url = best["url"]
+    title = best.get("title") or (keyword + " top pick")
+    price = _price(best)
+    lbl = "See it on Amazon"
+    if price:
+        lbl += " · %s" % price
+    return ('<div class="sticky-cta" data-niche="{0}" data-source="niche">'
+            '<p class="sticky-line">Our #1 pick for <b>{1}</b></p>'
+            '<a class="cta warm" href="{2}" data-beacon="{2}" data-ev="sticky">{3}</a>'
+            '</div>'.format(
+                _clean(_slug(keyword)), _clean(title)[:70],
+                url, _clean(lbl)))
+
+
 def pick_html(keyword, item, idx, items):
     badge, why = rank_badge(item, idx, items)
     price = _price(item)
@@ -378,6 +415,26 @@ def breadcrumb_jsonld(keyword):
         {"@type": "ListItem", "position": 1, "name": "Home", "item": BASE_URL + "/"},
         {"@type": "ListItem", "position": 2, "name": "%s picks" % keyword},
     ]}
+
+
+def item_list_jsonld(items, keyword):
+    """Ranked-item rich snippet: signals a curated list of top products."""
+    ranked = [it for it, _s in score_items(items)]
+    elements = []
+    for pos, it in enumerate(ranked[:10], start=1):
+        if not (it or {}).get("title"):
+            continue
+        url = it.get("url") or ""
+        elements.append({
+            "@type": "ListItem", "position": pos,
+            "name": it["title"],
+            "item": (url if url else ("/n/%s#%s" % (_slug(keyword), (it.get("asin") or pos)))),
+        })
+    if not elements:
+        return None
+    return {"@type": "ItemList",
+            "name": "Best %s ranked" % keyword,
+            "itemListElement": elements}
 
 
 def related_html(keyword, niches):

@@ -6,8 +6,8 @@ No Amazon API key required to start — you earn from day one with `?tag=` links
 ## Stack
 - Stdlib Python (`http.server`, `sqlite3`, `urllib`) — no framework, no install.
 - One file per concern: `amazon.py` (keyless product data), `niche.py`
-  (niche mining), `seo.py` (crawlable pages), `market_engine.py` (buyer-push
-  tools), `server.py` (HTTP).
+  (niche mining), `seo.py` (crawlable pages), `editorial.py` (ranked verdict
+  content + JSON-LD), `market_engine.py` (buyer-push tools), `server.py` (HTTP).
 
 ## Run
 ```
@@ -25,7 +25,8 @@ wins a session.
 
 ## Two parts
 - **Public site** — fully crawlable, no login: `/` landing, `/n/<niche>`
-  reviews, `/lp/<niche>` sales pages, about/legal, `sitemap.xml`, `robots.txt`.
+  reviews, `/n/<parent>/<term>` long-tail topic pages, `/lp/<niche>` sales
+  pages, about/legal, `sitemap.xml`, `robots.txt`.
 - **Admin section** — password-gated owner tools, reachable from `/admin`
   (login = `PSTORE_ADMIN_EMAIL` / `PSTORE_ADMIN_PASSWORD`). `/admin` shows a button to every
   page on the site (admin tools + every public page + API endpoints); it also
@@ -37,9 +38,20 @@ wins a session.
   a ScraperAPI / Outscraper / SerpAPI key in Settings for a proxy.
 - **Niche mining** — Amazon autosuggest demand proxy + saturation scoring.
 - **SEO pages** — saved niches get crawlable `/n/<slug>` pages with meta,
-  OpenGraph, JSON-LD, canonical; `sitemap.xml` + `robots.txt` auto-generated.
+  OpenGraph, JSON-LD (Product/ItemList/FAQ/Breadcrumb/Organization), canonical;
+  `sitemap.xml` + `robots.txt` auto-generated.
+- **Long-tail reach** — `/admin/opportunities` "Build long-tail pages" (or
+  `POST /api/topics/generate`) creates nested `/n/<parent>/<term>` pages from
+  live Amazon autosuggest terms (ranked ItemList schema, breadcrumbs, links
+  back to the parent hub), listed in the sitemap and pinged to IndexNow.
+- **Conversion on `/n/`** — public verdict pages carry reciprocal internal
+  links (`related`), a live-price urgency line, and a scroll/exit-intent sticky
+  "see on Amazon" CTA pointing at the #1 pick.
 - **Buyer-push tools** (`/tool`) — copy-paste affiliate text links, Markdown,
   email draft, social post; `/go/<ASIN>` short redirects to tagged Amazon.
+- **Native social publish** — `app/publish.py` posts saved kits straight to
+  X/Pinterest/Facebook/LinkedIn once you paste the platform app keys into
+  Settings (`/admin/apikeys`).
 
 ## Security
 - Rate limiting (per client login/API/global), a concurrency cap, 413/414 size

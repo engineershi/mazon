@@ -399,6 +399,14 @@ def _db():
         key TEXT PRIMARY KEY,
         value TEXT
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS topics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_slug TEXT NOT NULL,
+        term TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(parent_slug, slug)
+    )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS boosts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         slug TEXT NOT NULL,
@@ -1203,6 +1211,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._ai_config()
             if parsed.path == "/api/opportunities/expand":
                 return self._opportunities_expand()
+            if parsed.path == "/api/topics/generate":
+                return self._topics_generate()
             self._send(404, {"error": "not found"})
         except Exception as e:
             self._send(500, {"error": str(e)})
@@ -1426,6 +1436,59 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return n
         return ""
 
+    def _topics_for(self, parent_slug):
+        """Long-tail sub-pages for a parent niche, from the topics table."""
+        rows = []
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT term, slug, created_at FROM topics "
+                "WHERE parent_slug=? ORDER BY id ASC", (parent_slug,)).fetchall()
+            conn.close()
+        return [{"term": r["term"], "slug": r["slug"],
+                 "created_at": r["created_at"] or ""} for r in rows]
+
+    def _generate_topics(self, parent_slug, count=6):
+        """Create new long-tail /n/<parent>/<term> pages for a niche from live
+        Amazon autosuggest terms not yet built, and ping IndexNow. Returns the
+        list of new topics created (dicts)."""
+        parent_keyword = ""
+        niche = None
+        for n in self._all_niches():
+            if seo._slugify(n["keyword"]) == parent_slug:
+                parent_keyword = n["keyword"]
+                niche = n
+                break
+        if not parent_keyword:
+            return []
+        existing = {t["slug"] for t in self._topics_for(parent_slug)}
+        try:
+            ideas = amazon.autosuggest(parent_keyword, limit=12)
+        except Exception:
+            ideas = []
+        created = []
+        for idea in ideas:
+            if len(created) >= count:
+                break
+            term = (idea or "").strip().lower()
+            term_slug = seo._slugify(term)
+            if (not term or len(term) < 4 or term_slug == parent_slug
+                    or term_slug in existing):
+                continue
+            with _lock:
+                conn = _db()
+                conn.execute(
+                    "INSERT OR IGNORE INTO topics (parent_slug, term, slug) "
+                    "VALUES (?,?,?)", (parent_slug, term, term_slug))
+                conn.commit()
+                conn.close()
+            existing.add(term_slug)
+            created.append({"term": term, "slug": term_slug,
+                            "url": "/n/%s/%s" % (parent_slug, term_slug)})
+        if created and niche is not None:
+            self._fire_indexnow([c["url"] for c in created])
+        return created
+
     def _opportunities_data(self):
         """Compute the revenue-loop payload (winners + note) without emitting an
         HTTP response, so the page and the API share one source of truth."""
@@ -1501,6 +1564,23 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
         return self._send(200, {"ok": True, "seed": kw, "created": created,
                                 "count": len(created)})
 
+    def _topics_generate(self):
+        """Generate long-tail topic pages (/n/<parent>/<term>) for a niche from
+        live Amazon-autosuggest terms, saved to the topics table + IndexNow."""
+        body = self._body()
+        slug = str(body.get("slug") or "").strip().lower()
+        try:
+            count = int(body.get("count") or 6)
+        except (TypeError, ValueError):
+            count = 6
+        count = max(1, min(count, 6))
+        if not slug:
+            return self._send(400, {"error": "slug required"})
+        created = self._generate_topics(slug, count)
+        return self._send(200, {"ok": True, "parent": slug, "created": created,
+                                "count": len(created),
+                                "urls": [c["url"] for c in created]})
+
     def _sitemap(self):
         entries = [("/", "2026-08-28"), ("/blog", "2026-08-28")]
         for page in seo.STATIC_PAGES:
@@ -1517,6 +1597,13 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             lm = (r["created_at"] or "")[:10] or "2026-08-28"
             entries.append((f"/n/{kw}", lm))
             entries.append((f"/lp/{kw}", lm))
+        with _lock:
+            conn = _db()
+            tro = conn.execute("SELECT parent_slug, slug, created_at FROM topics").fetchall()
+            conn.close()
+        for t in tro:
+            lm = (t["created_at"] or "")[:10] or "2026-08-28"
+            entries.append((f"/n/{t['parent_slug']}/{t['slug']}", lm))
         return seo.render_sitemap(entries)
 
     def _landing(self):
@@ -1542,6 +1629,33 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
 
     def _niche_page(self, path, q):
         slug = path[len("/n/"):].rstrip("/") or "niche"
+        # Long-tail topic page: /n/<parent>/<term>
+        if "/" in slug:
+            parent_slug, term_slug = slug.split("/", 1)
+            all_niches = self._all_niches()
+            niche = None
+            for n in all_niches:
+                if seo._slugify(n["keyword"]) == parent_slug:
+                    niche = n
+                    break
+            term = ""
+            for t in self._topics_for(parent_slug):
+                if t["slug"] == term_slug:
+                    term = t["term"]
+                    break
+            if niche is not None and term:
+                # content-keyed cache so crawler storms don't re-render
+                key = ("/topic/", parent_slug, term_slug, seo._variant_key(niche))
+                cached = _render_cache_get(key) if amazon.CACHE_TTL > 0 else None
+                if cached is not None:
+                    return self._send_cached(cached, "text/html; charset=utf-8")
+                res = seo.render_topic(term, niche["keyword"], niche, parent_slug)
+                if amazon.CACHE_TTL > 0:
+                    _render_cache_put(key, res, RENDER_CACHE_DEFAULT_TTL)
+                    return self._send_cached(res, "text/html; charset=utf-8")
+                return self._send(200, res, "text/html; charset=utf-8")
+            return self._send(404, seo.render_niche(slug, {"products": [], "source": ""}),
+                              "text/html; charset=utf-8")
         aware = amazon.CACHE_TTL > 0  # tests set CACHE_TTL=0 -> bypass render cache
         try:
             ttl = float(_get_setting("render_cache_ttl") or RENDER_CACHE_DEFAULT_TTL)
@@ -3708,10 +3822,12 @@ async function soc_save(){{
                 '<div class="sub"><h3>%s <span class="who">· %d Amazon clicks</span></h3>'
                 '<p class="hint">Click through on <b>/%s</b> proves demand. %d related term%s not yet built:</p>'
                 '<ul class="pilos">%s</ul>'
-                '<button class="warm grow" data-slug="%s">Build %d new page(s)</button></div>'
+                '<button class="warm grow" data-slug="%s">Build %d new page(s)</button>'
+                '<button class="warm lt" data-slug="%s">Build long-tail pages</button></div>'
                 % (seo._clean(w["keyword"]), w["clicks"], seo._clean(w["slug"]),
                    w["unbuilt"], "" if w["unbuilt"] == 1 else "s", sugg,
-                   seo._clean(w["slug"]), min(6, max(w["unbuilt"], 1))))
+                   seo._clean(w["slug"]), min(6, max(w["unbuilt"], 1)),
+                   seo._clean(w["slug"])))
         winners_html = "".join(cards) or \
             '<p class="hint">No proven winners yet. Publish social posts and get pages indexed — clicks here become build targets.</p>'
         body = f"""<!DOCTYPE html>
@@ -3727,28 +3843,33 @@ async function soc_save(){{
 </header>
 <main>
 <section class="card"><h2>📈 Build on your winners</h2>
-<p class="hint">Each niche below already pulled real Amazon clicks. "Build" mines its related search terms live, saves new pockets as pages, and pings IndexNow so Google finds them fast.</p>
+<p class="hint">Each niche below already pulled real Amazon clicks. "Build" mines its related search terms live, saves new pockets as pages, and pings IndexNow so Google finds them fast. "Build long-tail pages" adds nested <code>/n/&lt;niche&gt;/&lt;term&gt;</code> URLs for even deeper reach.</p>
 <div class="cols">{winners_html}</div>
 <p id="out" class="msg"></p>
 </section>
 </main>
-<footer><p>New pages are created from live Amazon autosuggest terms around a proven niche — demand-driven, not guessed.</p></footer>
+<footer><p>New pages are created from live Amazon autosuggest terms around a proven niche — demand-driven, not guessed. Long-tail pages layer even more indexable URLs under each winner.</p></footer>
 <script>
 function $(id){{return document.getElementById(id);}}
-document.addEventListener("click", async (e)=>{{
-  const b = e.target.closest(".grow");
-  if (!b) return;
-  const old = b.textContent; b.disabled = true; b.textContent = "Building…";
+async function hit(url, slug, out, btn){{
+  const old = btn.textContent; btn.disabled = true;
   $("out").textContent = "Mining and creating pages…";
-  const r = await fetch("/api/opportunities/expand", {{method:"POST", headers:{{"Content-Type":"application/json"}},
-    body: JSON.stringify({{slug: b.dataset.slug, count: 6}})}});
+  const r = await fetch(url, {{method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify({{slug: slug, count: 6}})}});
   const d = await r.json().catch(()=>({{ok:false}}));
   if (d && d.ok) {{
-    $("out").textContent = "Created " + d.count + " page(s) from “" + d.seed + "”: " + d.created.map(x=>x.slug).join(", ");
+    $("out").textContent = "Created " + d.count + " from “" + (d.seed||d.parent) + "”: " +
+      (d.created.map(x=>x.slug||x.term).join(", "));
   }} else {{
     $("out").textContent = (d && (d.error || d.message)) || "Build failed.";
-    b.disabled = false; b.textContent = old;
+    btn.disabled = false; btn.textContent = old;
   }}
+}}
+document.addEventListener("click", async (e)=>{{
+  const grow = e.target.closest(".grow");
+  if (grow) return hit("/api/opportunities/expand", grow.dataset.slug, $("out"), grow);
+  const lt = e.target.closest(".lt");
+  if (lt) return hit("/api/topics/generate", lt.dataset.slug, $("out"), lt);
 }});
 </script>
 </body></html>"""

@@ -435,6 +435,9 @@ def render_niche(keyword, niche, saved_niches=None, ab_headline=None, ab_variant
         editorial.pick_html(keyword, it, idx, items)
         for idx, it in enumerate(score_order(items)))
     graph = _product_graph(items)
+    il = editorial.item_list_jsonld(items, keyword)
+    if il:
+        graph.append(il)
     if best:
         graph.append(editorial.faq_jsonld(keyword, best))
         graph.append(editorial.breadcrumb_jsonld(keyword))
@@ -455,6 +458,7 @@ def render_niche(keyword, niche, saved_niches=None, ab_headline=None, ab_variant
   {editorial.byline_html(keyword, items, best) if best else ""}
   <p class="lede">{_clean(editorial.intro(keyword, items))}</p>
   {editorial.trust_block_html()}
+  {editorial.urgency_html()}
   {editorial.faq_html(keyword, best) if best else ""}
   <h2>The ranked list</h2>
   {ranked}
@@ -463,6 +467,34 @@ def render_niche(keyword, niche, saved_niches=None, ab_headline=None, ab_variant
   {editorial.methodology_html()}
   {editorial.related_html(keyword, saved_niches) if saved_niches else ""}
 </div>
+{editorial.sticky_cta_html(keyword, best)}
+<style>
+.sticky-cta{{position:fixed;left:0;right:0;bottom:0;z-index:40;display:none;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:#14161a;border-top:1px solid #2a2e36;}}
+body.show-sticky .sticky-cta{{display:flex;}}
+.sticky-cta .sticky-line{{margin:0;color:#dfe3ea;font-size:13px;line-height:1.3;}}
+.sticky-cta .sticky-line b{{color:#fff;}}
+.sticky-cta .cta{{margin:0;color:#fff;text-decoration:none;font-weight:700;padding:12px 18px;border-radius:8px;white-space:nowrap;}}
+.urgency{{font-size:14px;}}
+</style>
+<script>
+(function(){{
+var s=document.querySelector(".sticky-cta");var t=null;var gate=document.querySelector('[data-role="upsell"]');
+function show(){{document.body.classList.add("show-sticky");}}
+function on(){{
+if(!s)return;
+var n=window.scrollY||document.documentElement.scrollTop;
+var m=gate?gate.getBoundingClientRect().top:2000;
+if(n>420||m<innerHeight){{show();}}
+else{{document.body.classList.remove("show-sticky");}}
+}}
+window.addEventListener("scroll",function(){{clearTimeout(t);t=setTimeout(on,120);}},{{passive:true}});
+window.addEventListener("load",on);on();
+/* exit-intent: cursor leaving the top of the viewport nudges the CTA even pre-scroll */
+document.documentElement.addEventListener("mouseout",function(e){{
+if(s&&!e.relatedTarget&&(e.clientY||0)<=0&&!document.body.classList.contains("show-sticky")){{show();}}
+}});
+}})();
+</script>
 {optin_html(keyword, "niche")}
 <script src="/courier.js" defer></script>
 <script src="/table-flow.js" defer></script>
@@ -473,6 +505,59 @@ def render_niche(keyword, niche, saved_niches=None, ab_headline=None, ab_variant
 
 def score_order(items):
     return [it for it, _s in editorial.score_items(items)]
+
+
+def render_topic(term, parent_keyword, niche, parent_slug):
+    """Long-tail page (/n/<parent>/<term>): reframes the parent niche's ranked
+    picks around a related autosuggest term so Google sees a distinct intent.
+    Shares the niche's product data (still relevant), URL-canonical for the term,
+    and links back to the parent hub. Each generated term is a unique indexable
+    URL — the core of the aggressive long-tail play."""
+    items = niche.get("products") or []
+    term_slug = _slugify(term)
+    canonical = "/n/%s/%s" % (_slugify(parent_keyword), term_slug)
+    title = "Best %s — Ranked From Live Amazon Data" % (term or parent_keyword)
+    desc = (f"Looking for the best {term}? The same live Amazon scoring — rating, "
+            f"review volume, price — that ranks the parent {parent_keyword} guide "
+            f"now points you straight at the top products for this {term} list.")
+    graph = []
+    il = editorial.item_list_jsonld(items, term or parent_keyword)
+    if il:
+        graph.append(il)
+    graph.extend(_product_graph(items))
+    if editorial.best_pick(items):
+        graph.append(editorial.breadcrumb_jsonld(term or parent_keyword))
+    graph.append(_org_jsonld())
+    jsonld = {"@context": "https://schema.org", "@graph": graph}
+    og = BASE_URL + "/og/" + (term_slug or _slugify(parent_keyword))
+    head = _head(title, desc, canonical, canonical, jsonld=jsonld, og_image=og,
+                 noindex=not bool(items))
+    ranked = "".join(editorial.pick_html(term or parent_keyword, it, idx, items)
+                     for idx, it in enumerate(score_order(items)))
+    hub = "/n/%s" % _slugify(parent_keyword)
+    body = f"""
+<header id="top"><h1><a href="/" style="color:var(--accent);text-decoration:none">{SITE_NAME}</a></h1>
+<nav><a href="/">🏠 Home</a><a href="{_clean(hub)}">{_clean(parent_keyword.title())}: hub →</a><a href="/disclosure">Disclosure</a></nav></header>
+<main data-niche="{_clean(term_slug)}" data-source="topic" data-keyword="{_clean(term or parent_keyword)}">
+<div class="card">
+  {editorial.breadcrumbs_html(term or parent_keyword)}
+  <h1>Best {_clean(term or parent_keyword)}</h1>
+  <p class="lede">You searched for the best {_clean(term or parent_keyword)}. Here are the same products our
+  {_clean(parent_keyword)} guide ranks — scored live on rating, review volume and price.</p>
+  {editorial.trust_block_html()}
+  <h2>Top {_clean(term or parent_keyword)} picks</h2>
+  {ranked}
+  {editorial.upsell_block(items, term or parent_keyword)}
+  {editorial.comparison_html(items) if items else ""}
+  {editorial.methodology_html()}
+  <p class="hint">This is a focused sub-topic of our <a href="{_clean(hub)}">full {_clean(parent_keyword)} guide</a>.</p>
+</div>
+{optin_html(term or parent_keyword, "niche")}
+<script src="/courier.js" defer></script>
+<script src="/table-flow.js" defer></script>
+</main>
+""".encode("utf-8")
+    return head + body + _footer()
 
 
 def indexable_urls(saved_niches, base_url=None):
