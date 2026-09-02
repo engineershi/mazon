@@ -724,6 +724,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 {chip('/admin/analytics', '📊 Analytics', 'analytics')}
 {chip('/admin/apikeys', '🔌 API Keys', 'apikeys')}
 {chip('/admin/opportunities', '📈 Grow', 'opportunities')}
+{chip('/admin/priority', '💰 Prioritize', 'priority')}
 {chip('/admin/variants', '⚗️ A/B Tests', 'variants')}
 {chip('/admin/social', '📣 Social', 'social')}
 {chip('/admin/sem', '🎯 SEM', 'sem')}
@@ -948,6 +949,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_apikeys(q)
             if path == "/admin/opportunities":
                 return self._admin_opportunities(q)
+            if path == "/admin/priority":
+                return self._admin_priority(q)
             if path == "/admin/social":
                 return self._admin_social(q)
             if path == "/admin/sem":
@@ -1029,6 +1032,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._boosts_api(q)
             if path == "/api/opportunities":
                 return self._opportunities(q)
+            if path == "/api/earnings/priority":
+                return self._earnings_priority(q)
             self._send(404, {"error": "not found"})
         except Exception as e:
             self._send(500, {"error": str(e)})
@@ -3638,6 +3643,47 @@ document.addEventListener("click", async (e)=>{{
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
+    def _admin_priority(self, q):
+        """Prioritize: the built niches with the highest projected commission go
+        first — they get the next social posts, ad boosts and index budget, so
+        money flows to the winners instead of being spread thin."""
+        d = self._earnings_priority_data()
+        rows = ""
+        for r in d["ranked"]:
+            rows += ('<div class="sub"><div class="rank">%s</div><h3>%s <span class="who">· %s</span></h3>'
+                     '<p class="hint">%d Amazon clicks → <b>$%.2f</b> est. commission (%d%% of today\'s projected total)</p></div>'
+                     % (d["ranked"].index(r) + 1, seo._clean(r["niche"]), "$%.2f" % r["score"],
+                        r["clicks"], r["commission_est"], round(r["share"] * 100)))
+        rows = ("<div class='cols'>%s</div>" % rows) if rows else \
+            '<p class="hint">No clicks yet. As Amazon clicks accumulate, the niches projected to earn the most rise to the top so you spend effort where money is.</p>'
+        real_html = ""
+        if d["real"].get("total_orders"):
+            real_html = ("<p class='hint'>Real Associates ledger: <b>%d orders · $%.2f earnings</b> across %d month(s)."
+                         % (d["real"]["total_orders"], d["real"]["total_earnings"],
+                            len(d["real"]["months"])))
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prioritize — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+<style>.cols .sub{{border-left:4px solid var(--brand, #e8710a);padding:12px 14px;margin:8px 0;}} .rank{{display:inline-block;min-width:1.4em;font-weight:700;color:#e8710a;}}</style>
+</head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Spend effort <span>where money is.</span></h1>
+<p class="tagline">{d["note"]}</p></div>
+{self._admin_nav('priority')}
+</header>
+<main>
+<section class="card"><h2>💰 Niches, ranked by projected commission</h2>
+<p class="hint">Formula: Amazon clicks × $avg order × % commission × order rate. Real logged earnings are shown too so you can sanity-check the model.</p>
+{rows}
+{real_html}
+<p id="out" class="msg"></p>
+</section>
+</main>
+<footer><p>Prioritization is earnings-driven: high-commission niches with real traffic outrank quiet ones, guiding your next social post, boost and index ping.</p></footer>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
     def _admin_sem(self, q):
         niches = [n["keyword"] for n in self._all_niches()]
         keyword = (q.get("keyword") or [""])[0].strip() or (niches[0] if niches else "")
@@ -4451,6 +4497,45 @@ if ($("r_save")) $("r_save").onclick = async () => {{
             conn.commit()
             conn.close()
         return self._send(200, {"ok": True})
+
+    def _earnings_priority_data(self):
+        """Compute the earnings-priority payload once, shared by the API and the
+        /admin/priority page so rankings never drift between the two."""
+        rows = []
+        with _lock:
+            conn = _db()
+            try:
+                rows = conn.execute(
+                    "SELECT lower(slug) AS slug, COUNT(*) AS clicks "
+                    "FROM clicks GROUP BY lower(slug)").fetchall()
+            finally:
+                conn.close()
+        def cat(r):
+            return ""
+        payload = earnings.priority_rows([
+            {"niche": r["slug"], "clicks": r["clicks"]} for r in rows], cat)
+        months = []
+        with _lock:
+            conn = _db()
+            try:
+                months = conn.execute(
+                    "SELECT month, orders, earnings FROM earnings_records "
+                    "ORDER BY month").fetchall()
+            finally:
+                conn.close()
+        real = earnings.monthly_summary([dict(m) for m in months])
+        return {
+            "ranked": payload["ranked"], "total_est": payload["total_est"],
+            "real": real,
+            "note": ("Ranked by estimated commission = clicks x $%.0f AOV x %.1f%% x %.1f%% order rate."
+                     % (earnings.avg_order(""), earnings.commission_pct(""),
+                        earnings.order_rate("") * 100))}
+
+    def _earnings_priority(self, q):
+        """Earnings-driven prioritization: rank every built niche by its projected
+        commission so the biggest money-levers (niches, social cadence, ad spend)
+        are clearly ordered. Uses real click counts x the tuned estimator."""
+        return self._send(200, self._earnings_priority_data())
 
     def _admin_variants(self, q):
         """A/B headline split-tests: per-niche alternative H1s. Variants are

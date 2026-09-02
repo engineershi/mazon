@@ -898,6 +898,37 @@ class TestRoutes(unittest.TestCase):
         self.assertIn("est. commission", html)
         self.assertIn("/api/earnings/config", html)
 
+    def test_earnings_priority_ranks_by_commission(self):
+        # seed clicks so keto-snacks outclicks best-fish-oil
+        with server._lock:
+            conn = server._db()
+            conn.execute("DELETE FROM clicks WHERE slug IN ('keto-snacks','best-fish-oil')")
+            for _ in range(9):
+                conn.execute("INSERT INTO clicks (slug, content) VALUES ('keto-snacks','ab-1')")
+            for _ in range(3):
+                conn.execute("INSERT INTO clicks (slug, content) VALUES ('best-fish-oil','ab-1')")
+            conn.commit()
+            conn.close()
+        st, _, _, data = self._raw("/api/earnings/priority", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        d = json.loads(data)
+        self.assertTrue(d["ranked"], d)
+        rank = {r["niche"]: r for r in d["ranked"]}
+        self.assertGreater(rank["keto-snacks"]["commission_est"],
+                           rank["best-fish-oil"]["commission_est"])
+        self.assertGreater(rank["keto-snacks"]["clicks"], rank["best-fish-oil"]["clicks"])
+        self.assertEqual(rank["keto-snacks"]["score"], rank["keto-snacks"]["commission_est"])
+        # auth gate
+        st2, _, _, _ = self._raw("/api/earnings/priority")
+        self.assertEqual(st2, 401)
+
+    def test_admin_priority_page(self):
+        st, _, _, data = self._raw("/admin/priority", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        html = data.decode("utf-8", "replace")
+        self.assertIn("Prioritize", html)
+        self.assertIn("commission", html)
+
     def test_variants_page_and_save(self):
         import json as _json
         # save an A/B variant for the keto niche

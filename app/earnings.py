@@ -115,3 +115,41 @@ def monthly_summary(months_data):
     total_earn = sum(d.get("earnings", 0.0) for d in months_data)
     return {"months": months_data, "total_orders": total_orders,
             "total_earnings": total_earn}
+
+
+def priority_rows(rows, category_for=None):
+    """Rank niches by estimated earnings for prioritization.
+
+    `rows` — sequence of dict/Row with `niche` (or `slug`) and `clicks`.
+    `category_for(row)` — optional fn returning the commission category; default
+    ''. Each niche's clicks are run through estimate() so its projected
+    commission (clicks * aov * pct * rate) is the ranking key — but we also
+    return the estimate fields so the operator can see exactly why.
+    Rows with zero clicks are excluded (nothing to prioritize yet)."""
+    category_for = category_for or (lambda r: "")
+    ranked = []
+    for r in rows:
+        niche = (str(r.get("niche") or r.get("slug") or "")).strip()
+        try:
+            clicks = int(r["clicks"] or 0)
+        except (TypeError, ValueError, KeyError):
+            clicks = 1
+        clicks = max(clicks, 0)
+        if not clicks:
+            continue
+        est = estimate(clicks, category_for(r))
+        ranked.append({
+            "niche": niche,
+            "clicks": clicks,
+            "commission_est": est["commission_est"],
+            "orders_est": est["orders_est"],
+            "gross_est": est["gross_est"],
+            "avg_order": est["avg_order"],
+            "commission_pct": est["commission_pct"],
+            "score": est["commission_est"],
+        })
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    total = sum(x["score"] for x in ranked)
+    for x in ranked:
+        x["share"] = (x["score"] / total) if total else 0.0
+    return {"ranked": ranked, "total_est": total}
