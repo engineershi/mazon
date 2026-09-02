@@ -843,9 +843,11 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 with open(os.path.join(STATIC, "index.html"), "rb") as fh:
                     return self._send(200, fh.read(), "text/html; charset=utf-8")
             if path == "/app.js":
-                return self._send(200, open(os.path.join(STATIC, "app.js"), "rb").read(), "application/javascript; charset=utf-8")
+                with open(os.path.join(STATIC, "app.js"), "rb") as fh:
+                    return self._send(200, fh.read(), "application/javascript; charset=utf-8")
             if path == "/style.css":
-                return self._send(200, open(os.path.join(STATIC, "style.css"), "rb").read(), "text/css; charset=utf-8")
+                with open(os.path.join(STATIC, "style.css"), "rb") as fh:
+                    return self._send(200, fh.read(), "text/css; charset=utf-8")
             if path == "/courier.js":
                 with open(os.path.join(STATIC, "courier.js"), "rb") as fh:
                     return self._send(200, fh.read(),
