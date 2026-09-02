@@ -329,6 +329,38 @@ class TestSocialSuite(unittest.TestCase):
             conn.close()
         self.assertEqual(due, "published")
         self.assertEqual(res["still_pending"], still)   # the rest remain queued
+
+    def test_auto_flush_module_function_due_only(self):
+        # queue via the API, then force one post past-due and call the
+        # handler-free module function (the timer path) with a captured hook.
+        st, _, _, data = self._raw(
+            "/api/social/schedule", "POST",
+            body=json.dumps({"keyword": "keto snacks", "platform": "all", "hours": 24}),
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        with server._lock:
+            conn = server._db()
+            kinfo = conn.execute(
+                "SELECT id FROM social_posts WHERE status='scheduled' "
+                "ORDER BY scheduled_at LIMIT 1").fetchone()
+            conn.execute("UPDATE social_posts SET scheduled_at='2000-01-01 00:00:00' "
+                         "WHERE id=?", (kinfo["id"],))
+            conn.commit()
+            conn.close()
+        fired = []
+        n, pending = server._flush_due_social(lambda kits: fired.extend(kits))
+        self.assertEqual(n, 1)
+        self.assertEqual(len(fired), 1)
+        self.assertTrue(fired[0]["platform"])
+        self.assertTrue(fired[0]["body"])
+        with server._lock:
+            conn = server._db()
+            st2 = conn.execute("SELECT status FROM social_posts WHERE id=?",
+                               (kinfo["id"],)).fetchone()["status"]
+            conn.close()
+        self.assertEqual(st2, "published")
+
+    def test_og_image_served_for_saved_niche(self):
         st, _, ctype, data = self._raw("/og/keto-snacks")
         self.assertEqual(st, 200)
         self.assertTrue(ctype.startswith("image/svg+xml"))

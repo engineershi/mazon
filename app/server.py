@@ -182,6 +182,70 @@ def _refresh_all_worker(kws):
             pass
 
 
+def _webhook_fire(kits):
+    """Module-level, background, fire-and-forget SOCIAL_WEBHOOK POST for each
+    kit (used by the timer loop; the HTTP handler uses its own instance method
+    so the request thread can reuse the same seam). Never raises."""
+    webhook = os.environ.get("SOCIAL_WEBHOOK", "") or _SOCIAL_WEBHOOK
+    if not webhook or not kits:
+        return
+
+    def fire():
+        for kit in kits:
+            try:
+                req = urllib.request.Request(
+                    webhook,
+                    data=json.dumps({"body": kit["body"], "link": kit["link"],
+                                     "platform": kit["platform"]}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    resp.read()
+            except Exception:
+                continue
+    threading.Thread(target=fire, daemon=True).start()
+
+
+def _flush_due_social(hook=None, now=None):
+    """Publish every due scheduled post. Returns (published_now, still_pending).
+    ``hook`` is a callable(kits) that fires real posting (webhook); it is invoked
+    once with the batch of due posts. Never raises."""
+    stamp = now or datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT id, slug, platform, name, body, link FROM social_posts "
+                "WHERE status='scheduled' AND scheduled_at IS NOT NULL "
+                "AND scheduled_at <= ? ORDER BY scheduled_at", (stamp,)).fetchall()
+            due = [dict(r) for r in rows]
+            for r in due:
+                conn.execute(
+                    "UPDATE social_posts SET status='published', published_at=?, "
+                    "scheduled_at=NULL WHERE id=?", (stamp, r["id"]))
+            conn.commit()
+            conn.close()
+        if due and hook:
+            hook([{"platform": r["platform"], "name": r["name"] or "",
+                   "body": r["body"] or "", "link": r["link"] or ""} for r in due])
+        with _lock:
+            conn = _db()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM social_posts WHERE status='scheduled'"
+            ).fetchone()["n"]
+            conn.close()
+        return len(due), pending
+    except Exception:
+        return 0, 0
+
+
+def _social_flush_loop(interval=60):
+    """Daemon: flush due scheduled posts automatically every `interval` seconds
+    so owners don't have to click Flush. Stops when interval <= 0."""
+    while True:
+        time.sleep(max(interval, 15))
+        _flush_due_social(_webhook_fire)
+
+
 def _db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -2847,31 +2911,8 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
     def _social_flush(self):
         """Publish every due scheduled post now: flip status->published, fire the
         webhook (spaced), and return what went out. Safe to call on a timer."""
-        now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        with _lock:
-            conn = _db()
-            rows = conn.execute(
-                "SELECT id, slug, platform, name, body, link FROM social_posts "
-                "WHERE status='scheduled' AND scheduled_at IS NOT NULL "
-                "AND scheduled_at <= ? ORDER BY scheduled_at", (now,)).fetchall()
-            due = [dict(r) for r in rows]
-            for r in due:
-                conn.execute(
-                    "UPDATE social_posts SET status='published', published_at=?, "
-                    "scheduled_at=NULL WHERE id=?", (now, r["id"]))
-            conn.commit()
-            conn.close()
-        if due:
-            self._webhook_publish([
-                {"platform": r["platform"], "name": r["name"] or "",
-                 "body": r["body"] or "", "link": r["link"] or ""} for r in due])
-        with _lock:
-            conn = _db()
-            pending = conn.execute(
-                "SELECT COUNT(*) AS n FROM social_posts WHERE status='scheduled'"
-            ).fetchone()["n"]
-            conn.close()
-        return self._send(200, {"ok": True, "published_now": len(due),
+        published_now, pending = _flush_due_social(self._webhook_publish)
+        return self._send(200, {"ok": True, "published_now": published_now,
                                 "still_pending": pending})
 
     def _admin_social(self, q):
@@ -4205,6 +4246,8 @@ def main():
         threading.Thread(target=_auto_refresh_loop, daemon=True).start()
         print("niche auto-refresh: every %ds, stale after %dm, %d/cycle"
               % (_REFRESH_INTERVAL_SEC, _REFRESH_STALE_MIN, _REFRESH_MAX_PER_CYCLE))
+    threading.Thread(target=_social_flush_loop, daemon=True).start()
+    print("social scheduler: auto-flush every 60s (due scheduled posts)")
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print("pstore running on http://localhost:%d" % PORT)
     try:
