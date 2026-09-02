@@ -168,6 +168,10 @@ class TestSemSeoSite(unittest.TestCase):
         self.assertIn("SEO", html)
         self.assertIn('id="top"', html)
         self.assertIn('class="totop"', html)
+        # links into the unified Keys hub for the site-level SEO keys
+        self.assertIn('href="/keys/site/gsc"', html)
+        self.assertIn('href="/keys/site/indexnow"', html)
+        self.assertIn('href="/keys"', html)
 
     def test_admin_sem_page(self):
         kw = self._pick_niche()

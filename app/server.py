@@ -2858,7 +2858,14 @@ document.addEventListener("click", (e)=>{{
         if not rows:
             rows = "<tr><td colspan='8' class='hint'>No saved niches yet — mine one on the dashboard.</td></tr>"
         gsc_state = ('<span style="color:#1e8e3e">Configured</span> — the site emits your google-site-verification meta.' if audit["google_verification"]
-                     else '<span style="color:#c0392b">Not set</span> — add <code>PSTORE_GOOGLE_SITE_VERIFICATION</code> to prove ownership to Search Console.')
+                     else '<span style="color:#c0392b">Not set</span> — prove Search Console ownership to get the site indexed.')
+        site_keys = ('<div class="row" style="align-items:stretch;margin-top:10px">'
+                     '<div class="feature"><h3>✓</h3><p class="hint">Search Console token<br>'
+                     '<a href="/keys/site/gsc">/keys/site/gsc ↗</a></p></div>'
+                     '<div class="feature"><h3>✓</h3><p class="hint">IndexNow key<br>'
+                     '<a href="/keys/site/indexnow">/keys/site/indexnow ↗</a></p></div>'
+                     '<div class="feature"><h3>✓</h3><p class="hint">Sitemap submit<br>'
+                     '<a href="/keys">all keys hub ↗</a></p></div></div>')
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SEO audit — pstore</title><link rel="stylesheet" href="/style.css">
@@ -2875,6 +2882,7 @@ document.addEventListener("click", (e)=>{{
 <div class="row" style="align-items:stretch">{strip}</div>
 <p class="hint" style="margin-top:10px">Search Console owner token: {gsc_state}</p>
 <p class="hint" style="margin-top:6px">Sitemap <a href="{seo._clean(audit['sitemap'])}">{seo._clean(audit['sitemap'])}</a> · Robots <a href="{seo._clean(audit['robots'])}">{seo._clean(audit['robots'])}</a> · Canonical base <code>{seo._clean(audit['site_url'])}</code></p>
+{site_keys}
 </section>
 <section class="card"><h2>📄 Per-niche checks</h2>
 <p class="hint" style="margin-top:-4px">Green = passes the live-page rule. Red = the page is served with that gap today. Titles 30–60 chars, descriptions 70–160.</p>
@@ -2882,7 +2890,7 @@ document.addEventListener("click", (e)=>{{
 <th>Niche</th><th>Products</th><th>Title</th><th>Desc</th><th>Schema</th><th>Share img</th><th>Word count</th><th>Status</th>
 </tr></thead><tbody>{rows}</tbody></table></div></section>
 </main>
-<footer><p>Audit reflects the live pages, not aspirational settings. Add PSTORE_GOOGLE_SITE_VERIFICATION to link Search Console ownership.</p></footer>
+<footer><p>Audit reflects the live pages, not aspirational settings. Set the Search Console and IndexNow keys under <a href="/keys">Keys ↗</a> — pick <code>PSTORE_GOOGLE_SITE_VERIFICATION</code> env or save it there for the running process.</p></footer>
 <script src="/table-flow.js" defer></script>
 {_TOTOP}
 </body></html>"""
