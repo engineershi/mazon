@@ -474,6 +474,48 @@ class TestCMSRoutes(unittest.TestCase):
             cookie=self.cookie)
         self.assertEqual(st, 200)
 
+    def test_cms_enabled_chrome_actually_renders(self):
+        """Positive case: when promo + countdown + sticky are ON, they must
+        appear in the live markup with the countdown timer fully wired."""
+        page_id = self._ensure_page("keto snacks")
+        st, _ = self._json_post(
+            "/api/cms/page",
+            {"page_id": page_id, "style": {"preset": "sunset"}, "settings": {
+                "use_cms": True, "pdf_gated": True, "email_gate_enabled": True,
+                "promo_enabled": True,
+                "promo": {"text": "Free shipping today", "code": "SAVE10"},
+                "countdown_enabled": True, "countdown_minutes": 12,
+                "countdown_headline": "Going fast", "countdown_done": "Done",
+                "sticky_cta": True, "animation": True}},
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        st, _ct, html_body = self._get("/lp/keto-snacks")
+        self.assertEqual(st, 200)
+        live = html_body.decode("utf-8", "replace")
+        self.assertIn('class="promo"', live)
+        self.assertIn("Free shipping today", live)
+        self.assertIn("SAVE10", live)
+        self.assertIn('data-countdown="12"', live)
+        self.assertIn("Going fast", live)
+        self.assertIn('class="cd-box"', live)
+        self.assertIn('data-cd="h"', live)
+        self.assertIn('data-cd="m"', live)
+        self.assertIn('data-cd="s"', live)
+        self.assertIn('[data-countdown]', live)   # inline countdown driver present
+        self.assertIn('<div class="sticky-cta">', live)
+        # restore defaults so sibling tests are unaffected
+        st, _ = self._json_post(
+            "/api/cms/page",
+            {"page_id": page_id, "style": {"preset": "sunset"}, "settings": {
+                "use_cms": True, "pdf_gated": True, "email_gate_enabled": True,
+                "promo_enabled": False,
+                "promo": {"text": "Free shipping", "code": "SAVE10"},
+                "countdown_enabled": False, "countdown_minutes": 30,
+                "countdown_headline": "", "countdown_done": "",
+                "sticky_cta": True, "animation": True}},
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+
     def test_landing_has_discreet_full_review_link(self):
         status, _c, body = self._raw("/lp/keto-snacks")
         self.assertEqual(status, 200)
