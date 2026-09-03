@@ -344,12 +344,118 @@ def _set_setting(key, value):
         pass
 
 
-def _social_flush_loop(interval=60):
+def _social_flush_loop(interval=60, amplify=True):
     """Daemon: flush due scheduled posts automatically every `interval` seconds
-    so owners don't have to click Flush. Stops when interval <= 0."""
+    so owners don't have to click Flush, then re-amplify proven winners.
+    Stops when interval <= 0."""
     while True:
         time.sleep(max(interval, 15))
         _flush_due_social(_webhook_fire)
+        if amplify:
+            try:
+                _auto_amplify_winners()
+            except Exception:
+                pass
+
+
+def _auto_amplify_winners(now=None):
+    """CLOSE THE SOCIAL LOOP: after posts go out and earn clicks, the top
+    performers are automatically re-queued to a future peak slot with their
+    SAME attribution code (so winners compound, cold ones stay dead).
+
+    This turns "winner/warm/cold" labels into an action. Re-scheduling keeps
+    the utm_content stable, so a winner's re-published links keep feeding
+    the same click tally.
+
+    Anti-loop guards (all tunable via settings):
+      * only published posts count as re-amplifiable candidates,
+      * a post must be older than `social.amplify.min_age_hours` (default 24),
+      * a post is re-queued at most `social.amplify.max_runs` times (default 2),
+      * per sweep we cap at `social.amplify.max_per_sweep` (default 3),
+      * a scheduled/queued copy is never double-amped (status must be 'published').
+
+    Feature gate: `social.amplify` unset (or 1/on/true/yes) => on; explicitly
+    ​0/off/false => disabled. Returns
+    {"requeued": n, "winners": [...], "queue": [...], "on": bool}."""
+    now = now or datetime.datetime.utcnow()
+    on_flag = _get_setting("social.amplify")
+    if on_flag != "" and str(on_flag).strip().lower() not in ("1", "on", "true", "yes"):
+        return {"requeued": 0, "winners": [], "queue": [], "on": False}
+    on = True
+    min_age_h = float(_get_setting("social.amplify.min_age_hours") or 24)
+    max_runs = int(_get_setting("social.amplify.max_runs") or 2)
+    cap = int(_get_setting("social.amplify.max_per_sweep") or 3)
+    window_h = float(_get_setting("social.amplify.window_hours") or 48)
+    then = now - datetime.timedelta(hours=min_age_h)
+    age_stamp = then.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT id, slug, keyword, platform, name, body, link, utm_content, "
+                "published_at, COALESCE(amplify_count,0) amp "
+                "FROM social_posts "
+                "WHERE status='published' AND published_at IS NOT NULL "
+                "AND published_at <= ? AND utm_content != ''",
+                (age_stamp,)).fetchall()
+            stats = {}
+            for r in rows:
+                stats[r["id"]] = conn.execute(
+                    "SELECT COUNT(*) c FROM clicks WHERE lower(slug)=? AND content=?",
+                    (r["slug"], r["utm_content"])).fetchone()["c"]
+            conn.close()
+    except Exception:
+        return {"requeued": 0, "winners": [], "queue": [], "on": on}
+    best = max(stats.values(), default=0)
+    cands = []
+    for r in rows:
+        clicks = stats.get(r["id"]) or 0
+        is_winner = clicks > 0 and (best == 0 or clicks == best) or \
+            (best > 0 and clicks >= max(1, int(best * 0.5)))
+        if is_winner and (r["amp"] or 0) < max_runs:
+            cands.append((clicks, r))
+    cands.sort(key=lambda t: (-t[0], t[1]["platform"]))
+    queue = cands[:cap]
+
+    def snap_peak(t, delta_hours):
+        if t.hour in SOCIAL_PEAK_SLOTS:
+            return t
+        bl = t
+        bd = 25
+        for h in SOCIAL_PEAK_SLOTS:
+            for day in (0, 1):
+                cand = t.replace(hour=h, minute=0, second=0, microsecond=0) \
+                    + datetime.timedelta(days=day)
+                dist = (cand - t).total_seconds() / 3600.0
+                if 0 <= dist <= bd and dist <= float(delta_hours):
+                    bd = dist
+                    bl = cand
+        return bl
+
+    times = []
+    for i in range(len(queue)):
+        delta = float(window_h) * (i + 1) / float(max(len(queue), 1))
+        times.append(snap_peak(now + datetime.timedelta(hours=delta), delta)
+                     .strftime("%Y-%m-%d %H:%M:%S"))
+    requeued = 0
+    winners_out = []
+    try:
+        with _lock:
+            conn = _db()
+            for (clicks, r), at in zip(queue, times):
+                amp = int(r["amp"] or 0) + 1
+                conn.execute(
+                    "UPDATE social_posts SET status='scheduled', scheduled_at=?, "
+                    "name=?, body=?, link=?, amplify_count=? WHERE id=?",
+                    (at, r["name"], r["body"], r["link"], amp, r["id"]))
+                requeued += 1
+                winners_out.append({"slug": r["slug"], "platform": r["platform"],
+                                    "clicks": clicks, "amp": amp, "next": at})
+            conn.commit()
+            conn.close()
+    except Exception:
+        pass
+    return {"requeued": requeued, "winners": winners_out, "queue": queue, "on": on}
 
 
 def _db():
@@ -421,6 +527,16 @@ def _db():
         conn.commit()
     except Exception:
         pass
+    try:
+        conn.execute("ALTER TABLE social_posts ADD COLUMN amplify_count INTEGER DEFAULT 0")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE sent_emails ADD COLUMN subject_variant INTEGER DEFAULT 0")
+        conn.commit()
+    except Exception:
+        pass
     conn.execute("""CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT
@@ -486,6 +602,26 @@ def _db():
         enabled INTEGER DEFAULT 1,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS email_subjects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        keyword TEXT NOT NULL,
+        email_index INTEGER NOT NULL,
+        variant INTEGER DEFAULT 1,
+        subject TEXT,
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(keyword, email_index, variant)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS social_captions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        variant INTEGER DEFAULT 1,
+        caption TEXT,
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(slug, platform, variant)
+    )""")
     cms_mod.ensure_tables(conn)
     return conn
 
@@ -522,6 +658,19 @@ def _init():
             if k:
                 ai.configure_runtime(p, k, _get_setting("ai.model." + p) or "",
                                      _get_setting("ai.base." + p) or "")
+    except Exception:
+        pass
+    # Rehydrate the earnings estimator config persisted via the analytics page
+    # so tuned commission/AOV/order-rate survive a restart/redeploy.
+    try:
+        cp = _get_setting("earnings.commission_pct")
+        aov = _get_setting("earnings.avg_order")
+        rate = _get_setting("earnings.order_rate")
+        if cp or aov or rate:
+            earnings.configure(
+                commission_pct=float(cp) if cp else None,
+                avg_order=float(aov) if aov else None,
+                order_rate=float(rate) if rate else None)
     except Exception:
         pass
 
@@ -1298,6 +1447,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._social_schedule()
             if parsed.path == "/api/social/flush":
                 return self._social_flush()
+            if parsed.path == "/api/social/amplify":
+                return self._social_amplify()
             if parsed.path == "/api/social/topics":
                 return self._social_topics()
             if parsed.path == "/api/tools/launch":
@@ -1329,6 +1480,14 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._earnings_log()
             if parsed.path == "/api/variants/save":
                 return self._variants_save()
+            if parsed.path == "/api/subjects/save":
+                return self._subjects_save()
+            if parsed.path == "/api/captions/save":
+                return self._captions_save()
+            if parsed.path == "/api/captions":
+                return self._captions_api(q)
+            if parsed.path == "/api/subjects":
+                return self._subjects_api(q)
             if parsed.path == "/api/variants/autoclean":
                 return self._variants_autoclean()
             if parsed.path == "/api/ai/models":
@@ -1490,7 +1649,18 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             nid = cur.lastrowid
             conn.close()
         self._push_indexnow(body.get("keyword"))
-        return self._send(200, {"id": nid})
+        # auto-build long-tail pages under the fresh niche so the plain dashboard
+        # "save" immediately has indexable depth (same as the one-click suggest
+        # build). Off unless explicitly disabled via setting.
+        flag = _get_setting("niches.auto_topics")
+        topics_created = []
+        if flag == "" or str(flag).strip().lower() in ("1", "on", "true", "yes"):
+            try:
+                slug = seo._slugify(body.get("keyword"))
+                topics_created = self._generate_topics(slug, 6)
+            except Exception:
+                topics_created = []
+        return self._send(200, {"id": nid, "topics_created": len(topics_created)})
 
     def _fire_indexnow(self, paths):
         """Fire-and-forget IndexNow submit for a list of site-relative paths
@@ -1810,6 +1980,100 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
         idx = int(security.ip_token(self._client_ip()) or "0", 16) % len(rows)
         rows.sort(key=lambda r: r["variant"])
         return rows[idx]["headline"], rows[idx]["variant"]
+
+    def _subject_for(self, kw, idx, sub_id, default_subject):
+        """Email subject-line A/B: pick a deterministic subject variant per
+        subscriber for (keyword, email_index) so cohorts split but a subscriber
+        stays stable across the sequence. Falls back to the default subject.
+        Returns {"subject": str, "variant": int}."""
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT variant, subject FROM email_subjects "
+                "WHERE lower(keyword)=? AND email_index=? AND enabled=1 "
+                "AND subject IS NOT NULL AND subject != '' ORDER BY variant ASC",
+                (kw.lower(), idx)).fetchall()
+            conn.close()
+        if not rows:
+            return {"subject": default_subject, "variant": 0}
+        idx0 = int(sub_id or 0) % len(rows)
+        return {"subject": rows[idx0]["subject"], "variant": rows[idx0]["variant"]}
+
+    def _subjects_for(self, kw):
+        """All configured email-subject variants for a niche keyword, for the
+        A/B editor."""
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT id, email_index, variant, subject, enabled FROM email_subjects "
+                "WHERE lower(keyword)=? ORDER BY email_index, variant", (kw.lower(),)).fetchall()
+            conn.close()
+        return [dict(r) for r in rows]
+
+    def _subject_stats(self, kw):
+        """Per-subject-variant open/click performance for keyword's sequence, so
+        the operator sees which email subject wins. Uses sent_emails.subject_variant
+        joined to email_events (by subscriber_id + email_index)."""
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT s.email_index, s.subject, s.subject_variant v, "
+                "COUNT(DISTINCT s.subscriber_id) sent, "
+                "COUNT(DISTINCT e.subscriber_id) opened, "
+                "(SELECT COUNT(*) FROM clicks c WHERE c.source='email' AND c.slug=? "
+                " AND c.referrer LIKE '%' || s.subscriber_id || '%') clicks "
+                "FROM sent_emails s LEFT JOIN email_events e "
+                "ON e.subscriber_id=s.subscriber_id AND e.email_index=s.email_index "
+                "AND e.type='open' "
+                "WHERE s.subject_variant>0 AND s.subject IS NOT NULL "
+                "GROUP BY s.email_index, s.subject, s.subject_variant "
+                "ORDER BY s.email_index, s.subject_variant", (kw.lower(),)).fetchall()
+            conn.close()
+        out = []
+        for r in rows:
+            out.append({"email_index": r["email_index"], "subject": r["subject"],
+                        "variant": r["v"], "sent": r["sent"], "opened": r["opened"],
+                        "clicks": r["clicks"],
+                        "open_rate": round(r["opened"] / max(r["sent"], 1) * 100, 1)})
+        return out
+
+    def _subjects_save(self):
+        """Save email-subject A/B variants for a keyword. Body: {keyword, items:
+        [{email_index, variant, subject, enabled}]}."""
+        body = self._body()
+        kw = str(body.get("keyword") or "").strip()
+        items = body.get("items") or []
+        if not kw:
+            return self._send(400, {"error": "keyword required"})
+        with _lock:
+            conn = _db()
+            for it in items:
+                idx = int(it.get("email_index") or 1)
+                variant = int(it.get("variant") or 1)
+                subject = str(it.get("subject") or "").strip()
+                enabled = 1 if it.get("enabled", True) else 0
+                conn.execute(
+                    "INSERT INTO email_subjects (keyword, email_index, variant, subject, enabled) "
+                    "VALUES (?,?,?,?,?) ON CONFLICT(keyword, email_index, variant) "
+                    "DO UPDATE SET subject=excluded.subject, enabled=excluded.enabled",
+                    (kw, idx, variant, subject, enabled))
+            conn.commit()
+            conn.close()
+        return self._send(200, {"ok": True, "keyword": kw, "saved": len(items)})
+
+    def _subjects_api(self, q):
+        kw = (q.get("keyword") or [""])[0].strip()
+        if not kw:
+            return self._send(200, {"keyword": "", "subjects": [], "stats": []})
+        return self._send(200, {"keyword": kw,
+                                "subjects": self._subjects_for(kw),
+                                "stats": self._subject_stats(kw)})
+
+    def _captions_api(self, q):
+        slug = (q.get("slug") or [""])[0].strip().lower()
+        if not slug:
+            return self._send(200, {"slug": "", "captions": []})
+        return self._send(200, {"slug": slug, "captions": self._captions_for(slug)})
 
     def _niche_page(self, path, q):
         slug = path[len("/n/"):].rstrip("/") or "niche"
@@ -3319,7 +3583,59 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                 kit["utm_content"] = code
                 kit["link"] = social.track_link(seo.BASE_URL, slug,
                                                 kit["platform"], code)
+            kit["body"] = self._caption_for(slug, kit["platform"], kit["body"])
         return kits
+
+    def _caption_for(self, slug, platform, default_body):
+        """Social-caption A/B: pick a deterministic alternative body copy per
+        (slug, platform) variant by visitor hash, so cohorts split. The active
+        variant is woven into the kit (and thus the published post). Falls back
+        to the default caption when no variant is set. Returns the caption."""
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT variant, caption FROM social_captions "
+                "WHERE lower(slug)=? AND lower(platform)=? AND enabled=1 "
+                "AND caption IS NOT NULL AND caption != '' ORDER BY variant ASC",
+                (slug.lower(), platform.lower())).fetchall()
+            conn.close()
+        if not rows:
+            return default_body
+        idx = int(security.ip_token(self._client_ip()) or "0", 16) % len(rows)
+        return rows[idx]["caption"]
+
+    def _captions_for(self, slug):
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT platform, variant, caption, enabled FROM social_captions "
+                "WHERE lower(slug)=? ORDER BY platform, variant", (slug.lower(),)).fetchall()
+            conn.close()
+        return [dict(r) for r in rows]
+
+    def _captions_save(self):
+        body = self._body()
+        slug = str(body.get("slug") or "").strip().lower()
+        items = body.get("variants") or []
+        if not slug:
+            return self._send(400, {"error": "slug required"})
+        with _lock:
+            conn = _db()
+            for it in items:
+                platform = str(it.get("platform") or "").strip()
+                variant = int(it.get("variant") or 1)
+                caption = str(it.get("caption") or "").strip()
+                enabled = 1 if it.get("enabled", True) else 0
+                if not platform:
+                    continue
+                conn.execute(
+                    "INSERT INTO social_captions (slug, platform, variant, caption, enabled) "
+                    "VALUES (?,?,?,?,?) ON CONFLICT(slug, platform, variant) "
+                    "DO UPDATE SET caption=excluded.caption, enabled=excluded.enabled",
+                    (slug, platform, variant, caption, enabled))
+            conn.commit()
+            conn.close()
+        return self._send(200, {"ok": True, "slug": slug, "saved": len(items)})
 
     def _social_db(self, keyword, slug, kits):
         """Published posts + per-post click counts (attribution via utm_content)."""
@@ -3615,6 +3931,22 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
         return self._send(200, {"ok": True, "published_now": published_now,
                                 "still_pending": pending})
 
+    def _social_amplify(self):
+        """Manual trigger for the auto-amplify loop (POST /api/social/amplify),
+        so an owner can re-queue winning posts on demand instead of waiting for
+        the daemon. Also toggles the feature via a JSON `enable` flag."""
+        body = self._body()
+        if "enable" in body:
+            val = "1" if body.get("enable") else "0"
+            _set_setting("social.amplify", val)
+        res = _auto_amplify_winners()
+        return self._send(200, dict(res, ok=True))
+
+    def _auto_amplify(self, now=None):
+        """Method shim: run the module-level auto-amplify and also expose a
+        manual trigger for the admin UI (POST /api/social/amplify)."""
+        return _auto_amplify_winners(now=now)
+
     def _social_topics(self):
         """Recycle long-tail /n/<parent>/<term> pages into tracked post kits +
         scheduled social posts, so every indexed long-tail page also earns social
@@ -3743,6 +4075,18 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                          "%d winner(s) to replicate · %d cold (0-click) post(s) to rewrite or drop. "
                          "Re-publish winners on a fresh code; rewrite cold copy before re-sharing.</p>"
                          % (n_won, n_cold))
+        amp_state = _get_setting("social.amplify")
+        amp_on = (amp_state == "" or str(amp_state).strip().lower()
+                  in ("1", "on", "true", "yes"))
+        amp_note = ("<p class='hint' style='margin-top:6px'><b>Auto-amplify %s</b> — after posts flush and "
+                    "earn clicks, the top performers are automatically re-queued to a future peak slot "
+                    "(same tracked link, capped runs). %s</p>"
+                    % ("<span style='color:#1e8e3e'>ON</span>"
+                       if amp_on else "<span style='color:#c5221f'>OFF</span>",
+                       "Winners compound while cold posts stay dead."))
+        amp_btn = ("<button class='warm' id='ampbtn'>⚡ Amplify winners now</button> "
+                   "<button class='soc-sched' id='amptog' data-on='%d'>Turn %s</button>"
+                   % (1 if amp_on else 0, "OFF" if amp_on else "ON"))
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Social — pstore</title><link rel="stylesheet" href="/style.css">
@@ -3774,6 +4118,10 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
 <button class="warm" id="flush">Flush due scheduled posts</button>
 <button class="warm" id="topics">Recycle long-tail topics → posts</button>
 <p id="flushout" class="msg"></p></section>
+<section class="card" id="amplify"><h2>🔁 Auto-amplify winners</h2>
+{amp_note}
+<div class="row">{amp_btn}</div>
+<p id="ampout" class="msg"></p></section>
 </main>
 <footer><p>Posts only use real scraped data (title, price, stars, reviews) — no fabricated claims. Landing page carries the courier beacon, so every tap is attributed.</p></footer>
 <script src="/table-flow.js" defer></script>
@@ -3819,6 +4167,23 @@ async function recycle(){{
     : "Recycle failed.";
   setTimeout(()=>location.reload(), 1200);
 }}
+async function ampl(){{
+  $("ampout").textContent = "Amplifying winners…";
+  const r = await fetch("/api/social/amplify", {{method:"POST", headers:{{"Content-Type":"application/json"}}}});
+  const d = await r.json().catch(()=>({{ok:false}}));
+  if (d && d.ok){{
+    $("ampout").textContent = d.requeued > 0
+      ? "Re-queued " + d.requeued + " winner(s) to the next peak slots: " + d.winners.map(w=>w.slug+" ("+w.platform+" ×"+w.amp+")").join(", ") + "."
+      : "No eligible winners to amplify yet (post needs clicks and to be older than the min age).";
+  }} else $("ampout").textContent = "Amplify failed.";
+}}
+async function amptog(){{
+  const r = await fetch("/api/social/amplify", {{method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify({{enable: document.querySelector("#amptog").dataset.on === undefined}})}});
+  const d = await r.json().catch(()=>({{ok:false}}));
+  $("ampout").textContent = d && d.ok ? ("Auto-amplify is now " + (d.on ? "ON" : "OFF") + ".") : "Toggle failed.";
+  setTimeout(()=>location.reload(), 900);
+}}
 document.addEventListener("click", (e)=>{{
   const p = e.target.closest(".soc-pub");
   if (p){{ pub(p); return; }}
@@ -3826,6 +4191,8 @@ document.addEventListener("click", (e)=>{{
   if (s){{ sched(s); return; }}
   if (e.target.closest("#flush")){{ flush(); return; }}
   if (e.target.closest("#topics")){{ recycle(); return; }}
+  if (e.target.closest("#ampbtn")){{ ampl(); return; }}
+  if (e.target.closest("#amptog")){{ amptog(); return; }}
   const c = e.target.closest(".soc-copy");
   if (c){{
     const box = c.closest(".soc-kit");
@@ -4443,6 +4810,34 @@ fresh();
             month_rows = conn.execute(
                 "SELECT month, orders, earnings FROM earnings_records "
                 "ORDER BY month DESC LIMIT 24").fetchall()
+            # per-niche funnel breakdown: views / leads / clicks / est earnings
+            niche_rows = conn.execute(
+                "SELECT id, keyword, products FROM niches").fetchall()
+            by_niche = []
+            for nr in niche_rows:
+                slug = seo._slugify(nr["keyword"]).lower()
+                kw = nr["keyword"]
+                nviews = 0
+                try:
+                    nviews = conn.execute(
+                        "SELECT COUNT(*) FROM events WHERE name='view' AND "
+                        "(page LIKE ? OR page LIKE ?)", ("%/" + slug + "%", "%/" + slug + "/%")).fetchone()[0] or 0
+                except Exception:
+                    nviews = 0
+                nleads = conn.execute(
+                    "SELECT COUNT(*) FROM subscribers WHERE confirmed=1 AND unsubscribed=0 "
+                    "AND lower(keyword)=?", (kw.lower(),)).fetchone()[0] or 0
+                nclicks = conn.execute(
+                    "SELECT COUNT(*) FROM clicks WHERE lower(slug)=?", (slug,)).fetchone()[0] or 0
+                nest = earnings.estimate(nclicks, "")
+                by_niche.append({
+                    "slug": slug, "keyword": kw,
+                    "views": nviews, "leads": nleads, "clicks": nclicks,
+                    "commission_est": round(nest["commission_est"], 2),
+                    "orders_est": nest["orders_est"],
+                    "n_products": len(json.loads(nr["products"] or "[]")),
+                })
+            by_niche.sort(key=lambda x: -x["commission_est"])
             # per-stage drop-off / conversion
             conn.close()
         # distinct subscribers who opened any email (real engaged audience)
@@ -4536,6 +4931,7 @@ fresh();
                 "real_orders": real_summary["total_orders"],
                 "real_earnings": round(real_summary["total_earnings"], 2),
             },
+            "by_niche": by_niche,
             "recommendations": reco,
         }
 
@@ -4592,6 +4988,17 @@ fresh();
                                             (st["landing_clicks"], "landing CTA clicks"),
                                             (st["commission_est"], "total est. commission $")]
                                ) + "</div>")
+        nrows = "".join(
+            "<tr><td>%s</td><td class='ct'>%s</td><td class='ct'>%s</td><td class='ct'>%s</td>"
+            "<td class='ct'>$%.2f</td><td class='ct'>%s</td></tr>"
+            % (seo._clean(x["keyword"]), x["views"], x["leads"], x["clicks"],
+               x["commission_est"], x["n_products"])
+            for x in p["by_niche"]) or "<tr><td colspan='6' class='hint'>No saved niches yet.</td></tr>"
+        niche_html = ("<h3>By niche — who converts &amp; who leaks</h3>"
+                      "<table><thead><tr><th>Niche</th><th class='ct'>Views</th>"
+                      "<th class='ct'>Leads</th><th class='ct'>Clicks</th>"
+                      "<th class='ct'>Est. commission</th><th class='ct'>Products</th></tr></thead>"
+                      "<tbody>%s</tbody></table>" % nrows)
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sales funnel — pstore</title><link rel="stylesheet" href="/style.css">
@@ -4611,6 +5018,8 @@ fresh();
 <section class="card"><h2>⚙️ Funnel stages</h2>{stages_html}{leak_html}</section>
 <section class="card"><h2>📊 Delivery &amp; multiply detail</h2>{stats_html}</section>
 <section class="card"><h2>🤑 Earn from clicks</h2>{earn_html}{rows_html}</section>
+<section class="card"><h2>🎯 Per-niche funnel</h2>{niche_html}
+<p class="hint">Sorted by est. commission — the niche converting traffic into clicks (and stays) is the one to pour social + email into first; the high-traffic/no-lead ones need a stronger email gate.</p></section>
 <section class="card"><h2>💡 What to fix first</h2><ul class="reco">{reco_html}</ul>
 <p class="hint" style="margin-top:8px">Act on the leak: <a href="/admin/emails">emails</a> · <a href="/admin/social">social</a> · <a href="/admin/seo">SEO</a> · <a href="/admin/analytics">analytics</a> · <a href="/admin/marketing">ROI dashboard</a></p></section>
 </main>
@@ -5265,9 +5674,12 @@ document.addEventListener("click", async (e)=>{{
             if not mail:
                 unready += 1
                 continue
+            subj = self._subject_for(kw, idx, sub["id"], mail["subject"])
+            mail["subject"] = subj["subject"]
+            subv = subj["variant"]
             pick = market_engine.pick_for_buyers(items)
             asin = (pick or {}).get("asin") or ""
-            ready.append((sub["id"], idx, mail, sub["email"], sub["first_name"] or "", kw, asin))
+            ready.append((sub["id"], idx, mail, sub["email"], sub["first_name"] or "", kw, asin, subv))
         cap = limit if limit and limit > 0 else mailer.MAX_EMAILS_PER_RUN
         target = ready[:cap] if limit and limit > 0 else ready[:mailer.MAX_EMAILS_PER_RUN]
         eff_limit = min(len(ready), cap)
@@ -5277,7 +5689,7 @@ document.addEventListener("click", async (e)=>{{
                                     "keyword": niche_kw or None,
                                     "limit": cap})
         sent = errors = 0
-        for sid, idx, mail, to, to_name, kw, asin in target:
+        for sid, idx, mail, to, to_name, kw, asin, subv in target:
             if sent + errors >= mailer.MAX_EMAILS_PER_RUN:
                 break
             # tracked affiliate link + open pixel so email actions are attributed
@@ -5299,8 +5711,9 @@ document.addEventListener("click", async (e)=>{{
                 with _lock:
                     conn = _db()
                     conn.execute("UPDATE subscribers SET sent_index=? WHERE id=?", (idx, sid))
-                    conn.execute("INSERT INTO sent_emails (subscriber_id, email_index, subject) "
-                                 "VALUES (?,?,?)", (sid, idx, mail["subject"]))
+                    conn.execute("INSERT INTO sent_emails (subscriber_id, email_index, subject, "
+                                 "subject_variant) VALUES (?,?,?,?)",
+                                 (sid, idx, mail["subject"], subv))
                     conn.commit()
                     conn.close()
             else:
@@ -5743,7 +6156,8 @@ if ($("r_save")) $("r_save").onclick = async () => {{
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
     def _earnings_config(self):
-        """Admin: tune the commission estimator (runtime, non-persistent)."""
+        """Admin: tune the commission estimator. Persists to the DB `settings`
+        table so the tuned numbers survive restarts (unlike a runtime dict)."""
         body = self._body()
         keys = ("commission_pct", "avg_order", "order_rate")
         try:
@@ -5755,6 +6169,9 @@ if ($("r_save")) $("r_save").onclick = async () => {{
             return self._send(200, {"ok": False, "error": "Out of range."})
         earnings.configure(commission_pct=vals["commission_pct"],
                            avg_order=vals["avg_order"], order_rate=vals["order_rate"])
+        _set_setting("earnings.commission_pct", str(vals["commission_pct"]))
+        _set_setting("earnings.avg_order", str(vals["avg_order"]))
+        _set_setting("earnings.order_rate", str(vals["order_rate"]))
         return self._send(200, {"ok": True})
 
     def _earnings_log(self):
@@ -5864,6 +6281,70 @@ if ($("r_save")) $("r_save").onclick = async () => {{
                        % (seo._clean(s), seo._clean(n["keyword"].title()), seo._clean(s), vrows))
         if not row:
             row = ['<p class="hint">No niches yet — mine one on the dashboard first.</p>']
+        # ----- email-subject A/B editor (per niche + sequence step) -----
+        subjects_row = []
+        for n in niches:
+            s = seo._slugify(n["keyword"])
+            if keyword and s != seo._slugify(keyword):
+                continue
+            existing = {(r["email_index"], r["variant"]): r for r in self._subjects_for(s)}
+            stats = self._subject_stats(s)
+            st_by = {("%s|%s" % (r["email_index"], r["variant"])): r for r in stats}
+            subs = ""
+            for idx in range(1, mailer.SEQUENCE_LENGTH + 1):
+                for var in (1, 2):
+                    key = (idx, var)
+                    rec = existing.get(key)
+                    subj = seo._clean(rec["subject"]) if rec else ""
+                    enabled = "checked" if (rec is None or rec["enabled"]) else ""
+                    peer = st_by.get("%s|%s" % (idx, var))
+                    perf = ("· %s sent · %s%% open · %s clicks"
+                            % (peer["sent"], peer["open_rate"], peer["clicks"])) if peer else "· no sends yet"
+                    subs += ('<tr><td class="ct">%s</td><td class="ct">v%s</td>'
+                             '<td><input class="ssub" data-idx="%s" data-var="%s" value="%s"></td>'
+                             '<td><label><input type="checkbox" class="sen" data-idx="%s" data-var="%s" %s> on</label></td>'
+                             '<td class="hint">%s</td></tr>'
+                             % (idx, var, idx, var, subj, idx, var, enabled, seo._clean(perf)))
+            subjects_row.append(
+                '<section class="card" data-keyword="%s" data-subjects="1"><h2>✉️ %s — email subject A/B %s</h2>'
+                '<div class="table-wrap"><table class="plain"><thead><tr><th>Step</th><th>Var</th>'
+                '<th>Subject</th><th>On</th><th>Perf</th></tr></thead><tbody>%s</tbody></table></div>'
+                '<p class="msg"></p><button class="warm">Save subjects</button></section>'
+                % (seo._clean(s), seo._clean(n["keyword"].title()),
+                   "<span class='hint'> (/%s)</span>" % seo._clean(s), subs))
+        subjects_html = ("<h2 style='margin-top:22px'>✉️ Email subject-line A/B</h2>"
+                         "<p class='hint'>Two alternative subjects per sequence step per niche — split ~50/50 per "
+                         "subscriber. Open/click perf per subject is shown so you double-down on the opener that "
+                         "actually pulls reads, not just sends.</p>" + "".join(subjects_row))
+        # ----- social-caption A/B editor (per niche + platform) -----
+        captions_row = []
+        for n in niches:
+            s = seo._slugify(n["keyword"])
+            if keyword and s != seo._slugify(keyword):
+                continue
+            cap_existing = {("%s|%s" % (r["platform"], r["variant"])): r for r in self._captions_for(s)}
+            plat_rows = ""
+            for platform in social.PLATFORMS:
+                for var in (1, 2):
+                    rec = cap_existing.get("%s|%s" % (platform, var))
+                    cap_txt = seo._clean(rec["caption"]) if rec else ""
+                    enabled = "checked" if (rec is None or rec["enabled"]) else ""
+                    plat_rows += ('<tr><td class="ct">%s</td><td class="ct">v%s</td>'
+                                  '<td><textarea class="scap" data-platform="%s" data-var="%s" rows="2">%s</textarea></td>'
+                                  '<td><label><input type="checkbox" class="cen" data-platform="%s" data-var="%s" %s> on</label></td></tr>'
+                                  % (seo._clean(platform), var, seo._clean(platform), var, cap_txt,
+                                     seo._clean(platform), var, enabled))
+            captions_row.append(
+                '<section class="card" data-keyword="%s" data-captions="1"><h2>📱 %s — social caption A/B %s</h2>'
+                '<p class="hint">Alternative post copy per platform. Visitors are split ~50/50 deterministically; '
+                'the active variant is what actually gets published.</p>'
+                '<div class="table-wrap"><table class="plain"><thead><tr><th>Platform</th><th>Var</th>'
+                '<th>Caption</th><th>On</th></tr></thead><tbody>%s</tbody></table></div>'
+                '<p class="msg"></p><button class="warm">Save captions</button></section>'
+                % (seo._clean(s), seo._clean(n["keyword"].title()),
+                   "<span class='hint'> (/%s)</span>" % seo._clean(s), plat_rows))
+        captions_html = ("<h2 style='margin-top:22px'>📱 Social caption A/B</h2>"
+                         + "".join(captions_row))
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>A/B headline tests — pstore</title><link rel="stylesheet" href="/style.css">
@@ -5881,6 +6362,8 @@ if ($("r_save")) $("r_save").onclick = async () => {{
 <p id="cleanmsg" class="msg"></p></section>
 {'<section class="card"><p class="hint">Filtering by keyword: %s. <a href="/admin/variants">Show all →</a></p></section>' % seo._clean(keyword) if keyword else ''}
 {''.join(row)}
+{subjects_html}
+{captions_html}
 </main>
 <footer><p>Leave a variant empty to disable it. The control (default) headline is always shown when no variants are set. Winner-takes-CTA after you see enough clicks.</p></footer>
 <script>
@@ -5904,7 +6387,7 @@ if(ac){{
 }}
 $$(".card[data-keyword]").forEach(function(card){{
   var btn=card.querySelector("button");
-  if(!btn) return;
+  if(!btn || card.getAttribute("data-subjects")) return;
   btn.onclick=async function(){{
     var rows=card.querySelectorAll("tr[data-slug]");
     var payload={{slug:card.getAttribute("data-keyword"),variants:[]}};
@@ -5918,6 +6401,49 @@ $$(".card[data-keyword]").forEach(function(card){{
     try{{
       var r=await fetch("/api/variants/save",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});
       var d=await r.json(); m.textContent=d.ok?"✓ Saved.":("✗ "+(d.error||"failed"));
+    }}catch(e){{ m.textContent="✗ Could not reach the server."; }}
+  }};
+}});
+$$(".card[data-subjects]").forEach(function(card){{
+  var btn=card.querySelector("button");
+  if(!btn) return;
+  btn.onclick=async function(){{
+    var rows=card.querySelectorAll("tr");
+    var items=[];
+    rows.forEach(function(tr){{
+      var s=tr.querySelector(".ssub");
+      if(!s) return;
+      var en=tr.querySelector(".sen");
+      items.push({{email_index:parseInt(s.getAttribute("data-idx"),10)||1,
+                   variant:parseInt(s.getAttribute("data-var"),10)||1,
+                   subject:s.value.trim(), enabled:!en || en.checked}});
+    }});
+    var m=card.querySelector(".msg"); m.className="msg"; m.textContent="Saving…";
+    try{{
+      var r=await fetch("/api/subjects/save",{{method:"POST",headers:{{"Content-Type":"application/json"}},
+        body:JSON.stringify({{keyword:card.getAttribute("data-keyword"),items:items}})}});
+      var d=await r.json(); m.textContent=d.ok?"✓ Saved "+d.saved+" subject variant(s).":("✗ "+(d.error||"failed"));
+    }}catch(e){{ m.textContent="✗ Could not reach the server."; }}
+  }};
+}});
+$$(".card[data-captions]").forEach(function(card){{
+  var btn=card.querySelector("button");
+  if(!btn) return;
+  btn.onclick=async function(){{
+    var variants=[];
+    card.querySelectorAll("tr").forEach(function(tr){{
+      var t=tr.querySelector(".scap");
+      if(!t) return;
+      var en=tr.querySelector(".cen");
+      variants.push({{platform:t.getAttribute("data-platform"),
+                   variant:parseInt(t.getAttribute("data-var"),10)||1,
+                   caption:t.value, enabled:!en || en.checked}});
+    }});
+    var m=card.querySelector(".msg"); m.className="msg"; m.textContent="Saving…";
+    try{{
+      var r=await fetch("/api/captions/save",{{method:"POST",headers:{{"Content-Type":"application/json"}},
+        body:JSON.stringify({{slug:card.getAttribute("data-keyword"),variants:variants}})}});
+      var d=await r.json(); m.textContent=d.ok?"✓ Saved "+d.saved+" caption variant(s).":("✗ "+(d.error||"failed"));
     }}catch(e){{ m.textContent="✗ Could not reach the server."; }}
   }};
 }});

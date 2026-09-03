@@ -456,6 +456,76 @@ class TestSocialSuite(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertFalse(res.get("webhook"))
 
+    def test_auto_amplify_requeues_winner_to_scheduled(self):
+        # seed a published post with clicks, old enough to be re-amplified
+        import datetime as _dt
+        with server._lock:
+            c = server._db()
+            c.execute(
+                "INSERT INTO social_posts (slug, keyword, platform, name, body, link, "
+                "utm_content, status, published_at) VALUES ('keto-snacks','keto snacks',"
+                "'Twitter','win','b','http://x/lp/keto','code-amp','published','2020-01-01 08:00:00')")
+            pid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+            c.commit()
+            c.close()
+        with server._lock:
+            c = server._db()
+            c.execute("INSERT INTO clicks (slug, source, ip, referrer, asin, content) "
+                      "VALUES ('keto-snacks','social','t','','','code-amp')")
+            c.commit()
+            c.close()
+        now = _dt.datetime(2020, 1, 3, 12, 0, 0)  # 2 days after publish
+        res = server._auto_amplify_winners(now=now)
+        self.assertTrue(res["on"])
+        self.assertEqual(res["requeued"], 1)
+        self.assertEqual(res["winners"][0]["slug"], "keto-snacks")
+        self.assertEqual(res["winners"][0]["amp"], 1)
+        with server._lock:
+            c = server._db()
+            row = c.execute("SELECT id,status,scheduled_at,amplify_count FROM social_posts "
+                            "WHERE id=?", (pid,)).fetchone()
+            c.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "scheduled")
+        self.assertIsNotNone(row["scheduled_at"])
+        self.assertEqual(row["amplify_count"], 1)
+
+    def test_auto_amplify_caps_runs(self):
+        # a post already amplified to max_runs is not requeued again
+        import datetime as _dt
+        server._set_setting("social.amplify.max_runs", "1")
+        server._set_setting("social.amplify.min_age_hours", "24")
+        try:
+            with server._lock:
+                c = server._db()
+                c.execute(
+                    "INSERT INTO social_posts (slug, keyword, platform, name, body, link, "
+                    "utm_content, status, published_at, amplify_count) VALUES "
+                    "('keto-snacks','keto snacks','Twitter','win','b','http://x/lp/keto',"
+                    "'code-cap','published','2020-01-01 08:00:00',1)")
+                pid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+                c.commit()
+                c.close()
+            with server._lock:
+                c = server._db()
+                c.execute("INSERT INTO clicks (slug, source, ip, referrer, asin, content) "
+                          "VALUES ('keto-snacks','social','t','','','code-cap')")
+                c.commit()
+                c.close()
+            now = _dt.datetime(2020, 1, 3, 12, 0, 0)
+            res = server._auto_amplify_winners(now=now)
+            self.assertEqual(res["requeued"], 0)
+            with server._lock:
+                c = server._db()
+                row = c.execute("SELECT status,amplify_count FROM social_posts WHERE id=?",
+                                (pid,)).fetchone()
+                c.close()
+            self.assertEqual(row["status"], "published")
+            self.assertEqual(row["amplify_count"], 1)
+        finally:
+            server._set_setting("social.amplify.max_runs", "2")
+            server._set_setting("social.amplify.min_age_hours", "24")
+
 
 if __name__ == "__main__":
     unittest.main()

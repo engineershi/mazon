@@ -179,7 +179,7 @@ class TestSeoAggressive(unittest.TestCase):
         self.assertEqual(st, 200)
         p = json.loads(data)
         self.assertEqual(set(p.keys()), {"stages", "leak", "stats",
-                                         "recommendations"})
+                                         "recommendations", "by_niche"})
         self.assertEqual(len(p["stages"]), 5)
         self.assertEqual([s["n"] for s in p["stages"]], [1, 2, 3, 4, 5])
         # each stage has a value + conversion to next stage

@@ -121,14 +121,6 @@ def build_post_template(items, caption="My top picks for this week 👇"):
 # The "make the sale" layer: landing pages, email automation, DM scripts,
 # review pipeline and boost campaigns — all copy-paste ready and disclaimer-
 # safe (never fabricate specs or outcomes).
-_FUNNEL_STAGES = [
-    ("1 · Attract", "Awareness content (social/DM/email) links to a focused landing page"),
-    ("2 · Convert", "Landing page pushes ONE product with social proof + a single CTA"),
-    ("3 · Deliver", "Every CTA is a direct affiliate-tagged Amazon listing link (no cloaking)"),
-    ("4 · Multiply", "Follow-up emails + review requests compound long-term revenue"),
-]
-
-
 def _slug(kw):
     s = (kw or "").lower()
     s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
@@ -480,7 +472,6 @@ def build_funnel(keyword, items, site_url=None, affiliate_tag=None, boosts_kw=()
         "keyword": keyword,
         "count": len(items or []),
         "affiliate_tag": affiliate_tag or clean_tag(),
-        "stages": _FUNNEL_STAGES,
         "pick": pick,
         "landing_page": landing,
         "landing_url": "/lp/" + _slug(keyword),

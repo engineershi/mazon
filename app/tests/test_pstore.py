@@ -248,7 +248,8 @@ class TestSalesFunnel(unittest.TestCase):
         self.assertEqual(len(f["email_sequence"]), 5)
         self.assertIn("landing_page", f)
         self.assertIn("reviews", f)
-        self.assertTrue(f["stages"])
+        self.assertNotIn("stages", f)
+        self.assertIn("landing_url", f)
 
     def test_email_sequence_includes_alternates(self):
         seq = market_engine.build_email_sequence("keto snacks", self.items)
