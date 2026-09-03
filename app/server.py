@@ -47,6 +47,7 @@ import security
 import sem
 import social
 import publish
+import suggest
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
@@ -632,6 +633,7 @@ class Handler(BaseHTTPRequestHandler):
                 },
             },
             "marketing": market_engine.status_blurb(),
+            "demography": self._demo(),
             "mailer": {
                 "configured": mailer.configured(),
                 "host": mailer.SMTP_HOST or "",
@@ -649,6 +651,21 @@ class Handler(BaseHTTPRequestHandler):
                 "sitemap": "/sitemap.xml",
                 "site_url": seo.BASE_URL,
             },
+        }
+
+    def _demo(self):
+        """Market-demography targeting profile: region + audience interests +
+        persona fields. Everything is operator-set (no guessing) and read straight
+        from the DB so any tool can use it for audience-aware marketing copy."""
+        return {
+            "region": _get_setting("demo.region"),
+            "interest": _get_setting("demo.interest"),
+            "interests_extra": _get_setting("demo.interests_extra"),
+            "behavior": _get_setting("demo.behavior"),
+            "age": _get_setting("demo.age"),
+            "audience": _get_setting("demo.audience"),
+            "income": _get_setting("demo.income"),
+            "tone": _get_setting("demo.tone"),
         }
 
     # ------------------------------------------------------------------ AI panel
@@ -1115,6 +1132,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._seo_topics_api()
             if path == "/api/marketing":
                 return self._marketing_api()
+            if path == "/api/suggest":
+                return self._suggest_api()
+            if path == "/api/suggest/build":
+                return self._suggest_build_api()
             if path.startswith("/seo/snippet/"):
                 return self._seo_snippet(path[len("/seo/snippet/"):])
             if path == "/api/social":
@@ -1377,6 +1398,13 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             for f in ("client_id", "client_secret", "access_token", "access_token_secret"):
                 if f in tw:
                     _set_setting("social.key.twitter.%s" % f, tw[f])
+        # Market-demography targeting profile (region / interest / persona).
+        demo = body.get("demography")
+        if isinstance(demo, dict):
+            for f in ("region", "interest", "interests_extra", "behavior",
+                      "age", "audience", "income", "tone"):
+                if f in demo:
+                    _set_setting("demo.%s" % f, str(demo.get(f) or "").strip())
         return self._send(200, self._settings())
 
     def _settings_test(self):
@@ -4119,6 +4147,11 @@ fresh();
                             (seq_done, confirmed, mailer.SEQUENCE_LENGTH))
         if views and topics:
             reco.append("%d long-tail page(s) live — recycle them into social posts via 'Recycle long-tail topics'." % topics)
+        # Audience-angle nudge when a demographic profile is configured.
+        demo = self._demo()
+        interest = (demo.get("interest") or "").strip().lower()
+        if interest:
+            reco.append("Audience is set to <b>%s</b> — angle every new email, social kit and /n/ headline at that audience so the copy matches who actually buys." % seo._clean(interest))
         if not reco:
             reco.append("Everything looks set — publish social kits + grow topics and subscribers.")
 
@@ -4139,11 +4172,60 @@ fresh();
                 "top_open_niches": [dict(r) for r in top_open_niches],
             },
             "content": {"niches": niches, "topics": topics},
+            "demography": demo,
             "recommendations": reco,
         }
 
     def _marketing_api(self):
         return self._send(200, self._marketing_payload())
+
+    def _suggest_payload(self):
+        """Demography-driven auto niche suggestions: run the suggest engine
+        against the configured market profile and return build-ready rows."""
+        demo = self._demo() or {}
+        return suggest.suggest_niches(demo, top=int(
+            _get_setting("suggest.top") or 4))
+
+    def _suggest_api(self):
+        return self._send(200, self._suggest_payload())
+
+    def _suggest_build_api(self):
+        """One-click build of a suggested niche: mine the keyword through the
+        normal pipeline, save the niche (products/score/saturation + IndexNow)
+        AND auto-generate its long-tail topic pages — so the new suggestion
+        immediately flows into the whole marketing engine (email/social/SEO)."""
+        body = self._body()
+        kw = str(body.get("keyword") or "").strip()
+        if not kw:
+            return self._send(400, {"error": "keyword required"})
+        try:
+            res = suggest.build_route(kw)
+        except Exception as e:
+            return self._send(200, {"ok": False, "error": "mine failed: %s" % str(e)[:200]})
+        n = res["niche"] or {}
+        products = json.dumps(n.get("products") or [])
+        with _lock:
+            conn = _db()
+            cur = conn.execute(
+                "INSERT INTO niches (keyword, market, score, saturation, products) VALUES (?,?,?,?,?)",
+                (n.get("keyword") or kw, amazon.MARKET,
+                 n.get("score"), n.get("saturation"), products))
+            conn.commit()
+            nid = cur.lastrowid
+            conn.close()
+        slug = seo._slugify(n.get("keyword") or kw)
+        self._push_indexnow(n.get("keyword") or kw)
+        topics_created = []
+        try:
+            topics_created = self._generate_topics(slug, 6)
+        except Exception:
+            topics_created = []
+        return self._send(200, {
+            "ok": True, "keyword": n.get("keyword") or kw,
+            "id": nid, "slug": slug,
+            "topic_pages": len(topics_created),
+            "urls": ["/n/" + slug] + [c["url"] for c in topics_created],
+        })
 
     def _admin_marketing(self):
         """Unified digital-marketing ROI hub: email + social + organic traffic on
@@ -4181,6 +4263,78 @@ fresh();
             "<tr><td>%s</td><td class='ct'>%d</td></tr>" % (seo._clean(r["slug"]), r["c"])
             for r in tr["pages"]) or "<tr><td colspan='2' class='hint'>No tracked clicks yet.</td></tr>"
         reco_html = "".join("<li>%s</li>" % r for r in reco)
+        demo = p["demography"]
+        _d = seo._clean
+        demo_fields = [
+            ("region", "Region", "target market region, e.g. United States / UK", "text"),
+            ("interest", "Primary interest", "audience focus, e.g. fashion, fitness, tech", "text"),
+            ("interests_extra", "Other interests", "comma-separated secondary interests", "text"),
+            ("behavior", "Behavior", "shopping behavior / use case, e.g. budget-first, quality-first, gift", "text"),
+            ("age", "Age bracket", "e.g. 18-34, 35-54", "text"),
+            ("audience", "Audience", "who it's for, e.g. style-conscious women", "text"),
+            ("income", "Income bracket", "e.g. mid-range / premium", "text"),
+            ("tone", "Tone", "copy tone, e.g. upbeat / minimal / trustworthy", "text"),
+        ]
+        demo_rows = "".join(
+            '<label>%s<input type="%s" name="%s" value="%s" placeholder="%s"></label>'
+            % (_d(f), t, n, _d((demo.get(n) or "")), _d(ph))
+            for n, f, ph, t in demo_fields)
+        demo_editor = (
+            '<section class="card"><h2>🌍 Market demography</h2>'
+            '<p class="hint">Who + where you market to. This profile is saved to the DB, drives the <a href="#suggest">Auto niche suggestions</a> below, '
+            'and is surfaced in every marketing recommendation so new copy (email, social, SEO) is aimed at the right audience.</p>'
+            '<form id="demofrm" onsubmit="demoSave();return false;">'
+            '<div class="grid">%s</div>'
+            '<button class="warm" type="submit">Save audience target</button>'
+            '<span id="demomsg" class="msg"></span></form>'
+            '<script>async function demoSave(){const o={};\n'
+            '["region","interest","interests_extra","behavior","age","audience","income","tone"].forEach('
+            'f=>{const el=document.querySelector(`#demofrm input[name="${f}"]`);o[f]=el.value;});\n'
+            'const m=document.querySelector("#demomsg");m.textContent="Saving…";\n'
+            'let r,d;try{r=await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({demography:o})});d=await r.json();'
+            '}catch(e){m.textContent="✗ Could not reach the server.";return;}\n'
+            'm.textContent=(r.ok?"✓ Audience saved":"✗ "+JSON.stringify(d||{}));\n'
+            'if(r.ok)setTimeout(()=>location.reload(),700);}\n'
+            '</script></section>'
+        ) % demo_rows
+        suggest_card = (
+            '<section class="card" id="suggest"><h2>🤖 Auto niche suggestions</h2>'
+            '<p class="hint">Built from your <b>demography + interest + behavior + audience</b> profile: '
+            'real Amazon buyer keywords (autosuggest) ranked by demand, persona fit and competition. '
+            'One click builds the /n/ page, saves it and pings IndexNow — the niche then flows into your '
+            'email, social and SEO pipelines automatically.</p>'
+            '<button id="suggbtn" class="warm" onclick="loadSuggest()">⚡ Suggest niches for this audience</button>'
+            '<span id="suggmsg" class="msg"></span>'
+            '<div id="sugg"></div>'
+            '<script>'
+            'async function loadSuggest(){const m=$("suggmsg"),box=$("sugg");'
+            'm.textContent="Thinking about your audience…";m.className="msg";'
+            'let r,d;'
+            'try{r=await fetch("/api/suggest");d=await r.json();}'
+            'catch(e){m.textContent="✗ Could not reach the server.";return;}'
+            'if(!r.ok){m.textContent="✗ "+JSON.stringify(d||{});return;}'
+            'const s=Array.isArray(d.suggestions)?d.suggestions:[];'
+            'if(!s.length){box.innerHTML="<div class=table-wrap><table class=plain><tbody><tr><td class=hint>No suggestions yet — save an interest / behavior in the profile above and try again.</td></tr></tbody></table></div>";m.textContent="";return;}'
+            'm.textContent="✓ "+s.length+" suggestion(s) for your audience";'
+            'box.innerHTML='
+            '"<div class=table-wrap><table class=plain><thead><tr><th>Niche suggestion</th><th>Why</th><th>Demand</th><th>Competition</th><th></th></tr></thead><tbody>"+'
+            's.map(c=>"<tr><td><b>"+esc(c.keyword)+"</b><br>"+esc(c.count+ " product(s)")+"</td>"'
+            '+ "<td>"+esc(c.reason)+"</td>"'
+            '+ "<td class=ct>"+esc(c.demand)+"</td>"'
+            '+ "<td class=ct>"+(c.saturation==null?"—":esc(c.saturation))+"</td>"'
+            '+ "<td><button class=\"mini warm\" onclick=\"buildNiche(this,\'"'
+            '+esc(c.keyword)+'
+            '\')\">▶ Build</button></td></tr>").join("")+"</tbody></table></div>";'
+            'm.className="msg";}'
+            'function esc(x){return String(x).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",\'"\':"&quot;"}[c]||c));}'
+            'async function buildNiche(btn,kw){btn.disabled=true;let msg=btn.nextElementSibling;'
+            'const stMsg=document.createElement("span");stMsg.className="msg";btn.parentNode.appendChild(stMsg);'
+            'let r;try{r=await fetch("/api/suggest/build",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({"keyword":kw})});let d=await r.json();'
+            'stMsg.textContent=(r.ok?("✓ Built "+esc(d.keyword)+" #"+d.id):"✗ "+JSON.stringify(d||{}));}'
+            'catch(e){stMsg.textContent="✗ error";}'
+            'btn.disabled=false;}'
+            '</script></section>'
+        )
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Marketing ROI — pstore</title><link rel="stylesheet" href="/style.css">
@@ -4197,6 +4351,8 @@ fresh();
 <div class="table-wrap"><table class="plain"><thead><tr><th>Platform</th><th>Winner post</th><th>Clicks</th></tr></thead><tbody>{winners_html}</tbody></table></div></section>
 <section class="card"><h2>🌐 Traffic &amp; content</h2>{traffic_row}
 <div class="table-wrap"><table class="plain"><thead><tr><th>Most-clicked page</th><th>Clicks</th></tr></thead><tbody>{top_pages}</tbody></table></div></section>
+{demo_editor}
+{suggest_card}
 <section class="card"><h2>💡 Next best action</h2><ul class="reco">{reco_html}</ul>
 <p class="hint" style="margin-top:8px">Jump to: <a href="/admin/emails">emails</a> · <a href="/admin/social">social</a> · <a href="/admin/seo">SEO audit</a> · <a href="/admin/analytics">full analytics</a></p></section>
 </main>

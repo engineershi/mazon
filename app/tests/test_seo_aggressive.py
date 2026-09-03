@@ -133,7 +133,7 @@ class TestSeoAggressive(unittest.TestCase):
         p = json.loads(data)
         self.assertEqual(set(p.keys()),
                          {"email", "social", "traffic", "content",
-                          "recommendations"})
+                          "demography", "recommendations"})
         self.assertEqual(set(p["email"]),
                          {"confirmed", "unsubscribed", "sent", "opens",
                           "open_rate", "clicks", "click_rate",
@@ -154,6 +154,53 @@ class TestSeoAggressive(unittest.TestCase):
         html = data.decode("utf-8", "replace")
         self.assertIn("Digital marketing", html)
         self.assertIn("Next best action", html)
+        self.assertIn("Market demography", html)
+        self.assertIn("demofrm", html)
+
+    def test_suggest_api_requires_auth(self):
+        st, _, _, _ = self._raw("/api/suggest")
+        self.assertEqual(st, 401)
+
+    def test_admin_marketing_has_auto_suggestion_card(self):
+        st, _, _, data = self._raw("/admin/marketing", cookie=self.cookie)
+        html = data.decode("utf-8", "replace")
+        self.assertIn("Auto niche suggestions", html)
+        self.assertIn("loadSuggest()", html)
+        self.assertIn("/api/suggest", html)
+
+    # ---------------------------------------------------- demography settings
+
+    def test_settings_exposes_demography(self):
+        st, _, _, data = self._raw("/api/settings", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        s = json.loads(data)
+        self.assertIn("demography", s)
+        self.assertEqual(set(s["demography"]),
+                         {"region", "interest", "interests_extra", "behavior",
+                          "age", "audience", "income", "tone"})
+
+    def test_save_demography(self):
+        payload = json.dumps({"demography": {
+            "region": "United States", "interest": "Fashion",
+            "age": "18-34", "tone": "upbeat"}}).encode()
+        st, _, _, _ = self._raw("/api/settings", method="POST",
+                                body=payload, cookie=self.cookie)
+        self.assertEqual(st, 200)
+        st, _, _, data = self._raw("/api/settings", cookie=self.cookie)
+        d = json.loads(data)["demography"]
+        self.assertEqual(d["interest"], "Fashion")
+        self.assertEqual(d["region"], "United States")
+        self.assertEqual(d["tone"], "upbeat")
+
+    def test_marketing_payload_includes_demography(self):
+        payload = json.dumps({"demography": {"interest": "Fashion"}}).encode()
+        self._raw("/api/settings", method="POST", body=payload,
+                  cookie=self.cookie)
+        st, _, _, data = self._raw("/api/marketing", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        p = json.loads(data)
+        self.assertEqual(p["demography"]["interest"], "Fashion")
+        self.assertTrue(any("Audience is set" in r for r in p["recommendations"]))
 
 
 if __name__ == "__main__":
