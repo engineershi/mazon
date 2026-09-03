@@ -133,10 +133,11 @@ def _li_cred(kv):
 # ------------------------------------------------------------------ post app
 
 def _body_for(platform, kit):
-    """Body text + link + any platform-specific extras the composer produced."""
+    """Body text + link + image + any platform-specific extras the composer produced."""
     body = (kit.get("body") or "")
     link = kit.get("link") or ""
-    return {"body": body, "link": link, "platform": platform}
+    return {"body": body, "link": link, "image": kit.get("image") or "",
+            "platform": platform}
 
 
 def post_to(platform, kit, key_getter):
@@ -186,7 +187,8 @@ def _post_pinterest(b, kv):
         "title": (b["body"] or "").split("\n", 1)[0][:100],
         "description": b["body"] or "",
         "link": b["link"] or "",
-        "media_source": {"source_type": "image_url", "url": og_image(b["link"])},
+        "media_source": {"source_type": "image_url",
+                         "url": b.get("image") or og_image(b["link"])},
     }
     st, data = _post("https://api.pinterest.com/v5/pins",
                      payload, {"Authorization": "Bearer " + tok, **pint_ignore()})

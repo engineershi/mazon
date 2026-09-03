@@ -69,6 +69,7 @@ _SESSIONS = {}  # token -> monotonic expiry
 
 _EBOOKS = {}  # keyword -> build_ebook() dict, LRU-ish (capped below)
 _SOCIAL_WEBHOOK = os.environ.get("SOCIAL_WEBHOOK", "")  # optional real-posting hook
+SOCIAL_PEAK_SLOTS = (8, 12, 19)  # high-engagement schedule hours (morning/lunch/evening)
 
 _TOTOP = ('<div class="totop"><a href="#top" aria-label="Back to top">&uarr;</a></div>'
           '<script src="/ui.js" defer></script>')
@@ -1224,6 +1225,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._social_schedule()
             if parsed.path == "/api/social/flush":
                 return self._social_flush()
+            if parsed.path == "/api/social/topics":
+                return self._social_topics()
             if parsed.path == "/api/tools/launch":
                 return self._tools_launch()
             if parsed.path == "/api/boosts/run":
@@ -3262,6 +3265,22 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
             conn.close()
         return [dict(r) for r in rows], stats
 
+    def _ranked_posts(self, published, stats):
+        """Rank published posts by attributed clicks and tag each as a winner /
+        mid / cold performer. Pure function (offline-testable)."""
+        best = max(stats.values(), default=0)
+        ranked = []
+        for p in published:
+            clicks = stats.get(p["utm_content"]) or 0
+            tag = "cold"
+            if clicks > 0 and (best == 0 or clicks == best):
+                tag = "winner"
+            elif best > 0 and clicks >= max(1, int(best * 0.5)):
+                tag = "warm"
+            ranked.append((clicks, tag, p))
+        ranked.sort(key=lambda row: (-row[0], row[2]["platform"]))
+        return ranked
+
     def _og_image(self, slug):
         """Generated 1200x630 SVG share card — the og:image/twitter:image the
         SEO pages point at. Served publicly + cacheable (static by slug)."""
@@ -3428,14 +3447,36 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                                 "keyword": keyword})
 
     def _schedule_times(self, count, hours=24):
-        """Spread `count` posts evenly across the next `hours` (rate-limit
-        friendly) so a niche's batch doesn't burst the platform all at once."""
+        """Spread `count` posts across the next `hours`, but snap each slot to a
+        high-engagement window (peak-slot biasing) so a niche's batch lands when
+        readers are actually scrolling."""
+        slots = SOCIAL_PEAK_SLOTS
         now = datetime.datetime.utcnow()
         times = []
         for i in range(count):
             delta = float(hours) * (i + 1) / float(max(count, 1))
-            times.append(now + datetime.timedelta(hours=delta))
-        return [t.strftime("%Y-%m-%d %H:%M:%S") for t in times]
+            t = now + datetime.timedelta(hours=delta)
+            # snap to the nearest peak hour today/tomorrow
+            t = self._snap_to_peak(t, slots, delta)
+            times.append(t.strftime("%Y-%m-%d %H:%M:%S"))
+        return times
+
+    def _snap_to_peak(self, t, slots, delta_hours):
+        """Slide a moment to the nearest of the given peak hours (still forward
+        within the same spreading window)."""
+        best = t
+        if t.hour in slots:
+            return t
+        best_dist = 25
+        for h in slots:
+            for day in (0, 1):
+                cand = t.replace(hour=h, minute=0, second=0, microsecond=0) \
+                    + datetime.timedelta(days=day)
+                dist = (cand - t).total_seconds() / 3600.0
+                if 0 <= dist <= best_dist and dist <= float(delta_hours):
+                    best_dist = dist
+                    best = cand
+        return best
 
     def _social_schedule(self):
         """Queue a niche's post kits as future, spaced publishes (rate-limit
@@ -3493,6 +3534,74 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
         return self._send(200, {"ok": True, "published_now": published_now,
                                 "still_pending": pending})
 
+    def _social_topics(self):
+        """Recycle long-tail /n/<parent>/<term> pages into tracked post kits +
+        scheduled social posts, so every indexed long-tail page also earns social
+        traffic. Body: {niche?: keyword (default all), schedule?: bool, hours?: n}."""
+        body = self._body()
+        only_kw = (str(body.get("niche") or "") or "").strip()
+        do_schedule = bool(body.get("schedule"))
+        hours = int(body.get("hours") or 24)
+        kits_built = 0
+        scheduled = 0
+        niches_used = []
+        for n in self._all_niches():
+            kw = n["keyword"]
+            if only_kw and kw.strip().lower() != only_kw.strip().lower():
+                continue
+            products = n["products"] or []
+            if not products:
+                continue
+            parent_slug = seo._slugify(kw)
+            topics = self._topics_for(parent_slug)
+            if not topics:
+                continue
+            niches_used.append(kw)
+            for topic in topics:
+                tterm = topic["term"]
+                tkits = social.topic_post_kits(
+                    tterm, kw, products, seo.BASE_URL, parent_slug=parent_slug,
+                    slug=seo._slugify(topic["slug"]))
+                kits_built += len(tkits)
+                if do_schedule:
+                    scheduled += self._queue_topic_kits(parent_slug, kw, tterm, tkits, hours)
+        return self._send(200, {"ok": True,
+                                "kits_built": kits_built,
+                                "scheduled": scheduled,
+                                "niches": niches_used})
+
+    def _queue_topic_kits(self, parent_slug, kw, term, kits, hours):
+        """Insert topic kits into social_posts as future scheduled publishes.
+        Returns number queued."""
+        if not kits:
+            return 0
+        times = self._schedule_times(len(kits), hours=hours)
+        queued = 0
+        with _lock:
+            conn = _db()
+            for kit, at in zip(kits, times):
+                code = kit["utm_content"]
+                row = conn.execute(
+                    "SELECT id FROM social_posts WHERE lower(slug)=? AND utm_content=?",
+                    (parent_slug, code)).fetchone()
+                if row:
+                    conn.execute(
+                        "UPDATE social_posts SET status='scheduled', scheduled_at=?, "
+                        "name=?, body=?, link=? WHERE id=?",
+                        (at, kit["name"], kit["body"], kit["link"], row["id"]))
+                else:
+                    conn.execute(
+                        "INSERT INTO social_posts (slug, keyword, platform, name, body, "
+                        "link, utm_content, status, scheduled_at) "
+                        "VALUES (?,?,?,?,?,?,?,'scheduled',?)",
+                        (parent_slug, ("%s %s" % (kw, term)).strip(),
+                         kit["platform"], kit["name"], kit["body"], kit["link"],
+                         code, at))
+                queued += 1
+            conn.commit()
+            conn.close()
+        return queued
+
     def _admin_social(self, q):
         niches = [n["keyword"] for n in self._all_niches()]
         keyword = (q.get("keyword") or [""])[0].strip() or (niches[0] if niches else "")
@@ -3536,14 +3645,23 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
         kit_html = "".join(kit_cards) if kit_cards else \
             '<p class="hint">Choose a saved niche with products — each kit turns its top pick into a tracked post.</p>'
         pub_rows = "".join(
-            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class='ct'>%s</td>"
+            "<tr>%s<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class='ct'>%s</td>"
             "<td class='ct'><a target='_blank' rel='noopener' href='%s'>open ↗</a></td></tr>"
-            % (seo._clean(p["platform"]), seo._clean(p["name"]), seo._clean(p["utm_content"]),
-               seo._clean(p["published_at"] or p["created_at"]),
-               stats.get(p["utm_content"]) or 0,
+            % ("<td class='ct'>%s</td>" % ("🥇" if tag == "winner" else ("🔥" if tag == "warm" else "")),
+               seo._clean(p["platform"]), seo._clean(p["name"]), seo._clean(p["utm_content"]),
+               seo._clean(p["published_at"] or p["created_at"]), clicks,
                "/social/" + seo._clean(p["slug"]) + "/" + seo._clean(p["utm_content"]))
-            for p in published) or \
-            "<tr><td colspan='6' class='hint'>Nothing published yet — hit Publish above.</td></tr>"
+            for clicks, tag, p in self._ranked_posts(published, stats)) or \
+            "<tr><td colspan='7' class='hint'>Nothing published yet — hit Publish above.</td></tr>"
+        perf_note = ""
+        ranked = self._ranked_posts(published, stats)
+        if ranked:
+            n_won = sum(1 for _, t, _ in ranked if t == "winner")
+            n_cold = sum(1 for _, t, _ in ranked if t == "cold")
+            perf_note = ("<p class='hint' style='margin-top:6px'><b>Post performance</b>: "
+                         "%d winner(s) to replicate · %d cold (0-click) post(s) to rewrite or drop. "
+                         "Re-publish winners on a fresh code; rewrite cold copy before re-sharing.</p>"
+                         % (n_won, n_cold))
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Social — pstore</title><link rel="stylesheet" href="/style.css">
@@ -3569,9 +3687,11 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
 </section>
 <section class="card"><h2>✅ Published posts &amp; clicks</h2>
 <p class="hint">Each code counts clicks on the landing page with that exact UTM tag — so you can see, per post, who clicked through.</p>
-<div class="table-wrap"><table class="plain"><thead><tr><th>Platform</th><th>Post</th><th>Code</th><th>Published</th><th>Clicks</th><th>Live</th></tr></thead>
+<div class="table-wrap"><table class="plain"><thead><tr><th>Perf</th><th>Platform</th><th>Post</th><th>Code</th><th>Published</th><th>Clicks</th><th>Live</th></tr></thead>
 <tbody>{pub_rows}</tbody></table></div>
+{perf_note}
 <button class="warm" id="flush">Flush due scheduled posts</button>
+<button class="warm" id="topics">Recycle long-tail topics → posts</button>
 <p id="flushout" class="msg"></p></section>
 </main>
 <footer><p>Posts only use real scraped data (title, price, stars, reviews) — no fabricated claims. Landing page carries the courier beacon, so every tap is attributed.</p></footer>
@@ -3608,12 +3728,23 @@ async function flush(){{
     : "Flush failed.";
   setTimeout(()=>location.reload(), 900);
 }}
+async function recycle(){{
+  $("flushout").textContent = "Building topic kits…";
+  const r = await fetch("/api/social/topics", {{method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify({{schedule: true, hours: 48}})}});
+  const d = await r.json().catch(()=>({{ok:false}}));
+  $("flushout").textContent = d && d.ok
+    ? "Built kits from " + d.kits_built + " long-tail page(s); " + d.scheduled + " scheduled across 48h (" + d.niches.length + " niches)."
+    : "Recycle failed.";
+  setTimeout(()=>location.reload(), 1200);
+}}
 document.addEventListener("click", (e)=>{{
   const p = e.target.closest(".soc-pub");
   if (p){{ pub(p); return; }}
   const s = e.target.closest(".soc-sched");
   if (s){{ sched(s); return; }}
   if (e.target.closest("#flush")){{ flush(); return; }}
+  if (e.target.closest("#topics")){{ recycle(); return; }}
   const c = e.target.closest(".soc-copy");
   if (c){{
     const box = c.closest(".soc-kit");

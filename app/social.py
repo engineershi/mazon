@@ -50,6 +50,13 @@ def track_link(base_url, slug, platform, content):
     return "%s/lp/%s?%s" % (base, slug, q)
 
 
+def og_image_url(base_url, slug):
+    """Absolute URL to the auto-generated 1200x630 share card for a niche
+    (og:image / Pinterest / Instagram-adjacent). Lives at /og/<slug>."""
+    base = (base_url or "").rstrip("/")
+    return "%s/og/%s" % (base, slug)
+
+
 def _clip(s, n=80):
     s = str(s or "")
     return s[:n - 1].rstrip() + "…" if len(s) > n else s
@@ -169,8 +176,50 @@ def post_kits(keyword, items, base_url, slug=None):
         kit["utm_content"] = content
         kit["proof"] = proof
         kit["target"] = "landing"
+        kit["image"] = og_image_url(base_url, slug)
         kits.append(kit)
     return kits
+
+
+def topic_post_kits(term, parent_keyword, items, base_url, parent_slug=None, slug=None):
+    """Long-tail topic recycling: same one pick, but the copy names the specific
+    long-tail angle (/n/<parent>/<term>) so every indexed topic page earns social
+    traffic too. Uses its own tracked link with content tagged for the topic."""
+    pick = market_engine.pick_for_buyers(items)
+    if not (pick or {}).get("asin"):
+        return []
+    parent_slug = parent_slug or (re.sub(r"[^a-z0-9]+", "-", (parent_keyword or "").lower())
+                                  .strip("-") or "niche")
+    slug = slug or parent_slug
+    title = pick.get("title") or ""
+    proof = _proof(pick)
+    price = _price(pick)
+    label = _hashtag(term) or term or parent_slug
+    kits = []
+    for platform in PLATFORMS:
+        content = short_code()
+        # point to the long-tail page with the topic in the UTM campaign
+        q = urllib.parse.urlencode({
+            "utm_source": _key(platform), "utm_medium": "social",
+            "utm_campaign": slug + "-t-" + _hashtag(term) if term else slug,
+            "utm_content": content})
+        link = "%s/n/%s/%s?%s" % ((base_url or "").rstrip("/"), parent_slug, slug, q) \
+            if term else track_link(base_url, slug, platform, content)
+        kit = _COMPOSERS[platform]("%s %s" % (parent_keyword, term), title, proof,
+                                   price, link, slug)
+        kit["slug"] = slug
+        kit["utm_content"] = content
+        kit["proof"] = proof
+        kit["target"] = "topic"
+        kit["term"] = term
+        kit["image"] = og_image_url(base_url, parent_slug)
+        kits.append(kit)
+    return kits
+
+
+def _hashtag(s):
+    words = re.findall(r"[a-z0-9]+", (s or "").lower())
+    return (words[0] if words else "") or (words or [""])[0]
 
 
 # ------------------------------------------------------------------ og preview
