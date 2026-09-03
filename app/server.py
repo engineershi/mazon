@@ -850,6 +850,7 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
 {chip('/admin/emails', '📧 Emails', 'emails')}
 {chip('/admin/ebooks', '📕 Ebooks', 'ebooks')}
 {chip('/admin/analytics', '📊 Analytics', 'analytics')}
+{chip('/admin/marketing', '📣 Marketing ROI', 'marketing')}
 {chip('/admin/apikeys', '🔌 API Keys', 'apikeys')}
 {chip('/admin/opportunities', '📈 Grow', 'opportunities')}
 {chip('/admin/priority', '💰 Prioritize', 'priority')}
@@ -1077,6 +1078,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_emails(q)
             if path == "/admin/analytics":
                 return self._admin_analytics()
+            if path == "/admin/marketing":
+                return self._admin_marketing()
             if path == "/admin/variants":
                 return self._admin_variants(q)
             if path == "/admin/apikeys":
@@ -1110,6 +1113,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._seo_audit_api()
             if path == "/api/seo/topics":
                 return self._seo_topics_api()
+            if path == "/api/marketing":
+                return self._marketing_api()
             if path.startswith("/seo/snippet/"):
                 return self._seo_snippet(path[len("/seo/snippet/"):])
             if path == "/api/social":
@@ -4040,6 +4045,166 @@ fresh();
                 return None
         return self._send(404, b"<html><body><p>Niche not found.</p></body></html>",
                           "text/html; charset=utf-8")
+
+    def _marketing_payload(self):
+        """Unified digital-marketing ROI across email, social and organic
+        traffic. Pure aggregation off the same tables the other tools feed:
+        clicks (all attribution), email_events (opens/clicks), sent_emails,
+        events (pageviews), social_posts. Offline + honest — no fabricated
+        metrics."""
+        with _lock:
+            conn = _db()
+            def q1(sql, args=()):
+                return conn.execute(sql, args).fetchone()[0] or 0
+            confirmed = q1("SELECT COUNT(*) FROM subscribers WHERE confirmed=1 AND unsubscribed=0")
+            unsubbed = q1("SELECT COUNT(*) FROM subscribers WHERE unsubscribed=1")
+            sent_emails = q1("SELECT COUNT(*) FROM sent_emails")
+            opens = q1("SELECT COUNT(*) FROM email_events WHERE type='open'")
+            email_clicks = q1("SELECT COUNT(*) FROM clicks WHERE source='email'")
+            seq_done = q1("SELECT COUNT(*) FROM subscribers WHERE sent_index>=?",
+                          (mailer.SEQUENCE_LENGTH,))
+            social_pub = q1("SELECT COUNT(*) FROM social_posts WHERE status='published'")
+            social_sched = q1("SELECT COUNT(*) FROM social_posts WHERE status='scheduled'")
+            social_clicks = q1("SELECT COUNT(*) FROM clicks WHERE source='social'")
+            views = q1("SELECT COUNT(*) FROM events WHERE name='view'")
+            promo = q1("SELECT COUNT(*) FROM events WHERE name!='view'")
+            niches = q1("SELECT COUNT(*) FROM niches")
+            topics = q1("SELECT COUNT(*) FROM topics")
+            # top landing pages by clicks (cross-channel attribution)
+            top_pages = conn.execute(
+                "SELECT slug, COUNT(*) c FROM clicks GROUP BY slug "
+                "ORDER BY c DESC LIMIT 5").fetchall()
+            # top email open actions
+            top_open_niches = conn.execute(
+                "SELECT keyword, COUNT(*) c FROM email_events WHERE type='open' "
+                "GROUP BY keyword ORDER BY c DESC LIMIT 5").fetchall()
+            # winners: published social posts >0 clicks
+            soc_rows = conn.execute(
+                "SELECT utm_content, platform, name FROM social_posts "
+                "WHERE status='published' AND utm_content!=''").fetchall()
+            conn.close()
+        click_stats = {}
+        if soc_rows:
+            with _lock:
+                c2 = _db()
+                for r in soc_rows:
+                    click_stats[(r["utm_content"])] = c2.execute(
+                        "SELECT COUNT(*) FROM clicks WHERE content=? AND source='social'",
+                        (r["utm_content"],)).fetchone()[0] or 0
+                c2.close()
+        winners = [dict(r, clicks=click_stats.get(r["utm_content"], 0))
+                   for r in soc_rows if click_stats.get(r["utm_content"], 0) > 0]
+        winners.sort(key=lambda r: -r["clicks"])
+
+        email_open_rate = (opens / sent_emails * 100) if sent_emails else 0.0
+        email_ctr = (email_clicks / sent_emails * 100) if sent_emails else 0.0
+
+        # Next-best-action recommendations, tied to real state.
+        reco = []
+        if not niches:
+            reco.append("Add a niche — nothing to market yet.")
+        elif (winners):
+            reco.append("Amplify your top social winner (<b>%s</b>, %d click(s)) into a fresh post code." %
+                        (seo._clean(winners[0]["name"] or (winners[0]["utm_content"] or "")),
+                         winners[0]["clicks"]))
+        if confirmed and confirmed == unsubbed:
+            reco.append("No confirmed subscribers — check the email gate on your landing pages.")
+        elif confirmed:
+            if sent_emails and opens == 0:
+                reco.append("Emails are sending but nothing is opening — tighten subject lines / sender name.")
+            elif email_clicks == 0 and sent_emails:
+                reco.append("Emails open but get no clicks — your CTA link isn't compelling; try the tracked-link format.")
+            if seq_done < confirmed:
+                reco.append("Sequence still going — %d of %d confirmed subscribers have finished all %d parts." %
+                            (seq_done, confirmed, mailer.SEQUENCE_LENGTH))
+        if views and topics:
+            reco.append("%d long-tail page(s) live — recycle them into social posts via 'Recycle long-tail topics'." % topics)
+        if not reco:
+            reco.append("Everything looks set — publish social kits + grow topics and subscribers.")
+
+        return {
+            "email": {
+                "confirmed": confirmed, "unsubscribed": unsubbed,
+                "sent": sent_emails, "opens": opens,
+                "open_rate": round(email_open_rate, 1),
+                "clicks": email_clicks, "click_rate": round(email_ctr, 1),
+                "sequence_done": seq_done, "sequence_length": mailer.SEQUENCE_LENGTH,
+            },
+            "social": {
+                "published": social_pub, "scheduled": social_sched,
+                "clicks": social_clicks, "winners": winners,
+            },
+            "traffic": {
+                "views": views, "interactions": promo, "pages": [dict(r) for r in top_pages],
+                "top_open_niches": [dict(r) for r in top_open_niches],
+            },
+            "content": {"niches": niches, "topics": topics},
+            "recommendations": reco,
+        }
+
+    def _marketing_api(self):
+        return self._send(200, self._marketing_payload())
+
+    def _admin_marketing(self):
+        """Unified digital-marketing ROI hub: email + social + organic traffic on
+        one page, with next-best-action recommendations."""
+        p = self._marketing_payload()
+        em, so, tr, co, reco = p["email"], p["social"], p["traffic"], p["content"], p["recommendations"]
+        def stat(n, label, extra=""):
+            return ('<div class="feature"><h3>%s</h3><p class="hint">%s</p>%s</div>'
+                    % (seo._clean(n), label, extra))
+        email_row = ("<div class='row' style='align-items:stretch'>" +
+                     stat(em["confirmed"], "confirmed") +
+                     stat(em["sent"], "emails sent") +
+                     stat("%.1f%%" % em["open_rate"], "open") +
+                     stat("%.1f%%" % em["click_rate"], "email CTR") +
+                     stat(em["clicks"], "email clicks") +
+                     stat("%d/%d" % (em["sequence_done"], em["confirmed"]), "finished sequence")
+                     + "</div>")
+        social_row = ("<div class='row' style='align-items:stretch'>" +
+                      stat(so["published"], "published posts") +
+                      stat(so["scheduled"], "scheduled") +
+                      stat(so["clicks"], "social clicks") +
+                      stat(len(so["winners"]), "click winners") +
+                      "</div>")
+        traffic_row = ("<div class='row' style='align-items:stretch'>" +
+                       stat(tr["views"], "page views") +
+                       stat(tr["interactions"], "on-page interactions") +
+                       stat(co["niches"], "niches") +
+                       stat(co["topics"], "long-tail pages") +
+                       "</div>")
+        winners_html = "".join(
+            "<tr><td>%s</td><td>%s</td><td class='ct'>%d</td></tr>"
+            % (seo._clean(w["platform"]), seo._clean(w["name"] or ""), w["clicks"])
+            for w in so["winners"]) or "<tr><td colspan='3' class='hint'>No click-winning posts yet.</td></tr>"
+        top_pages = "".join(
+            "<tr><td>%s</td><td class='ct'>%d</td></tr>" % (seo._clean(r["slug"]), r["c"])
+            for r in tr["pages"]) or "<tr><td colspan='2' class='hint'>No tracked clicks yet.</td></tr>"
+        reco_html = "".join("<li>%s</li>" % r for r in reco)
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marketing ROI — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow"></head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Digital marketing <span>ROI.</span></h1>
+<p class="tagline">Email, social and organic traffic consolidated on one page — every number comes from your own attribution (opened emails, tracked clicks, pageviews). No phantom metrics.</p></div>
+{self._admin_nav('marketing')}
+</header>
+<main>
+<section class="card"><h2>📧 Email engine</h2>{email_row}
+<p class="hint">Opens come from the open-pixel; clicks from tracked /e/ outbound links. Sequence length: {em["sequence_length"]}.</p></section>
+<section class="card"><h2>📣 Social publishing</h2>{social_row}
+<div class="table-wrap"><table class="plain"><thead><tr><th>Platform</th><th>Winner post</th><th>Clicks</th></tr></thead><tbody>{winners_html}</tbody></table></div></section>
+<section class="card"><h2>🌐 Traffic &amp; content</h2>{traffic_row}
+<div class="table-wrap"><table class="plain"><thead><tr><th>Most-clicked page</th><th>Clicks</th></tr></thead><tbody>{top_pages}</tbody></table></div></section>
+<section class="card"><h2>💡 Next best action</h2><ul class="reco">{reco_html}</ul>
+<p class="hint" style="margin-top:8px">Jump to: <a href="/admin/emails">emails</a> · <a href="/admin/social">social</a> · <a href="/admin/seo">SEO audit</a> · <a href="/admin/analytics">full analytics</a></p></section>
+</main>
+<footer><p>Attribution truth: a click is an email open (pixel), an email CTA click (/e/), a social tap (UTM), or a pageview. Everything here is computed from those real events.</p></footer>
+<script src="/table-flow.js" defer></script>
+{_TOTOP}
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
 
     def _sem_payload(self, keyword):
         keyword = (keyword or "").strip()

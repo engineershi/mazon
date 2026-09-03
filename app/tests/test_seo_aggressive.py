@@ -121,6 +121,40 @@ class TestSeoAggressive(unittest.TestCase):
         self.assertIsInstance(payload["topics"], list)
         self.assertGreaterEqual(payload["count"], 0)
 
+    # ------------------------------------------------- marketing ROI
+
+    def test_marketing_api_requires_auth(self):
+        st, _, _, _ = self._raw("/api/marketing")
+        self.assertEqual(st, 401)
+
+    def test_marketing_payload_shape(self):
+        st, _, _, data = self._raw("/api/marketing", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        p = json.loads(data)
+        self.assertEqual(set(p.keys()),
+                         {"email", "social", "traffic", "content",
+                          "recommendations"})
+        self.assertEqual(set(p["email"]),
+                         {"confirmed", "unsubscribed", "sent", "opens",
+                          "open_rate", "clicks", "click_rate",
+                          "sequence_done", "sequence_length"})
+        self.assertIsInstance(p["recommendations"], list)
+
+    def test_marketing_rates_are_finite(self):
+        st, _, _, data = self._raw("/api/marketing", cookie=self.cookie)
+        p = json.loads(data)
+        self.assertGreaterEqual(p["email"]["open_rate"], 0.0)
+        self.assertLessEqual(p["email"]["open_rate"], 100.0)
+        self.assertEqual(p["content"]["niches"], p["content"]["niches"])  # exists
+
+    def test_admin_marketing_page_serves(self):
+        st, _, ctype, data = self._raw("/admin/marketing", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("text/html"))
+        html = data.decode("utf-8", "replace")
+        self.assertIn("Digital marketing", html)
+        self.assertIn("Next best action", html)
+
 
 if __name__ == "__main__":
     unittest.main()
