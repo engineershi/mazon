@@ -180,12 +180,16 @@ class TestSeoAggressive(unittest.TestCase):
         p = json.loads(data)
         self.assertEqual(set(p.keys()), {"stages", "leak", "stats",
                                          "recommendations"})
-        self.assertEqual(len(p["stages"]), 4)
-        self.assertEqual([s["n"] for s in p["stages"]], [1, 2, 3, 4])
+        self.assertEqual(len(p["stages"]), 5)
+        self.assertEqual([s["n"] for s in p["stages"]], [1, 2, 3, 4, 5])
         # each stage has a value + conversion to next stage
         for s in p["stages"]:
             self.assertIn("value", s)
             self.assertIn("conv", s)
+        # Earn stage draws real + estimated revenue from clicks
+        self.assertIn("commission_est", p["stats"])
+        self.assertIn("channels", p["stats"])
+        self.assertIn("real_earnings", p["stats"])
         # leak lost >= 0 when present
         if p["leak"]:
             self.assertGreaterEqual(p["leak"]["lost"], 0)

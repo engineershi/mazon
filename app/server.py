@@ -4324,7 +4324,7 @@ fresh();
             % (_d(f), t, n, _d((demo.get(n) or "")), _d(ph))
             for n, f, ph, t in demo_fields)
         demo_editor = (
-            '<section class="card"><h2>🌍 Market demography</h2>'
+            '<section class="card" id="demo"><h2>🌍 Market demography</h2>'
             '<p class="hint">Who + where you market to. This profile is saved to the DB, drives the <a href="#suggest">Auto niche suggestions</a> below, '
             'and is surfaced in every marketing recommendation so new copy (email, social, SEO) is aimed at the right audience.</p>'
             '<form id="demofrm" onsubmit="demoSave();return false;">'
@@ -4430,10 +4430,19 @@ fresh();
                         "ON s.subscriber_id=e.subscriber_id AND s.email_index=e.email_index "
                         "WHERE e.type='open'")
             email_clicks = q1("SELECT COUNT(*) FROM clicks WHERE source='email'")
+            page_clicks = q1("SELECT COUNT(*) FROM clicks WHERE source='page'")
+            landing_clicks = q1("SELECT COUNT(*) FROM clicks WHERE source='landing-cta'")
             all_clicks = q1("SELECT COUNT(*) FROM clicks")
             social_clicks = q1("SELECT COUNT(*) FROM clicks WHERE source='social'")
+            # per-channel click volume -> per-channel estimated earnings
+            chan_rows = conn.execute(
+                "SELECT COALESCE(NULLIF(source,''), 'page') src, COUNT(*) c FROM clicks "
+                "GROUP BY src ORDER BY c DESC").fetchall()
             pages = q1("SELECT COUNT(*) FROM niches") + q1("SELECT COUNT(*) FROM topics")
             reviewed = q1("SELECT COUNT(*) FROM email_events WHERE type='open'")  # engagement proxy
+            month_rows = conn.execute(
+                "SELECT month, orders, earnings FROM earnings_records "
+                "ORDER BY month DESC LIMIT 24").fetchall()
             # per-stage drop-off / conversion
             conn.close()
         # distinct subscribers who opened any email (real engaged audience)
@@ -4446,6 +4455,21 @@ fresh();
                 "SELECT COUNT(DISTINCT substr(referrer,1,80)) FROM clicks WHERE source='email'"
             ).fetchone()[0] or 0
             c.close()
+        # per-channel estimated earnings (answers "which channel is worth investing in")
+        chan_totals = []
+        for r in chan_rows:
+            est = earnings.estimate(r["c"], "")
+            chan_totals.append({"source": r["src"], "clicks": r["c"],
+                                "commission_est": round(est["commission_est"], 2),
+                                "orders_est": est["orders_est"]})
+        chan_totals.sort(key=lambda x: x["commission_est"], reverse=True)
+        total_comm_est = round(sum(x["commission_est"] for x in chan_totals), 2)
+        total_orders_est = sum(x["orders_est"] for x in chan_totals)
+        real_ledger = [{"month": r["month"], "orders": r["orders"],
+                        "earnings": r["earnings"]} for r in month_rows]
+        real_summary = earnings.monthly_summary(real_ledger)
+        # which channel leaks the most at the final click->earn step
+        best_channel = chan_totals[0] if chan_totals else None
         stages = [
             {"n": 1, "name": "1 · Attract", "emoji": "🌐",
              "metric": "Landing / topic page views", "value": attract,
@@ -4459,6 +4483,11 @@ fresh();
             {"n": 4, "name": "4 · Multiply", "emoji": "💰",
              "metric": "Outbound affiliate clicks", "value": all_clicks,
              "note": "Every tracked tap to Amazon across all channels."},
+            {"n": 5, "name": "5 · Earn", "emoji": "🤑",
+             "metric": "Estimated commission", "value": total_comm_est,
+             "note": "Projected from %s clicks at %.1f%% AOV-$%.0f × %.2f%% order-rate." %
+                     (all_clicks, earnings.commission_pct(""), earnings.avg_order(""),
+                      earnings.order_rate("") * 100)},
         ]
         # conversion rates between consecutive stages (0 guard)
         def rate(i):
@@ -4484,6 +4513,11 @@ fresh();
             reco.append("Emails open but nobody clicks the CTA — make the tracked-link call-to-action more compelling.")
         if pages == 0:
             reco.append("No content pages yet — the funnel has no engine. Build niches.")
+        if best_channel and best_channel["clicks"] > 0:
+            reco.append("Top channel by est. earnings is '%s' (%.2f). Double down there — it's already converting your audience." %
+                        (best_channel["source"], best_channel["commission_est"]))
+        elif all_clicks == 0:
+            reco.append("No clicks recorded yet — push pages to social + email so the funnel earns.")
         if not reco:
             reco.append("Funnel is flowing — grow the top (more pages, more traffic) and keep every stage >0.")
         return {
@@ -4494,8 +4528,13 @@ fresh();
                 "emails_sent": sent, "emails_opened": opened, "distinct_openers": opened_subs,
                 "email_clicks": email_clicks, "email_convert_to_click": round(
                     email_clicks / max(opened, 1) * 100, 1),
-                "social_clicks": social_clicks, "all_clicks": all_clicks,
+                "social_clicks": social_clicks, "page_clicks": page_clicks,
+                "landing_clicks": landing_clicks, "all_clicks": all_clicks,
                 "pages": pages,
+                "commission_est": total_comm_est, "orders_est": total_orders_est,
+                "channels": chan_totals, "best_channel": best_channel["source"] if best_channel else None,
+                "real_orders": real_summary["total_orders"],
+                "real_earnings": round(real_summary["total_earnings"], 2),
             },
             "recommendations": reco,
         }
@@ -4534,6 +4573,25 @@ fresh();
                                        (st["pages"], "content pages")]
                       ) + "</div>")
         reco_html = "".join("<li>%s</li>" % r for r in p["recommendations"])
+        chan_rows_html = "".join(
+            "<tr><td>%s</td><td class='ct'>%s</td><td class='ct'>%.2f</td></tr>"
+            % (seo._clean(x["source"]), x["clicks"], x["commission_est"])
+            for x in st["channels"]) or "<tr><td colspan='3' class='hint'>No clicks yet.</td></tr>"
+        earn_html = ("<div class='row'><div class='feature'><h3>$%.2f</h3>"
+                     "<p class='hint'>est. commission · %.1f orders</p></div>"
+                     "<div class='feature'><h3>$%.2f</h3><p class='hint'>real earnings logged</p></div></div>"
+                     "<h3>Channel returns (est.)</h3>"
+                     "<table><thead><tr><th>Source</th><th class='ct'>Clicks</th>"
+                     "<th class='ct'>Est. commission</th></tr></thead><tbody>%s</tbody></table>"
+                     % (st["commission_est"], st["orders_est"], st["real_earnings"], chan_rows_html))
+        rows_html = ("<h3>Earn — clicks your channels actually bill</h3>"
+                     + "<div class='row'>"
+                     + "".join('<div class="feature"><h3>%s</h3><p class="hint">%s</p></div>'
+                               % (seo._clean(str(v)), seo._clean(l))
+                               for v, l in [(st["page_clicks"], "organic page clicks"),
+                                            (st["landing_clicks"], "landing CTA clicks"),
+                                            (st["commission_est"], "total est. commission $")]
+                               ) + "</div>")
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sales funnel — pstore</title><link rel="stylesheet" href="/style.css">
@@ -4552,6 +4610,7 @@ fresh();
 <main>
 <section class="card"><h2>⚙️ Funnel stages</h2>{stages_html}{leak_html}</section>
 <section class="card"><h2>📊 Delivery &amp; multiply detail</h2>{stats_html}</section>
+<section class="card"><h2>🤑 Earn from clicks</h2>{earn_html}{rows_html}</section>
 <section class="card"><h2>💡 What to fix first</h2><ul class="reco">{reco_html}</ul>
 <p class="hint" style="margin-top:8px">Act on the leak: <a href="/admin/emails">emails</a> · <a href="/admin/social">social</a> · <a href="/admin/seo">SEO</a> · <a href="/admin/analytics">analytics</a> · <a href="/admin/marketing">ROI dashboard</a></p></section>
 </main>
@@ -4734,6 +4793,33 @@ async function soc_save(){{
                     else "+%d more long-tail page(s)" % min(6, w.get("topic_count", 0)))))
         winners_html = "".join(cards) or \
             '<p class="hint">No proven winners yet. Publish social posts and get pages indexed — clicks here become build targets.</p>'
+        try:
+            _sg = self._suggest_payload()
+            _sugs = _sg.get("suggestions") or []
+            _profile = _sg.get("profile") or {}
+            _seednote = "profile: %s · %s · %s" % (_profile.get("region") or "any region",
+                                                   _profile.get("interest") or "any interest",
+                                                   _profile.get("behavior") or "any behavior")
+        except Exception:
+            _sugs, _seednote = [], ""
+        _sug_cards = "".join(
+            '<div class="sub"><h3>%s <span class="who">· score %s / sat %s</span></h3>'
+            '<p class="hint">%s · %d products</p>'
+            '<p><button type="button" class="btn" data-kw="%s">⚡ Build this idea</button> '
+            '<span class="pill hint" data-sb="%s">unbuilt</span></p></div>'
+            % (seo._clean(s["keyword"]), seo._clean(str(s["score"])),
+               seo._clean(str(s["saturation"] or 0)), seo._clean(s.get("reason") or ""),
+               s.get("count") or 0, seo._clean(s["keyword"]), seo._clean(s["keyword"]))
+            for s in _sugs) or \
+            '<p class="hint">Set a demography interest in the Market → ROI dashboard, then come back — or edit the profile below.</p>'
+        suggest_html = (
+            '<section class="card"><h2>🎯 Suggested by your audience (<a href="/admin/marketing#demo" '
+            'style="font-size:12px">edit demography</a>)</h2>'
+            '<p class="hint">Fresh niches the engine thinks your audience will click, ranked by demand + persona match. '
+            'One click mines it, saves it, and builds 6 long-tail pages. Seeds: %s</p>'
+            '<div class="cols">%s</div>'
+            '<p id="sout" class="msg"></p></section>'
+            % (seo._clean(_seednote), _sug_cards))
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Grow — pstore</title><link rel="stylesheet" href="/style.css">
@@ -4751,6 +4837,7 @@ async function soc_save(){{
 <div class="cols">{winners_html}</div>
 <p id="out" class="msg"></p>
 </section>
+{suggest_html}
 </main>
 <footer><p>New pages are created from live Amazon autosuggest terms around a proven niche — demand-driven, not guessed. Long-tail pages layer even more indexable URLs under each winner.</p></footer>
 <script>
@@ -4774,6 +4861,22 @@ document.addEventListener("click", async (e)=>{{
   if (grow) return hit("/api/opportunities/expand", grow.dataset.slug, $("out"), grow);
   const lt = e.target.closest(".lt");
   if (lt) return hit("/api/topics/generate", lt.dataset.slug, $("out"), lt);
+  const sb = e.target.closest("[data-kw]");
+  if (sb) {{
+    sb.disabled = true; const old = sb.textContent; sb.textContent = "Building…";
+    $("sout").textContent = "Mining “" + sb.dataset.kw + "” and creating pages…";
+    const r = await fetch("/api/suggest/build", {{method:"POST",
+      headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{keyword: sb.dataset.kw}})}});
+    const d = await r.json().catch(()=>({{ok:false}}));
+    const ph = sb.parentElement.querySelector("[data-sb]");
+    if (d && d.ok) {{
+      $("sout").textContent = "Built \u201C" + d.keyword + "\u201D /n/" + d.slug + " + " + d.topic_pages + " long-tail pages.";
+      ph.textContent = "✓ built"; ph.className = "pill ok"; sb.style.display = "none";
+    }} else {{
+      $("sout").textContent = (d && (d.error || d.message)) || "Build failed.";
+      sb.disabled = false; sb.textContent = old; ph.textContent = "failed"; ph.className = "pill err";
+    }}
+  }}
 }});
 </script>
 </body></html>"""
@@ -4864,10 +4967,13 @@ document.addEventListener("click", async (e)=>{{
             return '<span class="badge %s">%s</span>' % (s, t)
         lt_html = "".join(
             '<div class="sub"><h3>%s %s</h3>'
-            '<p class="key">/n/%s</p></div>'
+            '<p class="key">/n/%s</p>'
+            '<p><button type="button" class="btn" data-build="%s">⚡ Build this page</button> '
+            '<span class="pill hint" data-state="%s">unbuilt</span></p></div>'
             % (seo._clean(g["phrase"]), chip(g["intent"],
                  "source" if g["intent"] == "target" else "demand"),
-               seo._clean(g["slug"])) for g in lt) or '<p class="hint">No suggestions yet.</p>'
+               seo._clean(g["slug"]), seo._clean(g["phrase"]), seo._clean(g["slug"]))
+            for g in lt) or '<p class="hint">No suggestions yet.</p>'
         fixes_html = "".join(
             '<li><b>%s</b> — %s</li>' % (seo._clean(f["label"]), seo._clean(f["detail"]))
             for f in (intent.get("fixes") or []))
@@ -4881,6 +4987,15 @@ document.addEventListener("click", async (e)=>{{
             % (seo._clean(p["label"]), seo._clean(p["detail"])) for p in perf)
         page_state = ("<b>in sitemap</b>" if page.get("sitemap") else "not in sitemap") + \
             (" · <b>IndexNow key ready</b>" if page.get("indexnow_key") else " · IndexNow key missing")
+        sem_build_js = ("(function(){var b=document.querySelectorAll('[data-build]');"
+            "Array.prototype.forEach.call(b,function(x){x.addEventListener('click',function(){"
+            "var ph=x.parentElement.querySelector('[data-state]');ph.textContent='building…';ph.className='pill hint';"
+            "var kw=x.getAttribute('data-build');"
+            "fetch('/api/suggest/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keyword:kw})})"
+            ".then(function(r){return r.json()}).then(function(j){"
+            "if(j&&j.ok){ph.textContent='✓ built — /n/'+j.slug+' + '+j.topic_pages+' topics';ph.className='pill ok';x.style.display='none';}"
+            "else{ph.textContent='build failed';ph.className='pill err';}"
+            "}).catch(function(){ph.textContent='build failed';ph.className='pill err';});});});}());")
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SEM — {seo._clean(keyword)} · pstore</title><link rel="stylesheet" href="/style.css">
@@ -4924,6 +5039,9 @@ document.addEventListener("click", async (e)=>{{
 <p class="hint"><a href="/tool?keyword={seo._clean(keyword)}">Open Workbench for “{seo._clean(keyword)}” →</a></p></section>
 </main>
 <footer><p>The funnel grows the keyword pool around each review page. All suggestions are honest — we never assert traffic or rankings we can't observe.</p></footer>
+<script>
+{sem_build_js}
+</script>
 {_TOTOP}
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
