@@ -3526,12 +3526,13 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                                 "native": _native_posted_count(results),
                                 "keyword": keyword})
 
-    def _schedule_times(self, count, hours=24):
+    def _schedule_times(self, count, hours=24, now=None):
         """Spread `count` posts across the next `hours`, but snap each slot to a
         high-engagement window (peak-slot biasing) so a niche's batch lands when
-        readers are actually scrolling."""
+        readers are actually scrolling. `now` is injectable for deterministic
+        tests."""
         slots = SOCIAL_PEAK_SLOTS
-        now = datetime.datetime.utcnow()
+        now = now or datetime.datetime.utcnow()
         times = []
         for i in range(count):
             delta = float(hours) * (i + 1) / float(max(count, 1))

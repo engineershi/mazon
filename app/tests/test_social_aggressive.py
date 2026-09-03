@@ -146,7 +146,9 @@ class TestSocialAggressive(unittest.TestCase):
     # ---------------------------------------------------- peak-slot scheduling
 
     def test_schedule_times_snap_to_peak_slots(self):
-        times = self._h._schedule_times(4, hours=24)
+        import datetime
+        fixed = datetime.datetime(2026, 9, 3, 9, 0, 0)  # 09:00 UTC: peaks ahead
+        times = self._h._schedule_times(4, hours=24, now=fixed)
         self.assertEqual(len(times), 4)
         for t in times:
             hour = int(t.split(" ")[1].split(":")[0])
