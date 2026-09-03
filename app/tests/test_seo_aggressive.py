@@ -168,6 +168,43 @@ class TestSeoAggressive(unittest.TestCase):
         self.assertIn("loadSuggest()", html)
         self.assertIn("/api/suggest", html)
 
+    # -------------------------------------------------- real sales funnel
+
+    def test_funnel_api_requires_auth(self):
+        st, _, _, _ = self._raw("/api/funnel")
+        self.assertEqual(st, 401)
+
+    def test_funnel_payload_shape(self):
+        st, _, _, data = self._raw("/api/funnel", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        p = json.loads(data)
+        self.assertEqual(set(p.keys()), {"stages", "leak", "stats",
+                                         "recommendations"})
+        self.assertEqual(len(p["stages"]), 4)
+        self.assertEqual([s["n"] for s in p["stages"]], [1, 2, 3, 4])
+        # each stage has a value + conversion to next stage
+        for s in p["stages"]:
+            self.assertIn("value", s)
+            self.assertIn("conv", s)
+        # leak lost >= 0 when present
+        if p["leak"]:
+            self.assertGreaterEqual(p["leak"]["lost"], 0)
+
+    def test_admin_funnel_page_serves(self):
+        st, _, ctype, data = self._raw("/admin/funnel", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("text/html"))
+        html = data.decode("utf-8", "replace")
+        self.assertIn("sales funnel", html.lower())
+        self.assertIn("fstage", html)
+
+    def test_admin_nav_is_sectioned(self):
+        st, _, _, data = self._raw("/admin/marketing", cookie=self.cookie)
+        html = data.decode("utf-8", "replace")
+        for label in ("Find", "Build", "Market", "Analyze", "Operate"):
+            self.assertIn('class="navgroup titles">%s</div>' % label, html)
+        self.assertIn("/admin/funnel", html)
+
     # ---------------------------------------------------- demography settings
 
     def test_settings_exposes_demography(self):

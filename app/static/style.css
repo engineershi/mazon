@@ -77,8 +77,19 @@ nav {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
   margin-top: 18px;
 }
+/* Sectioned admin navigation: group labels + their links. */
+nav .titles {
+  font-size: 10.5px; font-weight: 800; letter-spacing: 0.09em;
+  text-transform: uppercase; color: var(--muted, #a06a42);
+  padding: 4px 8px 0; align-self: center; white-space: nowrap;
+  border-right: 1px solid var(--border);
+  margin-right: 2px;
+}
+nav .titles:first-child { padding-left: 2px; }
+nav .titles:last-child { border: none; }
 nav a {
   padding: 8px 16px;
   border-radius: 999px;

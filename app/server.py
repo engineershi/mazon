@@ -860,26 +860,44 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
         def chip(href, label, key, accent=False):
             cls = ' class="primary"' if accent else (" class=\"%s\"" % key if key == active else "")
             return '<a href="%s"%s>%s</a>' % (href, cls, label)
+        def group(title, items):
+            parts = []
+            for it in items:
+                href, label, key = it[0], it[1], it[2]
+                accent = it[3] if len(it) > 3 else False
+                parts.append(chip(href, label, key, accent))
+            return '<div class="navgroup titles">%s</div>%s' % (title, "".join(parts))
+        groups = [
+            ("Find",
+             [("/dashboard", "🧭 Dashboard", "dashboard"),
+              ("/tool", "🛠 Tools", "tool"),
+              ("/admin/opportunities", "📈 Grow", "opportunities"),
+              ("/admin/priority", "💰 Prioritize", "priority"),
+              ("/admin/sem", "🎯 SEM", "sem")]),
+            ("Build",
+             [("/admin/seo", "🔍 SEO", "seo"),
+              ("/admin/cms", "🧩 Lead pages", "cms"),
+              ("/admin/ebooks", "📕 Ebooks", "ebooks"),
+              ("/admin/refresh", "📡 Refresh", "refresh")]),
+            ("Market",
+             [("/admin/funnel", "⚙️ Funnel", "funnel", True),
+              ("/admin/marketing", "📊 ROI", "marketing"),
+              ("/admin/emails", "📧 Emails", "emails"),
+              ("/admin/social", "📣 Social", "social"),
+              ("/admin/variants", "⚗️ A/B", "variants"),
+              ("/keys", "🔑 Keys", "keys"),
+              ("/admin/apikeys", "🔌 API Keys", "apikeys")]),
+            ("Analyze",
+             [("/admin/analytics", "📈 Analytics", "analytics")]),
+            ("Operate",
+             [("/admin/manual", "📖 Manual", "manual"),
+              ("/admin", "🗺 All pages", "admin", True),
+              ("/admin/logout", "⎋ Logout", "logout")]),
+        ]
+        nav_groups_html = "\n".join(
+            group(ti, items) for ti, items in groups)
         return f"""<nav>
-{chip('/dashboard', '🧭 Dashboard', 'dashboard')}
-{chip('/tool', '🛠 Tools', 'tool')}
-{chip('/keys', '🔑 Keys', 'keys')}
-{chip('/admin/emails', '📧 Emails', 'emails')}
-{chip('/admin/ebooks', '📕 Ebooks', 'ebooks')}
-{chip('/admin/analytics', '📊 Analytics', 'analytics')}
-{chip('/admin/marketing', '📣 Marketing ROI', 'marketing')}
-{chip('/admin/apikeys', '🔌 API Keys', 'apikeys')}
-{chip('/admin/opportunities', '📈 Grow', 'opportunities')}
-{chip('/admin/priority', '💰 Prioritize', 'priority')}
-{chip('/admin/variants', '⚗️ A/B Tests', 'variants')}
-{chip('/admin/social', '📣 Social', 'social')}
-{chip('/admin/sem', '🎯 SEM', 'sem')}
-{chip('/admin/seo', '🔍 SEO', 'seo')}
-{chip('/admin/manual', '📖 Manual', 'manual')}
-{chip('/admin/refresh', '📡 Refresh', 'refresh')}
-{chip('/admin/cms', '🧩 CMS', 'cms')}
-{chip('/admin', '🗺 All pages', 'admin', accent=True)}
-{chip('/admin/logout', '⎋ Logout', 'logout')}
+{nav_groups_html}
 </nav>"""
 
     def _admin_page(self):
@@ -891,23 +909,44 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
                     % (seo._clean(href), ('class="btn ghost" style="width:100%"' if ghost else 'class="btn" style="width:100%"'),
                        seo._clean(label), note_html))
 
-        tools = [btn("/dashboard", "🧭 Niche finder dashboard", "admin"),
-                 btn("/tool", "🛠 Marketing suite", "admin"),
-                 btn("/keys", "🔑 Keys & endpoints", "admin"),
-                 btn("/admin/emails", "📧 Email capture & auto-send", "opt-in"),
-                 btn("/admin/ebooks", "📕 AI ebook generator", "PDF lead magnet"),
-                 btn("/admin/analytics", "📊 Click tracking & analytics", "beacons"),
-                 btn("/admin/variants", "⚗️ A/B headline tests", "per-niche split test"),
-                 btn("/admin/social", "📣 Social publishing", "tracked posts"),
-                 btn("/admin/sem", "🎯 Search funnel (SEM)", "long-tail growth"),
-                 btn("/admin/seo", "🔍 SEO audit", "indexability + schema"),
-                 btn("/admin/manual", "📖 User manual", "visual + PDF guide"),
-                 btn("/admin/cms", "🧩 Lead page CMS", "edit sections &amp; style"),
-                 btn("/admin/refresh", "📡 Data refresh", "manual + auto re-mine")]
+        def section(title, items):
+            return ('<section class="card"><h2>%s</h2><div class="page-grid">%s</div></section>'
+                    % (seo._clean(title), "".join(items)))
+
+        find_section = section("🧭 Find — idea to niche", [
+            btn("/dashboard", "🧭 Niche finder dashboard", "admin"),
+            btn("/admin/opportunities", "📈 Grow — opportunities", "long-tail tree"),
+            btn("/admin/priority", "💰 Prioritize — earnings", "commission + clicks"),
+            btn("/admin/sem", "🎯 Search-intent (SEM)", "keyword briefs")])
+
+        build_section = section("🛠 Build — content & pages", [
+            btn("/admin/seo", "🔍 SEO audit", "indexability + schema"),
+            btn("/admin/cms", "🧩 Lead page CMS", "edit sections &amp; style"),
+            btn("/admin/ebooks", "📕 AI ebook generator", "PDF lead magnet"),
+            btn("/admin/refresh", "📡 Data refresh", "manual + auto re-mine")])
+
+        market_section = section("🚀 Market — channels & conversion", [
+            btn("/admin/funnel", "⚙️ Real sales funnel", "data-backed stages"),
+            btn("/admin/marketing", "📊 Marketing ROI", "email + social + traffic"),
+            btn("/admin/emails", "📧 Emails &amp; sequence", "capture → convert"),
+            btn("/admin/social", "📣 Social publishing", "tracked posts"),
+            btn("/admin/variants", "⚗️ A/B headline tests", "per-niche split test"),
+            btn("/tool", "🛠 One-click marketing suite", "launch everything"),
+            btn("/keys", "🔑 Keys &amp; endpoints", "admin"),
+            btn("/admin/apikeys", "🔌 API keys page", "PA-API + social")])
+
+        analyze_section = section("📈 Analyze — results & growth", [
+            btn("/admin/analytics", "📊 Click tracking &amp; analytics", "beacons")])
+
+        operate_section = section("🧰 Operate — run the site", [
+            btn("/admin/manual", "📖 User manual", "visual + PDF guide"),
+            btn("/admin/logout", "⎋ Log out", "session")])
+
         for pid, meta in amazon._SCRAPER_PROVIDERS.items():
-            tools.append(btn("/keys/" + seo._clean(pid), meta["name"] + " key", pid))
-        tools.append(btn("/admin/logout", "⎋ Log out", "session"))
-        tools_html = "".join(tools)
+            operate_section += '<section class="card"><h2>🔌 %s</h2><div class="page-grid">%s</div></section>' % (
+                seo._clean(meta["name"]) + " key",
+                btn("/keys/" + seo._clean(pid), meta["name"] + " key", pid))
+        tools_html = find_section + build_section + market_section + analyze_section + operate_section
 
         site = [btn("/", "🏠 Home / landing", "public"),
                 btn("/sitemap.xml", "🗺 Sitemap", "xml"),
@@ -956,7 +995,7 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
 {self._admin_nav('admin')}
 </header>
 <main>
-<section class="card"><h2>🧭 Admin tools</h2><div class="page-grid">{tools_html}</div></section>
+{tools_html}
 <section class="card"><h2>🌐 Public site — global pages</h2><div class="page-grid">{site_html}</div></section>
 <section class="card"><h2>🛍 Public site — saved niches</h2>
 <p class="hint">One button per saved niche (top = review page, bottom = its landing page). Open in the same tab — use Back to return.</p>
@@ -1097,6 +1136,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_analytics()
             if path == "/admin/marketing":
                 return self._admin_marketing()
+            if path == "/admin/funnel":
+                return self._admin_funnel()
             if path == "/admin/variants":
                 return self._admin_variants(q)
             if path == "/admin/apikeys":
@@ -1132,6 +1173,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._seo_topics_api()
             if path == "/api/marketing":
                 return self._marketing_api()
+            if path == "/api/funnel":
+                return self._funnel_api()
             if path == "/api/suggest":
                 return self._suggest_api()
             if path == "/api/suggest/build":
@@ -4357,6 +4400,161 @@ fresh();
 <p class="hint" style="margin-top:8px">Jump to: <a href="/admin/emails">emails</a> · <a href="/admin/social">social</a> · <a href="/admin/seo">SEO audit</a> · <a href="/admin/analytics">full analytics</a></p></section>
 </main>
 <footer><p>Attribution truth: a click is an email open (pixel), an email CTA click (/e/), a social tap (UTM), or a pageview. Everything here is computed from those real events.</p></footer>
+<script src="/table-flow.js" defer></script>
+{_TOTOP}
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _funnel_payload(self):
+        """A REAL sales funnel, computed from actual attribution, not copy.
+
+        Every stage is a real count from the DB with a genuine conversion % to
+        the next stage:
+          1. ATTRACT   landing-page views (events -> /lp|/n/)
+          2. CAPTURE   confirmed, non-unsubscribed leads (subscribers)
+          3. DELIVER   emails sent -> opened (email_events open) -> clicked
+                       (clicks source=email, i.e. tracked /e/ CTA taps)
+          4. MULTIPLY  total outbound affiliate clicks + social clicks + pages
+        Leak = where people drop off, so the operator knows exactly what to fix."""
+        with _lock:
+            conn = _db()
+            def q1(sql, args=()):
+                return conn.execute(sql, args).fetchone()[0] or 0
+            attract = q1("SELECT COUNT(*) FROM events WHERE name='view' "
+                         "AND (slug LIKE 'lp-%' OR slug LIKE 'n-%' OR page LIKE '/lp/%' "
+                         "OR page LIKE '/n/%')")
+            capture = q1("SELECT COUNT(*) FROM subscribers WHERE confirmed=1 AND unsubscribed=0")
+            sent = q1("SELECT COUNT(*) FROM sent_emails")
+            opened = q1("SELECT COUNT(*) FROM email_events e JOIN sent_emails s "
+                        "ON s.subscriber_id=e.subscriber_id AND s.email_index=e.email_index "
+                        "WHERE e.type='open'")
+            email_clicks = q1("SELECT COUNT(*) FROM clicks WHERE source='email'")
+            all_clicks = q1("SELECT COUNT(*) FROM clicks")
+            social_clicks = q1("SELECT COUNT(*) FROM clicks WHERE source='social'")
+            pages = q1("SELECT COUNT(*) FROM niches") + q1("SELECT COUNT(*) FROM topics")
+            reviewed = q1("SELECT COUNT(*) FROM email_events WHERE type='open'")  # engagement proxy
+            # per-stage drop-off / conversion
+            conn.close()
+        # distinct subscribers who opened any email (real engaged audience)
+        with _lock:
+            c = _db()
+            opened_subs = c.execute(
+                "SELECT COUNT(DISTINCT subscriber_id) FROM email_events WHERE type='open'"
+            ).fetchone()[0] or 0
+            clicked_subs = c.execute(
+                "SELECT COUNT(DISTINCT substr(referrer,1,80)) FROM clicks WHERE source='email'"
+            ).fetchone()[0] or 0
+            c.close()
+        stages = [
+            {"n": 1, "name": "1 · Attract", "emoji": "🌐",
+             "metric": "Landing / topic page views", "value": attract,
+             "note": "Eyes on a page — from SEO, social or email."},
+            {"n": 2, "name": "2 · Capture", "emoji": "✉️",
+             "metric": "Confirmed leads (emails captured)", "value": capture,
+             "note": "Visitors who opted in at the email gate."},
+            {"n": 3, "name": "3 · Deliver", "emoji": "📨",
+             "metric": "Emails opened", "value": opened_subs,
+             "note": "Distinct subscribers who opened a sequence email."},
+            {"n": 4, "name": "4 · Multiply", "emoji": "💰",
+             "metric": "Outbound affiliate clicks", "value": all_clicks,
+             "note": "Every tracked tap to Amazon across all channels."},
+        ]
+        # conversion rates between consecutive stages (0 guard)
+        def rate(i):
+            if i == 0 or not stages[i - 1]["value"]:
+                return 0.0
+            return round(stages[i]["value"] / max(stages[i - 1]["value"], 1) * 100, 1)
+        for i, s in enumerate(stages):
+            s["conv"] = rate(i)
+        # find the worst leak (biggest drop), to recommend a fix
+        drops = [{"from": stages[i - 1], "to": stages[i],
+                  "delta": stages[i - 1]["value"] - stages[i]["value"]}
+                 for i in range(1, len(stages))]
+        worst = max(drops, key=lambda d: d["delta"]) if drops else None
+        reco = []
+        if not attract:
+            reco.append("Build + index pages first — there's no traffic entering the funnel (mine niches, generate long-tail pages, submit IndexNow).")
+        elif worst and worst["delta"] > 0:
+            reco.append("Biggest leak: %s → %s (lost %d). Fix that stage first." %
+                        (worst["from"]["name"], worst["to"]["name"], worst["delta"]))
+        if capture and opened_subs == 0:
+            reco.append("You have %s leads but ZERO opens — tighten subject lines + sender name." % capture)
+        elif opened_subs and email_clicks == 0:
+            reco.append("Emails open but nobody clicks the CTA — make the tracked-link call-to-action more compelling.")
+        if pages == 0:
+            reco.append("No content pages yet — the funnel has no engine. Build niches.")
+        if not reco:
+            reco.append("Funnel is flowing — grow the top (more pages, more traffic) and keep every stage >0.")
+        return {
+            "stages": stages,
+            "leak": ({"from": worst["from"]["name"], "to": worst["to"]["name"],
+                      "lost": worst["delta"]} if worst else None),
+            "stats": {
+                "emails_sent": sent, "emails_opened": opened, "distinct_openers": opened_subs,
+                "email_clicks": email_clicks, "email_convert_to_click": round(
+                    email_clicks / max(opened, 1) * 100, 1),
+                "social_clicks": social_clicks, "all_clicks": all_clicks,
+                "pages": pages,
+            },
+            "recommendations": reco,
+        }
+
+    def _funnel_api(self):
+        return self._send(200, self._funnel_payload())
+
+    def _admin_funnel(self):
+        """Full-page visual of the REAL sales funnel (data-backed stages + leaks)."""
+        p = self._funnel_payload()
+        def bar(i, s):
+            maxv = max((st["value"] for st in p["stages"]), default=1) or 1
+            w = max(2, round(s["value"] / maxv * 100))
+            return ('<div class="fstage" id="s%d">'
+                    '<div class="flabel"><b>%s %s</b> <span class="fval">%s</span></div>'
+                    '<div class="fbar"><span style="width:%s%%"></span></div>'
+                    '<div class="fm">%s · <span class="hint">%s</span></div>'
+                    '<div class="fconv">→ to next: <b>%s%%</b></div></div>'
+                    % (i, s["emoji"], seo._clean(s["name"]), seo._clean(str(s["value"])),
+                       w, seo._clean(s["metric"]), seo._clean(s["note"]),
+                       s["conv"]))
+        stages_html = "".join(bar(i, s) for i, s in enumerate(p["stages"]))
+        leak_html = ("<p class='leak'><b>Biggest leak:</b> %s → %s (lost %s).</p>"
+                     % (seo._clean(p["leak"]["from"]), seo._clean(p["leak"]["to"]),
+                        seo._clean(str(p["leak"]["lost"])))) if p["leak"] else ""
+        st = p["stats"]
+        stats_html = ("<div class='row' style='align-items:stretch'>"
+                      + "".join(
+                          '<div class="feature"><h3>%s</h3><p class="hint">%s</p></div>'
+                          % (seo._clean(str(v)), seo._clean(l))
+                          for v, l in [(st["emails_sent"], "emails sent"),
+                                       (st["emails_opened"], "emails opened"),
+                                       (st["email_clicks"], "email clicks"),
+                                       ("%.1f%%" % st["email_convert_to_click"], "open→click"),
+                                       (st["social_clicks"], "social clicks"),
+                                       (st["pages"], "content pages")]
+                      ) + "</div>")
+        reco_html = "".join("<li>%s</li>" % r for r in p["recommendations"])
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales funnel — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+<style>.fstage{{margin:0 0 16px}}.flabel{{display:flex;justify-content:space-between;align-items:baseline;font-size:16px}}
+.fbar{{height:22px;background:var(--border,#eee);border-radius:999px;overflow:hidden;margin:5px 0}}
+.fbar span{{display:block;height:100%;background:linear-gradient(90deg,#5b8cff,#8f6bff);border-radius:999px}}
+.fm{{color:#444;font-size:13px;margin:2px 0}}.fconv{{font-size:13px;color:#2e7a5b}}
+.leak{{color:#b3261e;font-weight:600;margin:12px 0}}</style>
+</head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>The real <span>sales funnel.</span></h1>
+<p class="tagline">Not a diagram of should-haves — every stage is a live count from your own pageviews, captured leads, opened emails and tracked clicks, with the actual conversion % to the next stage and the biggest leak called out.</p></div>
+{self._admin_nav('funnel')}
+</header>
+<main>
+<section class="card"><h2>⚙️ Funnel stages</h2>{stages_html}{leak_html}</section>
+<section class="card"><h2>📊 Delivery &amp; multiply detail</h2>{stats_html}</section>
+<section class="card"><h2>💡 What to fix first</h2><ul class="reco">{reco_html}</ul>
+<p class="hint" style="margin-top:8px">Act on the leak: <a href="/admin/emails">emails</a> · <a href="/admin/social">social</a> · <a href="/admin/seo">SEO</a> · <a href="/admin/analytics">analytics</a> · <a href="/admin/marketing">ROI dashboard</a></p></section>
+</main>
+<footer><p>Funnel truth: pages = views of /lp / /n pages; leads = confirmed subscribers; deliver = distinct openers; multiply = all tracked outbound clicks. Never fabricated.</p></footer>
 <script src="/table-flow.js" defer></script>
 {_TOTOP}
 </body></html>"""
