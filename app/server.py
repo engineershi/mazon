@@ -1108,6 +1108,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._sem_api(q)
             if path == "/api/seo-audit":
                 return self._seo_audit_api()
+            if path == "/api/seo/topics":
+                return self._seo_topics_api()
+            if path.startswith("/seo/snippet/"):
+                return self._seo_snippet(path[len("/seo/snippet/"):])
             if path == "/api/social":
                 return self._social_api(q)
             if path == "/keys":
@@ -3792,10 +3796,12 @@ document.addEventListener("click", (e)=>{{
                         if ok else '<span class="badge" style="background:#ffe6e6;color:#c0392b">fix</span>')
             rows += (
                 "<tr class='%s'>"
-                "<td class='ct'><a href='%s'>%s</a></td>"
+                "<td class='ct'><a href='%s'>%s</a><br>"
+                "<a class='snippet-open' href='#snippet' data-snip='/seo/snippet/%s' "
+                "title='Preview the Google snippet'>preview snippet ↗</a></td>"
                 "<td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
                 % ("top" if r["indexable"] else "",
-                   seo._clean(r["url"]), seo._clean(r["keyword"]),
+                   seo._clean(r["url"]), seo._clean(r["keyword"]), seo._clean(r["slug"]),
                    r["products"],
                    mark(c.get("title_ok", False)), mark(c.get("desc_ok", False)),
                    mark(c.get("schema", False)), mark(c.get("og_image", False)),
@@ -3852,7 +3858,11 @@ document.addEventListener("click", (e)=>{{
 <p class="hint" style="margin-top:-4px">Green = passes the live-page rule. Red = the page is served with that gap today. Titles 30–60 chars, descriptions 70–160.</p>
 <div class="table-wrap"><table class="plain"><thead><tr>
 <th>Niche</th><th>Products</th><th>Title</th><th>Desc</th><th>Schema</th><th>Share img</th><th>Word count</th><th>Status</th>
-</tr></thead><tbody>{rows}</tbody></table></div></section>
+</tr></thead><tbody>{rows}</tbody></table></div>
+<div id="snippet" class="card" style="display:none;margin-top:12px">
+<h3>🔎 Snippet preview</h3>
+<p class="hint">What Google is likely to show for this page (title ≤ 60 · description ≤ 160).</p>
+<img id="snipimg" alt="SERP snippet preview" style="max-width:100%;border:1px solid var(--border,#ddd);border-radius:8px"></div></section>
 </main>
 <footer><p>Audit reflects the live pages, not aspirational settings. Set the Search Console and IndexNow keys under <a href="/keys">Keys ↗</a> — pick <code>PSTORE_GOOGLE_SITE_VERIFICATION</code> env or save it there for the running process.</p></footer>
 <script>
@@ -3865,7 +3875,15 @@ if ($("submitNow")) $("submitNow").onclick = async () => {{
   m.textContent = (d.ok ? "✓ IndexNow " : "✗ ") + (d.message || "");
   m.className = d.ok ? "msg" : "msg";
 }};
-</script>
+document.addEventListener("click", (e) => {{
+  const a = e.target.closest(".snippet-open");
+  if (!a) return;
+  e.preventDefault();
+  const box = $("snippet"); box.style.display = "block";
+  a.href !== a.dataset.snip ? $("snipimg").src = a.dataset.snip : null;
+  box.scrollIntoView({{behavior:"smooth"}});
+}});
+ </script>
 <script src="/table-flow.js" defer></script>
 {_TOTOP}
 </body></html>"""
@@ -3989,6 +4007,39 @@ fresh();
 
     def _seo_audit_api(self):
         return self._send(200, self._seo_audit_payload())
+
+    def _seo_topics_payload(self):
+        """Audit rows for every long-tail topic page (/n/<parent>/<term>)."""
+        rows = []
+        for n in self._all_niches():
+            prods = n["products"] or []
+            parent_slug = seo._slugify(n["keyword"])
+            for t in self._topics_for(parent_slug):
+                rows.append(seo.audit_topic(t["term"], n["keyword"], prods))
+        indexable = sum(1 for r in rows if r["indexable"])
+        return {"topics": rows, "count": len(rows), "indexable": indexable,
+                "needs_work": len(rows) - indexable}
+
+    def _seo_topics_api(self):
+        return self._send(200, self._seo_topics_payload())
+
+    def _seo_snippet(self, slug):
+        """Google-style SERP snippet preview for a niche (SVG, cacheable)."""
+        slug = slug.rstrip("/")
+        for n in self._all_niches():
+            if seo._slugify(n["keyword"]) == slug:
+                svg = seo.render_snippet(n["keyword"], url="/n/" + slug)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                try:
+                    self.wfile.write(svg)
+                except Exception:
+                    pass
+                return None
+        return self._send(404, b"<html><body><p>Niche not found.</p></body></html>",
+                          "text/html; charset=utf-8")
 
     def _sem_payload(self, keyword):
         keyword = (keyword or "").strip()

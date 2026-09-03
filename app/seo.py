@@ -702,3 +702,52 @@ def audit_sites(niches):
         "robots": "/robots.txt",
         "org": {"name": ORG_NAME, "url": ORG_URL},
     }
+
+
+def render_snippet(keyword, desc="", url=""):
+    """A Google-style SERP snippet preview for one page — the operator's own
+    'what will searchers see' check before publishing. Returns an SVG card
+    (stdlib-only, cacheable) so it renders in any admin flow without JS."""
+    kw = _clean(keyword)
+    title = "Best %s to Buy — Ranked Picks From Live Amazon Data" % kw
+    if len(title) > 60:
+        title = title[:57] + "…"
+    url = url or ("%s/n/%s" % (BASE_URL, _slugify_safe(kw)))
+    desc = _clean(desc or ("See the best %s, ranked. We score live Amazon listings on "
+                           "rating, review volume and price, then show you which to buy and "
+                           "why — with honest pros and cons for each." % kw))
+    if len(desc) > 160:
+        desc = desc[:157].rstrip() + "…"
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="640" height="150" viewBox="0 0 640 150">
+<rect width="640" height="150" fill="#ffffff" rx="10"/>
+<text x="18" y="30" font-family="Arial,Helvetica,sans-serif" font-size="13" fill="#1a0dab">{_clean(url)}</text>
+<text x="18" y="58" font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="20" fill="#1a0dab">{_clean(title)}</text>
+<text x="18" y="86" font-family="Arial,Helvetica,sans-serif" font-size="14" fill="#4d5156">{_clean(desc[:110])}</text>
+<text x="18" y="108" font-family="Arial,Helvetica,sans-serif" font-size="14" fill="#4d5156">{_clean(desc[110:])}</text>
+<text x="18" y="136" font-family="Arial,Helvetica,sans-serif" font-size="12" fill="#70757a">sample · keyword “{_clean(kw)}”</text>
+</svg>""".encode("utf-8")
+
+
+def audit_topic(term, parent_keyword, prods):
+    """SEO audit row for a long-tail topic page (/n/<parent>/<term>). Returns
+    None-safe check dict mirroring audit_niche() for the topic angle."""
+    kw = ("%s %s" % (parent_keyword or "", term or "")).strip()
+    slug = _slugify_safe("%s %s" % (parent_keyword or "", term or ""))
+    title = "Best %s — ranked picks from live Amazon data" % (kw or "picks")
+    desc = ("See the best %s, ranked. Live data, honest pros and cons." % kw) if kw else ""
+    tl, dl = len(title), len(desc)
+    return {
+        "keyword": kw, "slug": slug,
+        "url": "/n/%s/%s" % (_slugify_safe(parent_keyword), _slugify_safe(term)),
+        "products": len(prods or []),
+        "title_len": tl, "desc_len": dl,
+        "words": 0,
+        "checks": {
+            "has_products": bool(prods),
+            "title_ok": 30 <= tl <= 60,
+            "desc_ok": 20 <= dl <= 160,
+            "schema": bool(prods),
+            "indexable": bool(prods) and 30 <= tl <= 60,
+        },
+        "indexable": bool(prods) and 30 <= tl <= 60,
+    }
