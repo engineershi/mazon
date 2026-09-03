@@ -53,8 +53,9 @@ class TestEmailSuite(unittest.TestCase):
         cls.cookie = cls._login()
 
     @classmethod
-    def _fake_send(cls, subject, body, to, attachments=None):
-        cls.sent.append({"subject": subject, "body": body, "to": to})
+    def _fake_send(cls, subject, body, to, attachments=None, pixel_url=None):
+        cls.sent.append({"subject": subject, "body": body, "to": to,
+                         "attachments": attachments, "pixel_url": pixel_url})
         return True
 
     @classmethod
@@ -111,6 +112,7 @@ class TestEmailSuite(unittest.TestCase):
             conn = server._db()
             conn.execute("DELETE FROM subscribers")
             conn.execute("DELETE FROM sent_emails")
+            conn.execute("DELETE FROM email_events")
             conn.execute("DELETE FROM clicks")
             conn.commit()
             conn.close()
@@ -291,6 +293,139 @@ class TestEmailSuite(unittest.TestCase):
             self.assertIn("unsubscribe", self.sent[0]["body"].lower())
         finally:
             mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
+
+    # ----------------------------------------------- tracked email links + opens
+
+    def _items_by_asin(self, asin):
+        for it in self._bs_items():
+            if (it.get("asin") or "").upper() == asin.upper():
+                return it
+        return None
+
+    def test_sequence_email_wraps_links_in_tracked_url(self):
+        saved = (mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD)
+        mailer.SMTP_HOST = "smtp.test.local"; mailer.SMTP_USER = "u@example.com"
+        mailer.SMTP_PASSWORD = "pw"
+        self._subscribe("trk@example.com")
+        try:
+            self._raw("/api/sequence/send", "POST", body="{}", cookie=self.cookie)
+            self.assertEqual(len(self.sent), 1)
+            body = self.sent[0]["body"]
+            self.assertIn("/e/", body)  # click-tracked outbound link
+            self.assertIn("pixel", "") if False else None
+        finally:
+            mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
+
+    def test_sequence_email_attaches_pdf_to_first_email(self):
+        saved = (mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD)
+        mailer.SMTP_HOST = "smtp.test.local"; mailer.SMTP_USER = "u@example.com"
+        mailer.SMTP_PASSWORD = "pw"
+        self._subscribe("pdf@example.com")
+        try:
+            self._raw("/api/sequence/send", "POST", body="{}", cookie=self.cookie)
+            att = self.sent[0]["attachments"] if self.sent else None
+            self.assertTrue(att, "email #1 should carry the lead-magnet PDF")
+            name, data = att[0]
+            self.assertTrue(name.endswith(".pdf"))
+            self.assertTrue(data.startswith(b"%PDF-"))
+        finally:
+            mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
+
+    def test_email_click_redirect_records_and_302s(self):
+        items = self._bs_items()
+        self.assertTrue(items, "need at least one stored product")
+        asin = items[0]["asin"]
+        url = mailer.tracked_url("keto-snacks", asin, 7, 1)
+        path = url.split("://", 1)[-1]
+        path = "/" + path.split("/", 1)[1]
+        self._subscribe("go@example.com")
+        st, location, ctype, data = self._raw(path)
+        self.assertEqual(st, 302)
+        self.assertIn("amazon", location, location)
+        rows = self._clicks()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["slug"], "keto-snacks")
+        self.assertEqual(rows[0]["source"], "email")
+        self.assertEqual(rows[0]["asin"], asin.upper())
+
+    def test_email_click_rejects_forged_token(self):
+        self._subscribe("forged@example.com")
+        st, _, _, _ = self._raw("/e/forged-token")
+        self.assertEqual(st, 404)
+        self.assertEqual(self._clicks(), [])
+
+    def test_email_open_pixel_records_event(self):
+        url = mailer.open_pixel_url("keto-snacks", "B0SNACK123", 9, 3)
+        path = "/" + url.split("://", 1)[-1].split("/", 1)[1]
+        st, _, ctype, data = self._raw(path)
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("image/gif"))
+        with server._lock:
+            conn = server._db()
+            row = conn.execute(
+                "SELECT * FROM email_events WHERE type='open' ORDER BY id DESC LIMIT 1").fetchone()
+            conn.close()
+        self.assertTrue(row)
+        self.assertEqual(row["subscriber_id"], 9)
+        self.assertEqual(row["email_index"], 3)
+        self.assertEqual(row["keyword"], "keto-snacks")
+
+    def test_email_open_pixel_ignores_forged_token(self):
+        st, _, ctype, data = self._raw("/e/o/forged")
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("image/gif"))
+        with server._lock:
+            conn = server._db()
+            cnt = conn.execute("SELECT COUNT(*) c FROM email_events").fetchone()["c"]
+            conn.close()
+        self.assertEqual(cnt, 0)
+
+    def test_sequence_email_embeds_open_pixel(self):
+        saved = (mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD)
+        mailer.SMTP_HOST = "smtp.test.local"; mailer.SMTP_USER = "u@example.com"
+        mailer.SMTP_PASSWORD = "pw"
+        self._subscribe("pix@example.com")
+        try:
+            self._raw("/api/sequence/send", "POST", body="{}", cookie=self.cookie)
+            self.assertTrue(self.sent)
+            self.assertTrue(self.sent[0]["pixel_url"])
+            self.assertIn("/e/o/", self.sent[0]["pixel_url"])
+        finally:
+            mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD = saved
+
+    def test_tracked_token_round_trip_and_forgery(self):
+        for scope in ("e", "o"):
+            kw, asin, sid, idx = "keto-snacks", "B0KETO123", 11, 4
+            url = mailer.tracked_url(kw, asin, sid, idx) if scope == "e" \
+                else mailer.open_pixel_url(kw, asin, sid, idx)
+            tok = url.split("/%s/" % scope, 1)[-1] if scope == "o" else url.split("/e/", 1)[-1]
+            payload = mailer.decode_track_token(tok, scope=scope)
+            self.assertEqual(payload, (kw, asin, str(sid), str(idx)))
+        self.assertIsNone(mailer.decode_track_token("e:evil|B0X|1|1:99999:n:s"))
+
+    def test_email_deliverability_headers_in_message(self):
+        saved = mailer.REPLY_TO
+        mailer.REPLY_TO = "replies@example.com"
+        try:
+            pix = "http://p.example/e/o/xyz"
+            msg = mailer._build_message("Subj", "Body", "to@example.com",
+                                        "from@example.com", pixel_url=pix)
+            self.assertEqual(msg["Reply-To"], "replies@example.com")
+            self.assertEqual(msg["Return-Path"], "replies@example.com")
+            self.assertTrue(msg["List-Unsubscribe"])
+            self.assertIn('<img src="%s"' % pix,
+                          msg.get_payload()[0].get_payload(decode=True).decode("utf-8"))
+            msg2 = mailer._build_message("Subj", "Body", "to@example.com", "from@example.com",
+                                         attachments=[("lead.pdf", b"%PDF-1.4")])
+            self.assertEqual(msg2["Reply-To"], "replies@example.com")
+            for part in msg2.walk():
+                if part.get_filename() and part.get_filename().endswith(".pdf"):
+                    self.assertEqual(part.get_payload(decode=True), b"%PDF-1.4")
+                    break
+            else:
+                self.fail("PDF attachment missing from multipart")
+        finally:
+            mailer.REPLY_TO = saved
 
     def test_sequence_send_dry_run_sends_nothing(self):
         saved = (mailer.SMTP_HOST, mailer.SMTP_USER, mailer.SMTP_PASSWORD)

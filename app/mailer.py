@@ -26,6 +26,8 @@ import market_engine
 import security
 
 STORE_NAME = os.environ.get("PSTORE_NAME", "pstore").strip() or "pstore"
+REPLY_TO = (os.environ.get("SMTP_REPLY_TO", "") or "").strip()
+EMAIL_SEND_DELAY = float(os.environ.get("SMTP_SEND_DELAY", "0") or "0")  # seconds between sends
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 try:
@@ -70,14 +72,17 @@ def _guess_first_name(email, stored="", fallback="there"):
     return fallback
 
 
-def render_body(mail, to_name="there", site_name=STORE_NAME, email=""):
+def render_body(mail, to_name="there", site_name=STORE_NAME, email="", tracked_link=""):
     """Turn one mail dict from market_engine.build_email_sequence into a
     sendable plain-text body (drop the redundant Subject: line, fill the
     {{placeholders}}, append a permission-reminder + unsubscribe footer).
 
     {{first_name}} uses a captured name, else a name derived from the reader's
     email local-part, so every send stays personal even without a stored name.
-    {{your_name}} is the store/sender's signature (configurable via PSTORE_NAME)."""
+    {{your_name}} is the store/sender's signature (configurable via PSTORE_NAME).
+
+    `tracked_link` (optional) rewrites the raw affiliate URLs inside the body to
+    a click-tracked link so email outbound clicks are attributed."""
     body = mail.get("body") or ""
     if body.startswith("Subject:"):
         body = body.split("\n\n", 1)[-1]
@@ -85,6 +90,8 @@ def render_body(mail, to_name="there", site_name=STORE_NAME, email=""):
     body = body.replace("{{first_name}}", greeted).replace("{first_name}", greeted) \
                .replace("{{your_name}}", site_name or STORE_NAME) \
                .replace("{your_name}", site_name or STORE_NAME)
+    if tracked_link:
+        body = _wrap_links(body, tracked_link)
     if email:
         body += _footer(email)
     return body
@@ -95,25 +102,74 @@ def render_body(mail, to_name="there", site_name=STORE_NAME, email=""):
 _send = None
 
 
-def _build_message(subject, body, to, from_addr, attachments=None):
+def track_token(external, scope="e", ttl=30 * 24 * 3600):
+    """Signed token whose scope carries the tracked-link payload (default 30-day
+    click window). `external` is a `|`-joined string (niche slug, asin, sub id,
+    email index) the recipient handler decodes back off the scope after verify."""
+    return security.make_token("%s:%s" % (scope, external), ttl)
+
+
+def decode_track_token(token, scope="e"):
+    """Verify a tracked-link/open token and return the stored `external` payload
+    as a tuple, or None when forged/expired. Handles URL-encoded tokens."""
+    import urllib.parse as _up
+    sc = security.verify_token(_up.unquote(token))
+    if not sc or not sc.startswith(scope + ":"):
+        return None
+    return tuple(sc[len(scope) + 1:].split("|"))
+
+
+def tracked_url(keyword, asin, sid=None, idx=0):
+    """Click-tracked affiliate link for an email. Wraps the niche + ASIN + who +
+    which email index so the redirect records a click attributed to the email."""
+    token = track_token("%s|%s|%s|%s" % (keyword, asin, sid or "", idx or 0))
+    base = os.environ.get("PSTORE_URL", "").rstrip("/")
+    return "%s/e/%s" % (base, urllib.parse.quote(token, safe=""))
+
+
+def open_pixel_url(keyword, asin, sid=None, idx=0):
+    """1x1 open-tracking pixel URL for an email."""
+    token = track_token("%s|%s|%s|%s" % (keyword, asin, sid or "", idx or 0), scope="o")
+    base = os.environ.get("PSTORE_URL", "").rstrip("/")
+    return "%s/e/o/%s" % (base, urllib.parse.quote(token, safe=""))
+
+
+def _wrap_links(body, link_url, pid=""):
+    """Rewrite the plain affiliate links inside a sequence body to the tracked
+    URL so email clicks are attributed. Falls back to the raw link when the
+    tracked URL is unavailable."""
+    def _link_replace(m):
+        return link_url or m.group(0)
+    import re as _re
+    urls = _re.findall(r"https?://[^\s)\]]+", body)
+    for u in urls:
+        if link_url:
+            body = body.replace(u, link_url)
+    return body
+
+
+def _build_message(subject, body, to, from_addr, attachments=None, pixel_url=""):
     msg = MIMEMultipart()
     msg["Subject"] = Header(subject, "utf-8")
     msg["From"] = formataddr((STORE_NAME, from_addr))
     msg["To"] = to
+    if REPLY_TO:
+        msg["Reply-To"] = REPLY_TO
+        msg["Return-Path"] = REPLY_TO
     msg["List-Unsubscribe"] = "<mailto:%s?subject=unsubscribe>" % from_addr
+    if pixel_url:
+        body = "%s\n\n<img src=\"%s\" width=\"1\" height=\"1\" alt=\"\" border=\"0\">" % (body, pixel_url)
     msg.attach(MIMEText(body, "plain", "utf-8"))
     for name, data in (attachments or []):
         part = MIMEApplication(data, _subtype="pdf")
-        part.add_header("Content-Disposition", "attachment",
-                        filename=("=?utf-8?b?%s?=" % __import__("base64").b64encode(
-                            name.encode("utf-8")).decode("ascii")))
+        part.add_header("Content-Disposition", "attachment", filename=name)
         msg.attach(part)
     return msg
 
 
-def _smtp_send(subject, body, to, from_addr=None, attachments=None):
+def _smtp_send(subject, body, to, from_addr=None, attachments=None, pixel_url=""):
     from_addr = from_addr or SMTP_FROM
-    msg = _build_message(subject, body, to, from_addr, attachments)
+    msg = _build_message(subject, body, to, from_addr, attachments, pixel_url)
     try:
         if SMTP_STARTTLS:
             server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
@@ -133,12 +189,12 @@ def _smtp_send(subject, body, to, from_addr=None, attachments=None):
         return False
 
 
-def send(subject, body, to, attachments=None):
+def send(subject, body, to, attachments=None, pixel_url=""):
     if not configured():
         return False
     if _send is not None:
-        return bool(_send(subject, body, to, attachments))
-    return _smtp_send(subject, body, to, attachments=attachments)
+        return bool(_send(subject, body, to, attachments, pixel_url))
+    return _smtp_send(subject, body, to, attachments=attachments, pixel_url=pixel_url)
 
 
 # ------------------------------------------------------------------ sequence

@@ -380,6 +380,17 @@ def _db():
         subject TEXT,
         sent_at TEXT DEFAULT (datetime('now'))
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS email_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL,
+        subscriber_id INTEGER,
+        email_index INTEGER,
+        keyword TEXT,
+        asin TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_email_events_sub ON email_events"
+                 " (type, subscriber_id, email_index)")
     conn.execute("""CREATE TABLE IF NOT EXISTS clicks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         slug TEXT,
@@ -1046,6 +1057,12 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             go = re.match(r"^/go/([A-Z0-9]{10})$", path)
             if go:
                 return self._go(go.group(1))
+            eo = re.match(r"^/e/o/([^/]+)$", path)
+            if eo:
+                return self._email_open(eo.group(1))
+            et = re.match(r"^/e/([^/]+)$", path)
+            if et:
+                return self._email_click(et.group(1))
             if path == "/tool":
                 with open(os.path.join(STATIC, "tool.html"), "rb") as fh:
                     return self._send(200, fh.read(), "text/html; charset=utf-8")
@@ -1773,6 +1790,65 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
         self.send_header("Location", target)
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
+        return None
+
+    def _email_click(self, token):
+        """Click-tracked email outbound: validates the signed token, records a
+        click attributed to the email (niche, ASIN, subscriber, email index),
+        then 302s to the tagged Amazon link."""
+        import urllib.parse as _up
+        payload = mailer.decode_track_token(token, scope="e")
+        if not payload:
+            self.send_response(404)
+            self.end_headers()
+            return None
+        kw, asin, sid, idx = (list(payload) + ["", "", "", ""])[:4]
+        try:
+            asin = asin.upper()
+            if len(asin) == 10:
+                self._record_click(slug=kw or "", source="email",
+                                   referrer=str(sid or "") + "|" + str(idx or ""),
+                                   asin=asin, content="email")
+        except Exception:
+            pass
+        target = amazon.affiliate_url(asin) if asin else ""
+        if not target:
+            self.send_response(404)
+            self.end_headers()
+            return None
+        self.send_response(302)
+        self.send_header("Location", target)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        return None
+
+    def _email_open(self, token):
+        """Open-tracking endpoint (1x1 transparent GIF). Records that this
+        subscriber/email was rendered, then returns the pixel."""
+        payload = mailer.decode_track_token(token, scope="o")
+        _GIF = (b"\x47\x49\x46\x38\x39\x61\x01\x00\x01\x00\x80\x00\x00"
+                b"\xff\xff\xff\x00\x00\x00\x00\x00\x00\x21\xf9\x04\x00"
+                b"\x00\x00\x00\x00\x2c\x00\x00\x00\x00\x01\x00\x01\x00"
+                b"\x00\x02\x02\x44\x01\x00\x3b")
+        if payload:
+            try:
+                kw, asin, sid, idx = (list(payload) + ["", "", "", ""])[:4]
+                with _lock:
+                    conn = _db()
+                    conn.execute(
+                        "INSERT INTO email_events (type, subscriber_id, email_index, "
+                        "keyword, asin) VALUES ('open',?,?,?,?)",
+                        (sid, idx, kw, asin or ""))
+                    conn.commit()
+                    conn.close()
+            except Exception:
+                pass
+        self.send_response(200)
+        self.send_header("Content-Type", "image/gif")
+        self.send_header("Content-Length", str(len(_GIF)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(_GIF)
         return None
 
     def _landing_page(self, path):
@@ -4369,7 +4445,9 @@ document.addEventListener("click", async (e)=>{{
             if not mail:
                 unready += 1
                 continue
-            ready.append((sub["id"], idx, mail, sub["email"], sub["first_name"] or ""))
+            pick = market_engine.pick_for_buyers(items)
+            asin = (pick or {}).get("asin") or ""
+            ready.append((sub["id"], idx, mail, sub["email"], sub["first_name"] or "", kw, asin))
         cap = limit if limit and limit > 0 else mailer.MAX_EMAILS_PER_RUN
         target = ready[:cap] if limit and limit > 0 else ready[:mailer.MAX_EMAILS_PER_RUN]
         eff_limit = min(len(ready), cap)
@@ -4379,11 +4457,24 @@ document.addEventListener("click", async (e)=>{{
                                     "keyword": niche_kw or None,
                                     "limit": cap})
         sent = errors = 0
-        for sid, idx, mail, to, to_name in target:
+        for sid, idx, mail, to, to_name, kw, asin in target:
             if sent + errors >= mailer.MAX_EMAILS_PER_RUN:
                 break
-            text = mailer.render_body(mail, to_name=to_name, email=to)
-            if mailer.send(mail["subject"], text, to):
+            # tracked affiliate link + open pixel so email actions are attributed
+            link_url = mailer.tracked_url(kw, asin, sid, idx) if asin else ""
+            pixel_url = mailer.open_pixel_url(kw, asin, sid, idx)
+            text = mailer.render_body(mail, to_name=to_name, email=to,
+                                      tracked_link=link_url)
+            attachments = None
+            if idx == 1 and kw:  # hook email carries the lead-magnet PDF
+                try:
+                    att = self._ebook_attachment(kw)
+                    if att:
+                        attachments = [att]
+                except Exception:
+                    attachments = None
+            if mailer.send(mail["subject"], text, to, attachments=attachments,
+                           pixel_url=pixel_url):
                 sent += 1
                 with _lock:
                     conn = _db()
@@ -4394,10 +4485,28 @@ document.addEventListener("click", async (e)=>{{
                     conn.close()
             else:
                 errors += 1
+            if mailer.EMAIL_SEND_DELAY > 0:
+                try:
+                    time.sleep(mailer.EMAIL_SEND_DELAY)
+                except Exception:
+                    pass
         return self._send(200, {"ok": True, "sent": sent, "errors": errors,
                                 "ready": eff_limit, "skipped": len(ready) - eff_limit,
                                 "keyword": niche_kw or None,
                                 "limit": cap})
+
+    def _ebook_attachment(self, keyword):
+        """Return the per-niche lead-magnet PDF as an (filename, bytes) tuple for
+        attaching to email #1, or None when the ebook isn't available."""
+        try:
+            import ebook
+            book = ebook.build_ebook(keyword)
+            data = book.get("pdf")
+            if not data:
+                return None
+            return (book.get("pdf_name") or "%s-ebook.pdf" % keyword, data)
+        except Exception:
+            return None
 
     def _subs_table(self, rows):
         def state(r):
