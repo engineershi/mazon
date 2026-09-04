@@ -189,8 +189,123 @@ class TestSemSeoSite(unittest.TestCase):
         self.assertIn("Search", html)
         self.assertIn('id="top"', html)
         self.assertIn('class="totop"', html)
+        # The long-tail build button must target the topic builder (not the
+        # niche-mining /api/suggest/build) and show real /n/<parent>/<term> URLs.
+        self.assertIn("/api/sem/build-topic", html)
+        self.assertNotIn("/api/suggest/build", html)
+        self.assertIn('data-build="1"', html)
+        self.assertIn("data-parent=", html)
+        self.assertIn("data-term=", html)
+        self.assertIn("/n/%s/" % seo._slugify(kw), html)
+
+    # --- Long-tail topic build (SEM 'Build this page') -----------------------
+    def test_sem_build_topic_happy(self):
+        kw = self._pick_niche()
+        parent = seo._slugify(kw)
+        # a long-tail phrase returned by the fake autosuggest
+        term = "keto snacks best"
+        st, _, ct, body = self._raw(
+            "POST", "/api/sem/build-topic", cookie=self.cookie,
+            ctype="application/json",
+            body=json.dumps({"parent": kw, "term": term}).encode("utf-8"))
+        self.assertEqual(st, 200, body)
+        d = json.loads(body)
+        self.assertTrue(d["ok"])
+        self.assertEqual(d["parent"], parent)
+        self.assertEqual(d["slug"], seo._slugify(term))
+        self.assertEqual(d["url"], "/n/%s/%s" % (parent, seo._slugify(term)))
+        # topic page now exists and renders
+        st2, _, ct2, b2 = self._raw("GET", d["url"], cookie=self.cookie)
+        self.assertEqual(st2, 200)
+        self.assertIn("text/html", ct2)
+        # build again is idempotent (INSERT OR IGNORE)
+        st3, _, _, b3 = self._raw(
+            "POST", "/api/sem/build-topic", cookie=self.cookie,
+            ctype="application/json",
+            body=json.dumps({"parent": kw, "term": term}).encode("utf-8"))
+        self.assertEqual(st3, 200)
+        self.assertTrue(json.loads(b3)["ok"])
+
+    def test_sem_build_topic_requires_parent_and_term(self):
+        st, _, _, _ = self._raw("POST", "/api/sem/build-topic",
+                                cookie=self.cookie, ctype="application/json",
+                                body=json.dumps({"parent": "x"}).encode("utf-8"))
+        self.assertEqual(st, 400)
+        st, _, _, _ = self._raw("POST", "/api/sem/build-topic",
+                                cookie=self.cookie, ctype="application/json",
+                                body=b"{}")
+        self.assertEqual(st, 400)
+
+    def test_sem_build_topic_unknown_parent(self):
+        st, _, _, body = self._raw("POST", "/api/sem/build-topic",
+                                   cookie=self.cookie, ctype="application/json",
+                                   body=json.dumps(
+                                       {"parent": "zzz-not-a-niche",
+                                        "term": "some topic"}).encode("utf-8"))
+        self.assertEqual(st, 404)
+        self.assertFalse(json.loads(body)["ok"])
+
+    def test_sem_build_topic_rejects_parent_slug_term(self):
+        kw = self._pick_niche()
+        st, _, _, body = self._raw("POST", "/api/sem/build-topic",
+                                   cookie=self.cookie, ctype="application/json",
+                                   body=json.dumps(
+                                       {"parent": kw, "term": kw}).encode("utf-8"))
+        self.assertEqual(st, 400)
+
+    def test_sem_build_topic_requires_auth(self):
+        kw = self._pick_niche()
+        st, _, _, _ = self._raw(
+            "POST", "/api/sem/build-topic",
+            ctype="application/json",
+            body=json.dumps({"parent": kw, "term": "x"}).encode("utf-8"))
+        self.assertEqual(st, 401)
 
     # --- Niche data refresh -------------------------------------------------
+    def _build_suggest_and_cleanup(self, kw="zzz-unique-suggest-test"):
+        created_ids = []
+        created_slugs = []
+        def cleanup():
+            with server._lock:
+                c = server._db()
+                for nid in created_ids:
+                    c.execute("DELETE FROM niches WHERE id=?", (nid,))
+                for slug in created_slugs:
+                    c.execute("DELETE FROM topics WHERE parent_slug=?", (slug,))
+                c.commit()
+                c.close()
+        st, _, ct, body = self._raw(
+            "POST", "/api/suggest/build",
+            cookie=self.cookie, ctype="application/json",
+            body=json.dumps({"keyword": kw}).encode("utf-8"))
+        self.assertEqual(st, 200, body)
+        d = json.loads(body)
+        self.assertTrue(d["ok"])
+        self.assertIn("slug", d)
+        self.assertIn("id", d)
+        if d.get("id"):
+            created_ids.append(d["id"])
+        if d.get("slug"):
+            created_slugs.append(d["slug"])
+        return cleanup, d
+
+    def test_suggest_build_api(self):
+        # POST /api/suggest/build must be routable via the POST dispatcher
+        # (it used to live only in the GET dispatcher -> 404 on the marketing
+        # page's "Build" button).
+        cleanup, d = self._build_suggest_and_cleanup()
+        try:
+            self.assertIn("topic_pages", d)
+        finally:
+            cleanup()
+
+    def test_admin_sem_page_confirms_post_dispatch(self):
+        cleanup, d = self._build_suggest_and_cleanup()
+        try:
+            self.assertTrue(d["slug"].startswith("zzz-unique"))
+        finally:
+            cleanup()
+
     def test_refresh_requires_auth(self):
         st, loc, _, _ = self._raw("GET", "/admin/refresh")
         self.assertEqual(st, 302)

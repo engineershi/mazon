@@ -1506,8 +1506,6 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._funnel_api()
             if path == "/api/suggest":
                 return self._suggest_api()
-            if path == "/api/suggest/build":
-                return self._suggest_build_api()
             if path.startswith("/seo/snippet/"):
                 return self._seo_snippet(path[len("/seo/snippet/"):])
             if path == "/api/social":
@@ -1694,6 +1692,12 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._opportunities_expand()
             if parsed.path == "/api/topics/generate":
                 return self._topics_generate()
+            if parsed.path == "/api/sem/build-topic":
+                return self._sem_build_topic_api()
+            if parsed.path == "/api/suggest":
+                return self._suggest_api()
+            if parsed.path == "/api/suggest/build":
+                return self._suggest_build_api()
             self._send(404, {"error": "not found"})
         except Exception as e:
             self._send(500, {"error": str(e)})
@@ -5409,6 +5413,48 @@ fresh();
         keyword = (q.get("keyword") or [""])[0].strip()
         return self._send(200, self._sem_payload(keyword))
 
+    def _sem_build_topic_api(self):
+        """One-click build of a long-tail topic page under a parent niche
+        (POST /api/sem/build-topic). The SEM long-tail 'Build this page' button
+        used to call the niche-mining /api/suggest/build, which treated the
+        long-tail phrase as a whole new niche — slow, and wrong output. This
+        endpoint instead inserts the exact phrase as a /n/<parent>/<term> topic
+        page (fast, no mining), fleshes out the sibling topics from autosuggest,
+        and pings IndexNow. Returns the topic URL(s)."""
+        body = self._body()
+        parent = str(body.get("parent") or "").strip()
+        term = str(body.get("term") or "").strip()
+        if not parent or not term:
+            return self._send(400, {"error": "parent and term required",
+                                    "ok": False})
+        niche = self._saved_niche(parent)
+        if not niche:
+            return self._send(404, {"error": "no saved niche matches that parent",
+                                    "ok": False})
+        parent_slug = seo._slugify(niche["keyword"])
+        term_slug = seo._slugify(term)
+        if not term_slug or term_slug == parent_slug:
+            return self._send(400, {"error": "that term can't be built as a topic",
+                                    "ok": False})
+        url = "/n/%s/%s" % (parent_slug, term_slug)
+        with _lock:
+            conn = _db()
+            conn.execute(
+                "INSERT OR IGNORE INTO topics (parent_slug, term, slug) VALUES (?,?,?)",
+                (parent_slug, term, term_slug))
+            conn.commit()
+            conn.close()
+        try:
+            siblings = self._generate_topics(parent_slug, 5)
+        except Exception:
+            siblings = []
+        self._fire_indexnow([url] + [s["url"] for s in siblings])
+        return self._send(200, {"ok": True, "parent": parent_slug,
+                                "slug": term_slug, "url": url,
+                                "term": term,
+                                "topic_pages": len(siblings) + 1,
+                                "urls": [url] + [s["url"] for s in siblings]})
+
     def _admin_apikeys(self, q):
         """One page to paste third-party API keys via the UI (no env/restart
         needed): PA-API (official Amazon product data) and per-platform social
@@ -5737,14 +5783,24 @@ document.addEventListener("click", async (e)=>{{
 
         def chip(t, s):
             return '<span class="badge %s">%s</span>' % (s, t)
+        sem_parent_slug = seo._slugify(keyword)
+        sem_built = {t["slug"] for t in self._topics_for(sem_parent_slug)}
+        def _topic_slug(phrase):
+            s = seo._slugify(phrase)
+            return "-".join([p for p in s.split("/") if p])
         lt_html = "".join(
             '<div class="sub"><h3>%s %s</h3>'
-            '<p class="key">/n/%s</p>'
-            '<p><button type="button" class="btn" data-build="%s">⚡ Build this page</button> '
-            '<span class="pill hint" data-state="%s">unbuilt</span></p></div>'
+            '<p class="key"><a href="/n/%s/%s">/n/%s/%s</a></p>'
+            '<p><button type="button" class="btn" data-build="1" data-parent="%s" data-term="%s">⚡ Build this page</button> '
+            '<span class="pill %s" data-state="%s">%s</span></p></div>'
             % (seo._clean(g["phrase"]), chip(g["intent"],
                  "source" if g["intent"] == "target" else "demand"),
-               seo._clean(g["slug"]), seo._clean(g["phrase"]), seo._clean(g["slug"]))
+               seo._clean(sem_parent_slug), seo._clean(_topic_slug(g["phrase"])),
+               seo._clean(sem_parent_slug), seo._clean(_topic_slug(g["phrase"])),
+               seo._clean(keyword), seo._clean(g["phrase"]),
+               "ok" if _topic_slug(g["phrase"]) in sem_built else "hint",
+               seo._clean(_topic_slug(g["phrase"])),
+               "✓ built" if _topic_slug(g["phrase"]) in sem_built else "unbuilt")
             for g in lt) or '<p class="hint">No suggestions yet.</p>'
         fixes_html = "".join(
             '<li><b>%s</b> — %s</li>' % (seo._clean(f["label"]), seo._clean(f["detail"]))
@@ -5762,11 +5818,12 @@ document.addEventListener("click", async (e)=>{{
         sem_build_js = ("(function(){var b=document.querySelectorAll('[data-build]');"
             "Array.prototype.forEach.call(b,function(x){x.addEventListener('click',function(){"
             "var ph=x.parentElement.querySelector('[data-state]');ph.textContent='building…';ph.className='pill hint';"
-            "var kw=x.getAttribute('data-build');"
-            "fetch('/api/suggest/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keyword:kw})})"
+            "var p=x.getAttribute('data-parent');var t=x.getAttribute('data-term');"
+            "fetch('/api/sem/build-topic',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({parent:p,term:t})})"
             ".then(function(r){return r.json()}).then(function(j){"
-            "if(j&&j.ok){ph.textContent='✓ built — /n/'+j.slug+' + '+j.topic_pages+' topics';ph.className='pill ok';x.style.display='none';}"
-            "else{ph.textContent='build failed';ph.className='pill err';}"
+            "if(j&&j.ok){ph.textContent='✓ built — '+j.url+' + '+j.topic_pages+' topics';ph.className='pill ok';x.style.display='none';"
+            "var u=x.parentElement.querySelector('a[href]');if(u){u.href=j.url;}}"
+            "else{ph.textContent='build failed'+(j&&j.error?': '+j.error:'');ph.className='pill err';}"
             "}).catch(function(){ph.textContent='build failed';ph.className='pill err';});});});}());")
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
