@@ -516,17 +516,64 @@ def apply_preset(conn, page_id, preset_name):
     return style
 
 
+def _ai_field(template, niche, hint, default):
+    """AI-polished single-line copy for a field, falling back to the default
+    whenever AI is unconfigured, unavailable or returns nothing."""
+    try:
+        import ai
+        lines = ai.generate(template, niche, hint)
+        if lines and lines[0].strip():
+            return lines[0].strip()
+    except Exception:
+        pass
+    return default
+
+
 def generate_copy(conn, page_id, keyword):
     """One-click regeneration: reset every section's copy to the persuasion
     defaults (which interpolate the niche's live data). Page settings and the
-    chosen style are kept, so toggles the operator turned on stay on."""
+    chosen style are kept, so toggles the operator turned on stay on. When an AI
+    provider is configured, the text-heavy sections are polished with AI copy
+    (falling back to the defaults on any failure); otherwise defaults are used."""
+    try:
+        import ai
+        use_ai = ai.configured()
+    except Exception:
+        use_ai = False
     order = DEFAULT_SECTION_ORDER
     conn.execute("DELETE FROM lead_sections WHERE page_id=?", (page_id,))
     for idx, stype in enumerate(order):
+        base = dict(_DEFAULT_SECTIONS.get(stype, {}))
+        if use_ai:
+            if stype == "hero":
+                base["headline"] = _ai_field("headline", keyword, "",
+                                             base.get("headline", ""))
+                base["subheadline"] = _ai_field("subheadline", keyword, "",
+                                                base.get("subheadline", ""))
+            elif stype == "email_gate":
+                base["headline"] = _ai_field("subheadline", keyword,
+                                             "email lead magnet",
+                                             base.get("headline", ""))
+            elif stype == "cta_band":
+                base["headline"] = _ai_field("headline", keyword, "call to action",
+                                             base.get("headline", ""))
+                base["subheadline"] = _ai_field("subheadline", keyword,
+                                                "call to action",
+                                                base.get("subheadline", ""))
+            elif stype == "urgency":
+                base["headline"] = _ai_field("headline", keyword, "urgency",
+                                             base.get("headline", ""))
+            elif stype == "guarantee":
+                base["headline"] = _ai_field("headline", keyword, "guarantee",
+                                             base.get("headline", ""))
+            elif stype == "methodology":
+                base["title"] = _ai_field("subheadline", keyword,
+                                          "methodology title",
+                                          base.get("title", ""))
         conn.execute(
             "INSERT INTO lead_sections (page_id, section_type, content, enabled, sort_order) "
             "VALUES (?,?,?,?,?)",
-            (page_id, stype, json.dumps(_DEFAULT_SECTIONS.get(stype, {})), 1, idx))
+            (page_id, stype, json.dumps(base), 1, idx))
     conn.execute("UPDATE lead_pages SET section_order=?, updated_at=datetime('now') "
                  "WHERE id=?", (json.dumps(order), page_id))
     conn.commit()

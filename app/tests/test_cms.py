@@ -266,6 +266,25 @@ class TestCMSRenderer(unittest.TestCase):
         self.assertEqual(gate2["enabled"], 1)
         conn.close()
 
+    def test_generate_copy_uses_ai_copy_when_configured(self):
+        import ai
+        from unittest import mock
+        conn = _conn()
+        page = cms.get_or_create_page(conn, "air fryer")
+        with mock.patch.object(ai, "configured", return_value=True), \
+                mock.patch.object(ai, "generate",
+                                  return_value=["AI headline here"]):
+            n = cms.generate_copy(conn, page["id"], "air fryer")
+        self.assertEqual(n, len(cms.DEFAULT_SECTION_ORDER))
+        sections = {s["section_type"]: s for s in cms.get_sections(conn, page["id"])}
+        hero = sections["hero"]["content"]
+        self.assertEqual(hero["headline"], "AI headline here")
+        email_gate = sections["email_gate"]["content"]
+        self.assertTrue(email_gate["headline"])
+        cta_band = sections["cta_band"]["content"]
+        self.assertEqual(cta_band["headline"], "AI headline here")
+        conn.close()
+
     def test_sticky_cta_toggle_controls_render(self):
         conn = _conn()
         page = cms.get_or_create_page(conn, "air fryer")

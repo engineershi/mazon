@@ -546,6 +546,12 @@ class TestRoutes(unittest.TestCase):
         cls.urlopen = staticmethod(urlreq.urlopen)
         cls._saved_indexnow_post = indexnow._post
         indexnow._post = lambda url, payload, timeout=20: None
+        # Keep TestRoutes fully offline: some read paths (opportunities'
+        # per-winner expand, social, etc.) call amazon.autosuggest/_fetch even
+        # when CACHE_TTL=0. Without this stub they'd hit the live completion
+        # endpoint and hang for the socket timeout under the class's load.
+        cls._saved_amazon_urlopen = amazon._urlopen
+        amazon._urlopen = lambda req, timeout=None: FakeResponse(b"{}")
         status, location, set_cookie, body = cls._raw(
             "/admin/login", "POST",
             body=b"email=%s&password=%s" % (cls.email.encode(), cls.password.encode()))
@@ -555,6 +561,7 @@ class TestRoutes(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         indexnow._post = cls._saved_indexnow_post
+        amazon._urlopen = cls._saved_amazon_urlopen
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
         cls.httpd.server_close()
@@ -562,9 +569,9 @@ class TestRoutes(unittest.TestCase):
             os.unlink(cls.db)
 
     @classmethod
-    def _raw(cls, path, method="GET", body=None, cookie=None):
+    def _raw(cls, path, method="GET", body=None, cookie=None, timeout=60):
         import http.client
-        conn = http.client.HTTPConnection("127.0.0.1", cls.PORT, timeout=5)
+        conn = http.client.HTTPConnection("127.0.0.1", cls.PORT, timeout=timeout)
         headers = {}
         if cookie:
             headers["Cookie"] = cookie
@@ -580,10 +587,10 @@ class TestRoutes(unittest.TestCase):
         return status, location, set_cookie, data
 
     @classmethod
-    def _raw_json(cls, path, payload, cookie=None):
+    def _raw_json(cls, path, payload, cookie=None, timeout=60):
         """POST a JSON body (proper Content-Type) and return (status, body)."""
         import http.client
-        conn = http.client.HTTPConnection("127.0.0.1", cls.PORT, timeout=5)
+        conn = http.client.HTTPConnection("127.0.0.1", cls.PORT, timeout=timeout)
         headers = {"Content-Type": "application/json"}
         if cookie:
             headers["Cookie"] = cookie
@@ -594,14 +601,14 @@ class TestRoutes(unittest.TestCase):
         conn.close()
         return status, data
 
-    def _get(self, path, cookie=None):
+    def _get(self, path, cookie=None, timeout=60):
         if cookie is None:
             cookie = self.cookie
         try:
             req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.PORT, path))
             if cookie:
                 req.add_header("Cookie", cookie)
-            with self.urlopen(req, timeout=5) as r:
+            with self.urlopen(req, timeout=timeout) as r:
                 return r.status, r.headers.get("Content-Type"), r.read()
         except Exception as exc:
             return getattr(exc, "code", None), None, b""
@@ -1075,21 +1082,33 @@ class TestRoutes(unittest.TestCase):
         self.assertIn('data-tw="1"', html)
 
     def test_ai_key_and_scraper_key_persist_to_db(self):
-        # AI key survives via DB: persist, then re-init rehydrates the runtime
+        # AI key survives via DB: persist, then re-init rehydrates the runtime.
+        # Restore the runtime in a finally so an "openai" key never leaks into
+        # later test modules (ai is a process-wide singleton; a leftover key
+        # would make ai.configured() True and every later AI call hit the real
+        # network, hanging offline tests).
         import ai as _ai
-        st, body = self._raw_json("/api/keys/save",
-                                  {"group": "ai", "keyid": "openai",
-                                   "key": "sk-test-xyz", "model": "gpt-4o"},
-                                  cookie=self.cookie)
-        self.assertEqual(st, 200)
-        d = json.loads(body)
-        self.assertTrue(d.get("ok"))
-        self.assertEqual(server._get_setting("ai.key.openai"), "sk-test-xyz")
-        # simulate a restart: reload runtime from the DB
-        _ai._RUNTIME.clear()
-        server._init()
-        cfg = _ai._runtime("openai")
-        self.assertEqual(cfg.get("key"), "sk-test-xyz")
+        saved_runtime = dict(_ai._RUNTIME)
+        saved_openai_key = server._get_setting("ai.key.openai")
+        try:
+            st, body = self._raw_json("/api/keys/save",
+                                      {"group": "ai", "keyid": "openai",
+                                       "key": "sk-test-xyz", "model": "gpt-4o"},
+                                      cookie=self.cookie)
+            self.assertEqual(st, 200)
+            d = json.loads(body)
+            self.assertTrue(d.get("ok"))
+            self.assertEqual(server._get_setting("ai.key.openai"), "sk-test-xyz")
+            # simulate a restart: reload runtime from the DB
+            _ai._RUNTIME.clear()
+            server._init()
+            cfg = _ai._runtime("openai")
+            self.assertEqual(cfg.get("key"), "sk-test-xyz")
+        finally:
+            _ai._RUNTIME.clear()
+            _ai._RUNTIME.update(saved_runtime)
+            server._set_setting("ai.key.openai", saved_openai_key)
+            server._init()
         # scraper key persists too
         st2, _ = self._raw_json("/api/keys/save",
                                 {"group": "scraper", "keyid": "scraperapi",

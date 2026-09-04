@@ -325,6 +325,75 @@ Two things.
     ]
 
 
+def _ai_copy(keyword, items, first_name=""):
+    """Best-effort AI rewrite of the next email's subject+body. Returns a dict
+    {subject, body} or None when no AI provider is configured (offline tests)
+    or on any failure, so the deterministic templates are always the fallback.
+    This is the "let AI write the sell copy" layer (Suby: sell like crazy,
+    Brunson: story-driven, Cialdini: social proof) when a provider is wired."""
+    try:
+        import ai
+        if not ai.configured():
+            return None
+        pick = pick_for_buyers(items)
+        title = _clip((pick or {}).get("title"), 60) if pick else keyword
+        hint = "product: " + title
+        if first_name:
+            hint += "; first name of the reader: " + first_name
+        subj = ai.generate("email_subject", keyword, hint
+                           + " | write ONLY one short subject line, <=9 words, no punctuation at the end")
+        if not subj:
+            return None
+        subject = (subj[0] or "").strip()[:90]
+        body_lns = [l for l in ai.generate("email_body", keyword,
+                                           hint + " | 3 short plain-text paragraphs, no markdown, no Subject line, no greeting")
+                    if (l or "").strip()]
+        body = "\n\n".join(body_lns) if body_lns else None
+        if not subject or not body:
+            return None
+        return {"subject": subject, "body": body}
+    except Exception:
+        return None
+
+
+def build_converted_followup(keyword, items):
+    """Deterministic follow-up for a lead who already clicked a product ASIN
+    (segment = CONVERTED): the review ask (social proof) PLUS the value-ladder
+    upsell / 'next rung up' backend offer (Brunson), so a converted lead is
+    moved toward the higher tier instead of getting the same nurture emails
+    again. AI copy is layered on top by the caller when a provider is wired."""
+    pick = pick_for_buyers(items)
+    if not pick or not pick.get("asin"):
+        return None
+    title = _clip(pick.get("title"), 52)
+    url = redirect_url(pick["asin"])
+    stars = pick.get("stars")
+    reviews = pick.get("reviews")
+    proof = (f"⭐ {stars}/5 from {reviews:,} Amazon buyers"
+             if (stars and reviews) else "one of the most-reviewed picks in this niche")
+    alts = _alternate_lines(items, pick["asin"])
+    alt = ("If your needs have grown, the next rung up the value ladder we'd point to:\n"
+           + alts) if alts else ""
+    return {
+        "name": "Follow-up · review + value-ladder upsell",
+        "subject": "Enjoy it? One rung up the ladder (and a small favour)",
+        "body": f"""Subject: Enjoy it? One rung up the ladder (and a small favour)
+
+Hi {{first_name}},
+
+If you grabbed {title} — enjoy it! When Amazon asks, 30 seconds of your honest review helps the next buyer decide. That's all we'd ever ask: your honest words, because {proof}.
+
+The reason this pick wins is simple: it's the value sweet spot — solves the job, priced well, backed by real buyers.
+
+{alt}
+Or one more look at the same pick: {url}
+
+Most people level up on the next tier once the basics are handled — same trust, one step more. No pressure, just the link.
+
+— {{your_name}}""",
+    }
+
+
 def build_social_pack(keyword, items):
     """Per-platform caption + hashtags for one product pick."""
     pick = pick_for_buyers(items)

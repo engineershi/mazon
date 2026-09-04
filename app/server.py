@@ -42,8 +42,10 @@ import market_engine
 import niche
 import oauth
 import paapi
+import pricedrop
 import seo
 import security
+import segments
 import sem
 import social
 import publish
@@ -499,6 +501,18 @@ def _db():
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email_events_sub ON email_events"
                  " (type, subscriber_id, email_index)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS email_sends (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign TEXT NOT NULL,
+        subscriber_id INTEGER NOT NULL,
+        keyword TEXT,
+        asin TEXT,
+        sent_at TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_email_sends_dedup "
+                 "ON email_sends (campaign, subscriber_id, asin)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_email_sends_campaign "
+                 "ON email_sends (campaign, subscriber_id)")
     conn.execute("""CREATE TABLE IF NOT EXISTS clicks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         slug TEXT,
@@ -1034,6 +1048,8 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
               ("/admin/emails", "📧 Emails", "emails"),
               ("/admin/social", "📣 Social", "social"),
               ("/admin/variants", "⚗️ A/B", "variants"),
+              ("/admin/segments", "🎚 Lead segments", "segments"),
+              ("/admin/pricedrop", "🏷 Price drops", "pricedrop"),
               ("/keys", "🔑 Keys", "keys"),
               ("/admin/apikeys", "🔌 API Keys", "apikeys")]),
             ("Analyze",
@@ -1080,6 +1096,8 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
             btn("/admin/emails", "📧 Emails &amp; sequence", "capture → convert"),
             btn("/admin/social", "📣 Social publishing", "tracked posts"),
             btn("/admin/variants", "⚗️ A/B headline tests", "per-niche split test"),
+            btn("/admin/segments", "🎚 Lead lifecycle segments", "hot / warm / cold"),
+            btn("/admin/pricedrop", "🏷 Price-drop deal engine", "scarcity pushes"),
             btn("/tool", "🛠 One-click marketing suite", "launch everything"),
             btn("/keys", "🔑 Keys &amp; endpoints", "admin"),
             btn("/admin/apikeys", "🔌 API keys page", "PA-API + social")])
@@ -1289,6 +1307,14 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_funnel()
             if path == "/admin/variants":
                 return self._admin_variants(q)
+            if path == "/admin/segments":
+                return self._admin_segments()
+            if path == "/admin/pricedrop":
+                return self._admin_pricedrop(q)
+            if path == "/api/segments":
+                return self._segments_api()
+            if path == "/api/pricedrop":
+                return self._pricedrop_api()
             if path == "/admin/apikeys":
                 return self._admin_apikeys(q)
             if path == "/admin/opportunities":
@@ -1480,16 +1506,26 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._earnings_log()
             if parsed.path == "/api/variants/save":
                 return self._variants_save()
+            if parsed.path == "/api/pricedrop/run":
+                return self._pricedrop_run()
+            if parsed.path == "/api/pricedrop/send":
+                return self._send(200, self._pricedrop_send())
+            if parsed.path == "/api/segments/reengage":
+                return self._send(200, self._reengage_cold())
             if parsed.path == "/api/subjects/save":
                 return self._subjects_save()
             if parsed.path == "/api/captions/save":
                 return self._captions_save()
+            if parsed.path == "/api/captions/autoclean":
+                return self._send(200, self._captions_autoclean())
             if parsed.path == "/api/captions":
                 return self._captions_api(q)
             if parsed.path == "/api/subjects":
                 return self._subjects_api(q)
             if parsed.path == "/api/variants/autoclean":
                 return self._variants_autoclean()
+            if parsed.path == "/api/subjects/autoclean":
+                return self._send(200, self._subjects_autoclean())
             if parsed.path == "/api/ai/models":
                 return self._ai_models()
             if parsed.path == "/api/ai/config":
@@ -2068,6 +2104,54 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
         return self._send(200, {"keyword": kw,
                                 "subjects": self._subjects_for(kw),
                                 "stats": self._subject_stats(kw)})
+
+    def _subjects_autoclean(self, min_sends=None):
+        """Email-subject A/B auto-cleanup: for each keyword + email_index, once a
+        position has enough lifetime sends, auto-disable any subject variant whose
+        opens are far below the position's opener (the winner is kept, losers stop
+        burning deliverability). Mirrors the headline `_ab_autoclean` behaviour."""
+        if min_sends is None:
+            try:
+                min_sends = int(_get_setting("ab.subjects_min_sends") or 40)
+            except (TypeError, ValueError):
+                min_sends = 40
+        changed = []
+        with _lock:
+            conn = _db()
+            kws = conn.execute("SELECT DISTINCT lower(keyword) AS k FROM email_subjects "
+                               "WHERE enabled=1").fetchall()
+            conn.close()
+        for r in kws:
+            kw = r["k"]
+            stats = self._subject_stats(kw)
+            indexes = sorted({s["email_index"] for s in stats})
+            for idx in indexes:
+                group = [s for s in stats if s["email_index"] == idx]
+                if sum(s["sent"] for s in group) < min_sends:
+                    continue
+                leader = max(group, key=lambda s: s["opened"])
+                opened_best = leader["opened"]
+                losers = [s["variant"] for s in group
+                          if s["variant"] != leader["variant"]
+                          and s["opened"] < opened_best * 0.25]
+                if not losers:
+                    continue
+                with _lock:
+                    conn = _db()
+                    for v in losers:
+                        conn.execute(
+                            "UPDATE email_subjects SET enabled=0 "
+                            "WHERE lower(keyword)=? AND email_index=? AND variant=?",
+                            (kw, idx, v))
+                    conn.commit()
+                    conn.close()
+                changed.append({"keyword": kw, "email_index": idx,
+                                "disabled": losers, "kept": leader["variant"]})
+        return {"ok": True, "changed": changed,
+                "note": ("Disabled subject variants opening below 25%% of the "
+                         "position's opener once it reached %d lifetime sends."
+                         % min_sends)}
+
 
     def _captions_api(self, q):
         slug = (q.get("slug") or [""])[0].strip().lower()
@@ -3577,14 +3661,47 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
         keep = {}
         for r in rows:
             keep.setdefault(r["platform"], r["utm_content"])
+        out = []
         for kit in kits:
             code = keep.get(kit["platform"])
             if code:
                 kit["utm_content"] = code
                 kit["link"] = social.track_link(seo.BASE_URL, slug,
                                                 kit["platform"], code)
-            kit["body"] = self._caption_for(slug, kit["platform"], kit["body"])
-        return kits
+            variants = self._caption_variants(slug, kit["platform"])
+            if len(variants) > 1:
+                # Per-variant posts: each enabled caption variant becomes its own
+                # published post with a stable variant-suffixed tracked code, so a
+                # winner can be auto-kept from real per-variant clicks.
+                for v in variants:
+                    k2 = dict(kit)
+                    vcode = "%s-c%s" % (kit["utm_content"], v["variant"])
+                    k2["body"] = v["caption"]
+                    k2["utm_content"] = vcode
+                    k2["link"] = social.track_link(seo.BASE_URL, slug,
+                                                   k2["platform"], vcode)
+                    k2["caption_variant"] = v["variant"]
+                    out.append(k2)
+            elif variants:
+                # Single caption variant: keep the one stable post, live body swap.
+                kit["body"] = variants[0]["caption"]
+                kit["caption_variant"] = variants[0]["variant"]
+                out.append(kit)
+            else:
+                out.append(kit)
+        return out
+
+    def _caption_variants(self, slug, platform):
+        """Enabled caption A/B variants for a (slug, platform)."""
+        with _lock:
+            conn = _db()
+            rows = conn.execute(
+                "SELECT variant, caption FROM social_captions "
+                "WHERE lower(slug)=? AND lower(platform)=? AND enabled=1 "
+                "AND caption IS NOT NULL AND caption != '' ORDER BY variant ASC",
+                (slug.lower(), platform.lower())).fetchall()
+            conn.close()
+        return [{"variant": r["variant"], "caption": r["caption"]} for r in rows]
 
     def _caption_for(self, slug, platform, default_body):
         """Social-caption A/B: pick a deterministic alternative body copy per
@@ -3636,6 +3753,87 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
             conn.commit()
             conn.close()
         return self._send(200, {"ok": True, "slug": slug, "saved": len(items)})
+
+    def _captions_autoclean(self, min_clicks=None):
+        """Caption A/B auto-cleanup: for each (slug, platform) published as
+        per-variant posts, once a platform has enough lifetime clicks, disable any
+        caption variant whose tracked clicks are far below the platform's leader
+        (the winner is kept). Mirrors the subject/headline autoclean behaviour."""
+        if min_clicks is None:
+            try:
+                min_clicks = int(_get_setting("ab.captions_min_clicks") or 40)
+            except (TypeError, ValueError):
+                min_clicks = 40
+        changed = []
+        with _lock:
+            conn = _db()
+            slugs = conn.execute(
+                "SELECT DISTINCT lower(slug) AS s FROM social_captions WHERE enabled=1").fetchall()
+            conn.close()
+        for r in slugs:
+            slug = r["s"]
+            with _lock:
+                conn = _db()
+                posts = conn.execute(
+                    "SELECT platform, utm_content FROM social_posts WHERE lower(slug)=?",
+                    (slug,)).fetchall()
+                conn.close()
+            base = {}
+            for p in posts:
+                c = p["utm_content"] or ""
+                m = re.match(r"^(.*)-c\d+$", c)
+                stem = m.group(1) if m else c
+                if stem:
+                    base.setdefault((p["platform"] or "").lower(), stem)
+            with _lock:
+                conn = _db()
+                variants = conn.execute(
+                    "SELECT platform, variant FROM social_captions WHERE lower(slug)=? "
+                    "AND enabled=1 ORDER BY platform, variant", (slug,)).fetchall()
+                conn.close()
+            groups = {}
+            for v in variants:
+                groups.setdefault((v["platform"] or "").lower(), []).append(v["variant"])
+            for platform, vs in groups.items():
+                if len(vs) < 2:
+                    continue
+                bcode = base.get(platform) or ""
+                if not bcode:
+                    continue
+                counts = {}
+                for variant in vs:
+                    code = "%s-c%s" % (bcode, variant)
+                    with _lock:
+                        conn = _db()
+                        n = conn.execute(
+                            "SELECT COUNT(*) c FROM clicks WHERE lower(slug)=? AND content=?",
+                            (slug, code)).fetchone()["c"]
+                        conn.close()
+                    counts[variant] = n
+                if sum(counts.values()) < min_clicks:
+                    continue
+                leader = max(counts, key=counts.get)
+                losers = [v for v, n in counts.items()
+                          if v != leader and n < counts[leader] * 0.25]
+                if not losers:
+                    continue
+                with _lock:
+                    conn = _db()
+                    for v in losers:
+                        conn.execute(
+                            "UPDATE social_captions SET enabled=0 "
+                            "WHERE lower(slug)=? AND lower(platform)=? AND variant=?",
+                            (slug, platform, v))
+                    conn.commit()
+                    conn.close()
+                changed.append({"slug": slug, "platform": platform,
+                                "disabled": losers, "kept": leader,
+                                "clicks": counts})
+        return {"ok": True, "changed": changed,
+                "note": ("Disabled caption variants clicking below 25%% of the "
+                         "platform's leader once it reached %d lifetime clicks."
+                         % min_clicks)}
+
 
     def _social_db(self, keyword, slug, kits):
         """Published posts + per-post click counts (attribution via utm_content)."""
@@ -5638,6 +5836,256 @@ document.addEventListener("click", async (e)=>{{
             conn.close()
         return self._send(200, {"stats": stats, "subscribers": [dict(r) for r in rows]})
 
+    # ------------------------------------------------------------------ lead segments
+    def _segments_payload(self, keyword=None, limit=500):
+        """Aggregate every confirmed/unsubscribed subscriber into lifecycle
+        segments. Attribution mirrors the rest of pstore: opens come from the
+        email open-pixel (email_events), clicks come from tracked /e/ email
+        clicks (clicks.source='email', referrer='<sid>|<idx>').
+
+        Per-subscriber columns:
+          opens        - distinct sequence emails opened
+          clicks       - distinct outbound email click-throughs (any link)
+          clicked_asin - 1 if any of those click-throughs carried a product ASIN
+                         (= conversion intent) so the CONVERTED bucket is real
+          sent         - how many sequence emails were delivered to this lead"""
+        kw = (keyword or "").strip().lower()
+        with _lock:
+            conn = _db()
+            sql = ("SELECT s.id, s.email, s.first_name, s.keyword, s.unsubscribed, "
+                   "s.confirmed, "
+                   "(SELECT COUNT(*) FROM email_events e WHERE e.subscriber_id=s.id "
+                   " AND e.type='open') AS opens, "
+                   "(SELECT COUNT(*) FROM clicks c WHERE c.source='email' "
+                   " AND c.referrer LIKE s.id || '|%') AS clicks, "
+                   "EXISTS(SELECT 1 FROM clicks c WHERE c.source='email' "
+                   " AND c.referrer LIKE s.id || '|%' AND c.asin != '') AS clicked_asin, "
+                   "(SELECT COUNT(*) FROM sent_emails t WHERE t.subscriber_id=s.id) AS sent "
+                   "FROM subscribers s")
+            args = ()
+            if kw:
+                sql += " WHERE lower(s.keyword)=?"
+                args = (kw,)
+            sql += " ORDER BY s.id DESC LIMIT ?"
+            rows = [dict(r) for r in conn.execute(sql, args + (limit,))]
+            conn.close()
+        return segments.build_report(rows)
+
+    def _subscriber_segment(self, sid):
+        """Lifecycle segment for ONE subscriber (mirrors _segments_payload): uses
+        the email open-pixel events + tracked email click-throughs to classify
+        the lead (hot/warm/cold/converted), so the sequence can act on real
+        engagement instead of treating every subscriber the same."""
+        with _lock:
+            conn = _db()
+            row = conn.execute(
+                "SELECT s.id, s.email, s.unsubscribed, s.confirmed, "
+                "(SELECT COUNT(*) FROM email_events e WHERE e.subscriber_id=s.id"
+                " AND e.type='open') AS opens, "
+                "(SELECT COUNT(*) FROM clicks c WHERE c.source='email'"
+                " AND c.referrer LIKE s.id || '|%') AS clicks, "
+                "EXISTS(SELECT 1 FROM clicks c WHERE c.source='email'"
+                " AND c.referrer LIKE s.id || '|%' AND c.asin != '') AS clicked_asin "
+                "FROM subscribers s WHERE s.id=?", (sid,)).fetchone()
+            conn.close()
+        if not row:
+            return "cold"
+        d = dict(row)
+        return segments.score_one(d.get("email"), opens=d.get("opens"),
+                                  clicks=d.get("clicks"), clicked_asin=d.get("clicked_asin"),
+                                  unsubscribed=d.get("unsubscribed"),
+                                  confirmed=d.get("confirmed", 1))["segment"]
+
+    def _segments_api(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        q = urllib.parse.parse_qs(parsed.query)
+        kw = (q.get("keyword") or [""])[0]
+        try:
+            limit = int((q.get("limit") or ["500"])[0])
+        except (TypeError, ValueError):
+            limit = 500
+        return self._send(200, self._segments_payload(keyword=kw, limit=limit))
+
+    def _admin_segments(self):
+        rep = self._segments_payload()
+        counts = rep["counts"]
+        stats = rep.get("stats", {})
+        def seg_card(name, label, color):
+            members = rep["segments"].get(name, [])
+            rows = "".join(
+                '<tr><td>%s</td><td>%s</td><td class="ct">%d</td><td class="ct">%d</td></tr>'
+                % (seo._clean(m.get("email") or ""), seo._clean(m.get("keyword") or ""),
+                   m.get("opens") or 0, m.get("clicks") or 0)
+                for m in members[:30]) or (
+                '<tr><td colspan="4" class="hint">No subscribers here yet.</td></tr>')
+            s = stats.get(name, {})
+            rates = ('<div class="row"><div class="feature"><h3>%s</h3><p class="hint">open rate</p></div>'
+                     '<div class="feature"><h3>%s</h3><p class="hint">click rate (CTR)</p></div>'
+                     '<div class="feature"><h3>%s</h3><p class="hint">clicks / lead</p></div></div>'
+                     % (str(s.get("open_rate", 0)) + "%",
+                        str(s.get("click_rate", 0)) + "%",
+                        str(s.get("click_per_lead", 0))))
+            return ('<section class="card"><h2 style="color:%s">%s <span class="hint">— %d</span></h2>%s'
+                    '<table><thead><tr><th>Email</th><th>Niche</th><th class="ct">Opens</th>'
+                    '<th class="ct">Clicks</th></tr></thead><tbody>%s</tbody></table></section>'
+                    ) % (color, label, counts.get(name, 0), rates, rows)
+        hot = seg_card("hot", "🔥 Hot — opened + clicked", "#b12704")
+        warm = seg_card("warm", "🌤 Warm — opened, not clicked", "#e67e22")
+        cold = seg_card("cold", "🧊 Cold — no engagement", "#3498db")
+        converted = seg_card("converted", "✅ Converted — clicked a product", "#27ae60")
+        inactive = seg_card("inactive", "⛔ Inactive — unsubscribed/unconfirmed", "#888")
+        rejs = (
+            "async function reengage(){const m=document.querySelector('#remsg');const o=document.querySelector('#reout');\n"
+            "m.textContent='Sending\u2026';let r,d;try{r=await fetch('/api/segments/reengage',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});d=await r.json();}\n"
+            "catch(e){m.textContent='\u2717 Could not reach the server.';return;}\n"
+            "m.textContent=(r.ok?'\u2713 ':'\u2717 ')+'sent '+(d.sent||0)+', already sent '+(d.already_sent||0);}")
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lead segments — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+<style>table{{width:100%;border-collapse:collapse;margin-top:8px}}td,th{{text-align:left;padding:6px 8px;
+border-bottom:1px solid var(--border);font-size:13px}}.ct{{text-align:right}}
+.feature h3{{margin:0;font-size:15px}}</style></head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Lead lifecycle <span>segments.</span></h1>
+<p class="tagline">Split subscribers by engagement so the sequence can act per-lead instead of sending everyone the same creep.</p></div>
+{self._admin_nav('segments')}</header>
+<main>
+<section class="card"><h2>📊 Segment mix</h2><div class="row">
+<div class="feature"><h3>{counts.get('hot',0)}</h3><p class="hint">hot</p></div>
+<div class="feature"><h3>{counts.get('warm',0)}</h3><p class="hint">warm</p></div>
+<div class="feature"><h3>{counts.get('cold',0)}</h3><p class="hint">cold</p></div>
+<div class="feature"><h3>{counts.get('converted',0)}</h3><p class="hint">converted</p></div>
+<div class="feature"><h3>{rep.get('hot_share',0)}%</h3><p class="hint">hot share</p></div>
+</div>
+<p class="hint">Attribution: opens via email open-pixel; clicks via tracked /e/ outbound links (referrer=&lt;subscriber&gt;|&lt;index&gt;). Next-best email angle per segment is shown under each bucket.</p></section>
+{hot}{warm}{cold}{converted}{inactive}
+<section class="card"><h2>🚀 Act on segments</h2>
+<p class="hint">Push the right next email per group — ownership-button triggered, deduped so nobody gets spammed.</p>
+<button class="warm" onclick="reengage()">📨 Re-engage cold leads</button>
+<span id="remsg" class="msg"></span><span id="reout" class="msg"></span></section>
+<section class="card"><h2>🎯 Recommended next send</h2><ul>
+<li><b>Hot:</b> {segments.next_action('hot')['subject_hint']} — {segments.next_action('hot')['sequence_hint']}</li>
+<li><b>Warm:</b> {segments.next_action('warm')['subject_hint']} — {segments.next_action('warm')['sequence_hint']}</li>
+<li><b>Cold:</b> {segments.next_action('cold')['subject_hint']} — {segments.next_action('cold')['sequence_hint']}</li>
+<li><b>Converted:</b> {segments.next_action('converted')['subject_hint']} — {segments.next_action('converted')['sequence_hint']}</li>
+</ul></section>
+<script>
+{rejs}
+</script>
+</main>
+<footer><p>Segments are live-computed from tracked opens and clicks — run the sequence to harvest real engagement data, then re-check this page.</p></footer>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    # ------------------------------------------------------------------ price drops
+    def _price_store(self):
+        """PriceStore rooted next to the active sqlite DB so tests stay hermit
+        and the repo isn't polluted with a stray pricedrops.json."""
+        base = DB
+        if base.startswith("/tmp"):
+            base = os.path.join(os.path.dirname(base),
+                                os.path.splitext(os.path.basename(base))[0] + "_pricedrops.json")
+        return pricedrop.PriceStore(base)
+
+    def _watched_products(self):
+        """Flatten every saved niche's product list into unique ASIN rows with
+        title + last-known price (seeds pricedrop baselines)."""
+        seen = {}
+        for n in self._all_niches():
+            for item in (n.get("products") or []):
+                asin = str(item.get("asin") or "").strip().upper()
+                if not asin:
+                    continue
+                if asin not in seen:
+                    seen[asin] = {"asin": asin, "title": item.get("title"),
+                                  "price": item.get("price")}
+        return list(seen.values())
+
+    def _pricedrop_api(self):
+        store = self._price_store()
+        watched = [{"asin": a, "baseline": store.baseline(a)}
+                   for a in store.all()]
+        return self._send(200, {"watched": watched, "count": len(watched)})
+
+    def _pricedrop_run(self):
+        """Re-scrape current prices for every ranked ASIN and report real drops
+        against stored baselines. Best-effort and never raises."""
+        body = self._body()
+        min_pct = body.get("min_pct") or pricedrop.DEFAULT_MIN_DROP_PCT
+        try:
+            min_pct = float(min_pct)
+        except (TypeError, ValueError):
+            min_pct = pricedrop.DEFAULT_MIN_DROP_PCT
+        store = self._price_store()
+        rows = self._watched_products()
+        if not rows:
+            return self._send(200, {"drops": [], "tracked": 0, "checked": 0,
+                                    "error": "no saved niches to watch"})
+        fresh = {}
+        checked = 0
+        for row in rows:
+            try:
+                items, _src = amazon.search(row["asin"], top=1)
+                if items:
+                    fresh[row["asin"]] = items[0].get("price")
+            except Exception:
+                continue
+            checked += 1
+        result = pricedrop.check(rows, fresh, store=store, min_drop_pct=min_pct)
+        result["checked"] = checked
+        return self._send(200, result)
+
+    def _admin_pricedrop(self, q):
+        js = (
+            "async function runCheck(){const m=document.querySelector('#msg');const out=document.querySelector('#out');\n"
+            "m.textContent='Scanning prices\u2026';\n"
+            "let r,d;try{r=await fetch('/api/pricedrop/run',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});d=await r.json();}\n"
+            "catch(e){m.textContent='\u2717 Could not reach the server.';return;}\n"
+            "const drops=(d.drops||[]);\n"
+            "if(!drops.length){out.innerHTML='<h2>\u2728 Deals right now</h2><p class=\"hint\">No price drops found. Checked '+(d.checked||0)+' products.</p>';}\n"
+            "else{out.innerHTML='<h2>\u2728 Deals right now ('+drops.length+')</h2><ul>'+drops.map(x=>"
+            "'<li><b>'+x.title+'</b> \u2014 was $'+x.old+', now <b style=\"color:#b12704\">$'+x.new+'</b> (save $'+x.drop+' / '+x.drop_pct+'%)</li>').join('')+'</ul>';}\n"
+            "m.textContent='\u2713 Done';}\n"
+            "async function sendDrops(){const m=document.querySelector('#msg');\n"
+            "m.textContent='Checking + pushing\u2026';let r,d;"
+            "try{r=await fetch('/api/pricedrop/send',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});d=await r.json();}"
+            "catch(e){m.textContent='\u2717 Could not reach the server.';return;}\n"
+            "m.textContent=(r.ok?'\u2713 Emailed '+(d.sent||0)+' hot/converted leads':'')+' (already sent '+(d.already_sent||0)+')';}")
+        store = self._price_store()
+        allb = store.all()
+        rows = "".join(
+            '<tr><td>%s</td><td class="ct">%s</td></tr>'
+            % (seo._clean(a), pricedrop._fmt(v.get("price")) if v.get("price") is not None else "—")
+            for a, v in allb.items()) or (
+            '<tr><td colspan="2" class="hint">No prices watched yet — run a check to seed baselines.</td></tr>')
+        body = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Price-drop engine — pstore</title><link rel="stylesheet" href="/style.css">
+<meta name="robots" content="noindex,nofollow">
+<style>table{{width:100%;border-collapse:collapse;margin-top:8px}}td,th{{text-align:left;padding:6px 8px;
+border-bottom:1px solid var(--border);font-size:13px}}.ct{{text-align:right}}</style></head><body>
+<header id="top"><a class="logo" href="/"><span class="mark">P</span><span>pstore</span></a>
+<div class="hero"><h1>Price-drop <span>deal engine.</span></h1>
+<p class="tagline">Watch ranked products, flag real price declines, and push a scarcity 'buy now' email + banner.</p></div>
+{self._admin_nav('pricedrop')}</header>
+<main>
+<section class="card"><h2>🏷 Watched prices</h2>
+<p class="hint">Baselines are stored on first sight. A drop of &ge; {pricedrop.DEFAULT_MIN_DROP_PCT}% and &ge; ${pricedrop.DEFAULT_MIN_DROP_ABS} counts as a real deal.</p>
+<table><thead><tr><th>ASIN</th><th class="ct">Baseline</th></tr></thead><tbody>{rows}</tbody></table>
+<p class="hint" style="margin-top:12px"><b>Run a check</b> to re-scrape current prices and flag who just dropped:</p>
+<button class="warm" onclick="runCheck()">🔄 Run price-drop check</button>
+<button class="warm" onclick="sendDrops()" style="margin-left:8px">📨 Email hot + converted leads</button>
+<span id="msg" class="msg"></span></section>
+<section class="card" id="out"><h2>✨ Deals right now</h2><p class="hint">Nothing yet — run a check to see drops.</p></section>
+<script>
+{js}
+</script>
+</main>
+<footer><p>Deal pushes use scarcity (price + countdown) — pair with the hot segment so you only chase eager buyers.</p></footer>
+</body></html>"""
+        return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
     def _sequence_send(self):
         body = self._body()
         dry = bool(body.get("dry_run"))
@@ -5665,21 +6113,46 @@ document.addEventListener("click", async (e)=>{{
             conn.close()
         ready = []
         unready = 0
+        ai_copy_cache = {}
         for sub in subs:
             kw = (sub["keyword"] or "").strip()
             item_row = niche_map.get(kw.lower())
             items = json.loads(item_row["products"] or "[]") if item_row else []
+            first = sub["first_name"] or ""
+            seg = self._subscriber_segment(sub["id"])
+            is_converted = seg == "converted"
             idx = (sub["sent_index"] or 0) + 1
-            mail = mailer.next_email(kw, items, idx)
+            if is_converted:
+                # Segment-aware branch: a lead who clicked a product ASIN gets the
+                # review + value-ladder upsell follow-up, not the same nurture
+                # emails again (Brunson value ladder / Cialdini social proof).
+                mail = market_engine.build_converted_followup(kw, items)
+            else:
+                mail = mailer.next_email(kw, items, idx)
             if not mail:
                 unready += 1
                 continue
-            subj = self._subject_for(kw, idx, sub["id"], mail["subject"])
-            mail["subject"] = subj["subject"]
-            subv = subj["variant"]
+            # AI personalization layer (best-effort, cached per keyword+step so
+            # one AI call serves every lead of that niche). Falls back to the
+            # deterministic template when no provider is configured (tests).
+            ai_key = (kw.lower(), idx, is_converted)
+            if ai_key not in ai_copy_cache:
+                ai_copy_cache[ai_key] = market_engine._ai_copy(kw, items, "")
+            ai_copy = ai_copy_cache.get(ai_key)
+            if ai_copy:
+                mail["subject"] = ai_copy["subject"]
+                mail["body"] = "Hi {{first_name}},\n\n" + ai_copy["body"]
+                subv = "ai"
+            elif is_converted:
+                subv = "review"  # the upsell follow-up carries its own fixed subject
+            else:
+                subj = self._subject_for(kw, idx, sub["id"], mail["subject"])
+                mail["subject"] = subj["subject"]
+                subv = subj["variant"]
             pick = market_engine.pick_for_buyers(items)
             asin = (pick or {}).get("asin") or ""
-            ready.append((sub["id"], idx, mail, sub["email"], sub["first_name"] or "", kw, asin, subv))
+            ready.append((sub["id"], idx, mail, sub["email"], first, kw, asin, subv, is_converted))
+        seg_total = sum(1 for r in ready if r[8])
         cap = limit if limit and limit > 0 else mailer.MAX_EMAILS_PER_RUN
         target = ready[:cap] if limit and limit > 0 else ready[:mailer.MAX_EMAILS_PER_RUN]
         eff_limit = min(len(ready), cap)
@@ -5687,9 +6160,10 @@ document.addEventListener("click", async (e)=>{{
             return self._send(200, {"ok": True, "dry_run": True, "sent": 0, "errors": 0,
                                     "ready": eff_limit, "skipped": len(ready) - eff_limit,
                                     "keyword": niche_kw or None,
+                                    "converted": seg_total,
                                     "limit": cap})
         sent = errors = 0
-        for sid, idx, mail, to, to_name, kw, asin, subv in target:
+        for sid, idx, mail, to, to_name, kw, asin, subv, is_converted in target:
             if sent + errors >= mailer.MAX_EMAILS_PER_RUN:
                 break
             # tracked affiliate link + open pixel so email actions are attributed
@@ -5710,7 +6184,8 @@ document.addEventListener("click", async (e)=>{{
                 sent += 1
                 with _lock:
                     conn = _db()
-                    conn.execute("UPDATE subscribers SET sent_index=? WHERE id=?", (idx, sid))
+                    new_index = mailer.SEQUENCE_LENGTH if is_converted else idx
+                    conn.execute("UPDATE subscribers SET sent_index=? WHERE id=?", (new_index, sid))
                     conn.execute("INSERT INTO sent_emails (subscriber_id, email_index, subject, "
                                  "subject_variant) VALUES (?,?,?,?)",
                                  (sid, idx, mail["subject"], subv))
@@ -5726,7 +6201,173 @@ document.addEventListener("click", async (e)=>{{
         return self._send(200, {"ok": True, "sent": sent, "errors": errors,
                                 "ready": eff_limit, "skipped": len(ready) - eff_limit,
                                 "keyword": niche_kw or None,
+                                "converted": seg_total,
                                 "limit": cap})
+
+    # ------------------------------------------------------------- one-off sends
+    def _segment_members(self, keyword=None, segments_names=("hot", "converted"),
+                         limit=1000):
+        """Subscribers in the given lifecycle segments for one niche (or all),
+        each with enough data to build a tracked one-off email.
+        Returns list of dicts {id, email, keyword, first_name, segment}."""
+        rep = self._segments_payload(keyword=keyword, limit=limit)
+        out = []
+        for name in segments_names:
+            for m in rep["segments"].get(name, []):
+                out.append({
+                    "id": m["id"], "email": m["email"],
+                    "keyword": m.get("keyword") or "",
+                    "first_name": m.get("first_name") or "",
+                    "segment": name,
+                })
+        return out
+
+    def _log_email_send(self, campaign, sid, kw="", asin=""):
+        with _lock:
+            conn = _db()
+            conn.execute(
+                "INSERT OR IGNORE INTO email_sends (campaign, subscriber_id, keyword, asin) "
+                "VALUES (?,?,?,?)", (campaign, sid, kw or "", asin or ""))
+            conn.commit()
+            conn.close()
+
+    def _already_sent(self, campaign, sid, asin=""):
+        with _lock:
+            conn = _db()
+            row = conn.execute(
+                "SELECT 1 FROM email_sends WHERE campaign=? AND subscriber_id=? AND asin=?",
+                (campaign, sid, asin or "")).fetchone()
+            conn.close()
+        return row is not None
+
+    def _dispatch_one_off(self, campaign, sub, kw, asin, subject, body_text,
+                          attachments=None, pixel_on=True):
+        """Send a deduped one-off campaign email to a subscriber through the same
+        tracked-link pipeline as the sequence. Returns True when actually sent.
+        `campaign` + subscriber + asin form the dedup key (INSERT OR IGNORE)."""
+        if self._already_sent(campaign, sub["id"], asin):
+            return False
+        sid = sub["id"]
+        link_url = mailer.tracked_url(kw, asin, sid, 99) if asin else ""
+        pixel_url = mailer.open_pixel_url(kw, asin, sid, 99) if pixel_on else ""
+        text = mailer.render_body({"body": body_text, "subject": subject},
+                                  to_name=sub.get("first_name") or "",
+                                  email=sub["email"], tracked_link=link_url)
+        ok = mailer.send(subject, text, sub["email"], attachments=attachments,
+                         pixel_url=pixel_url)
+        if ok:
+            self._log_email_send(campaign, sid, kw, asin)
+        return ok
+
+    def _reengage_cold(self, keyword=None, cap=None):
+        """Re-engage COLD (confirmed, never opened) subscribers with the plain
+        'come back' angle. Deduped to one re-engage send per subscriber ever."""
+        cap = cap or 25
+        sent = errors = ready = 0
+        for sub in self._segment_members(keyword=keyword,
+                                         segments_names=("cold",), limit=2000):
+            if sent + errors >= cap:
+                break
+            kw = sub["keyword"]
+            item_row = self._niche_items(kw)
+            pick = market_engine.pick_for_buyers(item_row) if item_row else None
+            asin = (pick or {}).get("asin") or ""
+            act = segments.next_action("cold")
+            body = ("Hi {{first_name}},\n\n"
+                    "Noticed you grabbed the {kw} guide but never opened it — "
+                    "maybe it landed in the wrong folder, or life got busy. "
+                    "No hard sell here; the two things people actually find useful:\n"
+                    "1. The {kw} cheat-sheet (free).\n"
+                    "2. One honest 'best pick' link when you're ready.\n\n"
+                    "Still here? Just reply and I'll resend the goodies — otherwise,"
+                    " no more email from me.\n\n— {{your_name}}").format(kw=kw)
+            if self._dispatch_one_off("reengage", sub, kw, asin,
+                                      act["subject_hint"], body):
+                sent += 1
+            else:
+                # already sent / skipped -> don't count into the cap budget
+                ready += 1
+        return {"ok": True, "sent": sent, "errors": errors,
+                "already_sent": ready, "keyword": keyword or None}
+
+    def _pricedrop_send(self, keyword=None, min_pct=None, cap=None):
+        """Auto-push a 'price dropped' email to HOT + CONVERTED subscribers of any
+        niche that just had a real price drop. Deduped per (subscriber, ASIN).
+
+        Returns {ok, drops, candidates, sent, already_sent, keyword}.
+        Best-effort and never raises."""
+        cap = cap or 50
+        body = self._body()
+        kw_filter = (keyword or (body or {}).get("keyword") or "").strip().lower()
+        try:
+            min_pct = float(min_pct if min_pct is not None
+                            else (body or {}).get("min_pct") or pricedrop.DEFAULT_MIN_DROP_PCT)
+        except (TypeError, ValueError):
+            min_pct = pricedrop.DEFAULT_MIN_DROP_PCT
+
+        store = self._price_store()
+        rows = self._watched_products()
+        if not rows:
+            return {"ok": True, "drops": [], "candidates": 0, "sent": 0,
+                    "already_sent": 0, "keyword": kw_filter or None}
+        fresh = {}
+        for row in rows:
+            try:
+                items, _src = amazon.search(row["asin"], top=1)
+                if items:
+                    fresh[row["asin"]] = items[0].get("price")
+            except Exception:
+                continue
+        result = pricedrop.check(rows, fresh, store=store, min_drop_pct=min_pct)
+        drops = result["drops"]
+        if not drops:
+            return {"ok": True, "drops": [], "candidates": 0, "sent": 0,
+                    "already_sent": 0, "keyword": kw_filter or None}
+
+        # map each dropped ASIN back to its owning niche keyword
+        asin_niche = {}
+        for n in self._all_niches():
+            for item in (n.get("products") or []):
+                a = str(item.get("asin") or "").strip().upper()
+                if a:
+                    asin_niche[a] = n["keyword"]
+
+        sent = candidates = already = errors = 0
+        all_members = self._segment_members(keyword=kw_filter or None,
+                                            segments_names=("hot", "converted"),
+                                            limit=5000)
+        for sub in all_members:
+            if sent + errors >= cap:
+                break
+            kw = sub["keyword"]
+            niche_drops = [d for d in drops if asin_niche.get(d["asin"], "").strip().lower()
+                           == kw.strip().lower()]
+            if kw_filter and kw.strip().lower() != kw_filter:
+                continue
+            if not niche_drops:
+                continue
+            pick_asin = next((d["asin"] for d in niche_drops), "")
+            mail = pricedrop.drop_email(niche_drops, base_url=os.environ.get("PSTORE_URL", ""))
+            if not mail["subject"]:
+                continue
+            candidates += 1
+            if self._dispatch_one_off("pricedrop:" + pick_asin if pick_asin else "pricedrop",
+                                      sub, kw, pick_asin,
+                                      mail["subject"], mail["text"]):
+                sent += 1
+            else:
+                already += 1
+        return {"ok": True, "drops": drops, "candidates": candidates,
+                "sent": sent, "already_sent": already, "errors": errors,
+                "keyword": kw_filter or None}
+
+    def _niche_items(self, keyword):
+        """Product list for a saved niche keyword, or []."""
+        kw = (keyword or "").strip().lower()
+        for n in self._all_niches():
+            if n["keyword"].strip().lower() == kw:
+                return n.get("products") or []
+        return []
 
     def _ebook_attachment(self, keyword):
         """Return the per-niche lead-magnet PDF as an (filename, bytes) tuple for

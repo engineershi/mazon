@@ -178,6 +178,8 @@ By default pstore already generates SEO-ready pages with schema markup. Your job
 
 > Every `/n/` verdict page already ships conversion machinery: **reciprocal internal links** (`related`), a **live-price urgency line**, and a **sticky bottom CTA** ("see it on Amazon") that appears on scroll or exit-intent — pointing straight at your #1 pick. The heavier `/lp/` sales pages still carry the promo countdown + opt-in funnel.
 
+**✨ AI landing-page copy (`/admin/cms`):** the CMS "regenerate copy" action resetting every section now **AI-polishes the persuasion copy** (hero headline/subheadline, CTA band, email-gate headline, urgency, guarantee, methodology) when an AI provider is set — then falls back to the deterministic persuasion defaults if AI is unavailable, so the page always has on-brand copy either way.
+
 ### STEP 3 — Capture the email (the money multiplier)
 **Where:** every niche page already has an opt-in form — you don't build anything.
 
@@ -226,7 +228,13 @@ Every subscriber automatically receives a **5-email buyer sequence** built from 
 2. Leave **dry-run** checked first (no real emails — verifies content).
 3. Click **Send next batch**. pstore only emails people who **opted in**, never resends, and auto-stops at 5 emails.
 
-**✉️ A/B-test subject lines (`/admin/variants`):** for each niche you can write **up to 3 subject-line variants** per email. pstore spreads them deterministically across subscribers, then tracks open/click performance per variant (joined against real email_events) so you can see which subject actually earns opens and kill the losers. Same pattern for **social captions** — drop in 2–3 caption variants per platform and pstore A/B serves them; the winner makes auto-amplify far more effective.
+**✉️ A/B-test subject lines (`/admin/variants`):** for each niche you can write **up to 3 subject-line variants** per email. pstore spreads them deterministically across subscribers, then tracks open/click performance per variant (joined against real email_events) so you can see which subject actually earns opens. Same pattern for **social captions** — drop in 2–3 caption variants per platform and pstore A/B serves them (publishing each variant as its own post with its own tracking code so you can see exactly which caption earned the clicks).
+
+> 🤖 **Winner-keep autoclean (set & forget):** pstore now **automatically disables losing variants** once there's enough data. After a subject variant has had enough sends (default 40, `ab.subjects_min_sends`), any subject opening under **25% of the leader** is switched off. Same for captions: once a platform's variants have enough tracked clicks (default 40, `ab.captions_min_clicks`), the ones below 25% of the winner are disabled. Posting then converges on the proven winner without you touching it — run a sweep with the "autoclean" action on `/admin/variants` (or it happens on publish). This is the "sticky, compound" version of A/B: the best version wins and stays.
+
+**🧠 Segment-aware emails (buyers ≠ browsers):** pstore now watches for **conversions**. When a subscriber is detected as a **hot buyer** (they clicked through to an actual purchase), instead of the standard nurture they get a specialised **post-purchase branch**: a "Did you enjoy it? One rung up the ladder" path that (a) thanks them, (b) offers a **value-ladder upsell** to a higher-tier product in the niche, and (c) asks for a **review** — closing the loop so a happy buyer becomes social proof. Standard leads still get the normal sequence; they're segmented out of the buyer branch automatically.
+
+**✨ AI-written email copy:** when an AI provider key is set (`/keys`), the follow-up/upsell emails are **AI-drafted** (subject + body) against the niche's top picks and personalised with the subscriber's first name; if AI is unavailable it falls back to the proven deterministic copy (AI is never a single point of failure).
 
 > Every email includes a working **unsubscribe link** + `List-Unsubscribe` header (required by law & Amazon). pstore handles all of this.
 

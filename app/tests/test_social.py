@@ -527,5 +527,85 @@ class TestSocialSuite(unittest.TestCase):
             server._set_setting("social.amplify.min_age_hours", "24")
 
 
+    def _seed_caption_variants(self, platform="Twitter / X"):
+        """Insert two enabled caption variants for a platform on keto-snacks."""
+        self._raw("/api/captions/save", "POST",
+                  body=json.dumps({"slug": "keto-snacks", "variants": [
+                      {"platform": platform, "variant": 1, "caption": "Caption One",
+                       "enabled": True},
+                      {"platform": platform, "variant": 2, "caption": "Caption Two",
+                       "enabled": True},
+                  ]}), cookie=self.cookie)
+
+    def test_caption_variants_publish_as_separate_posts(self):
+        """Multiple enabled caption variants for a platform become one published
+        post each, with distinct stable variant-suffixed tracked codes."""
+        self._seed_caption_variants()
+        st, _, _, data = self._raw(
+            "/api/social/publish", "POST",
+            body=json.dumps({"keyword": "keto snacks", "platform": "Twitter / X"}),
+            cookie=self.cookie)
+        self.assertEqual(st, 200)
+        res = json.loads(data)
+        tw = [k for k in res["posts"] if k["platform"] == "Twitter / X"]
+        self.assertEqual(len(tw), 2)
+        codes = [k["utm_content"] for k in tw]
+        self.assertEqual(len(set(codes)), 2)
+        for k in tw:
+            self.assertTrue(k["utm_content"].endswith("-c1")
+                            or k["utm_content"].endswith("-c2"))
+            self.assertIn("caption_variant", k)
+        self.assertEqual({k["body"] for k in tw}, {"Caption One", "Caption Two"})
+
+    def test_captions_autoclean_disables_low_clicker(self):
+        """Caption A/B autoclean keeps the high-clicking variant and disables the
+        one clicking below 25% of the leader once a platform has enough clicks."""
+        server._set_setting("ab.captions_min_clicks", "5")
+        try:
+            self._seed_caption_variants()
+            st, _, _, data = self._raw(
+                "/api/social/publish", "POST",
+                body=json.dumps({"keyword": "keto snacks", "platform": "Twitter / X"}),
+                cookie=self.cookie)
+            self.assertEqual(st, 200)
+            res = json.loads(data)
+            by_body = {k["body"]: k["utm_content"]
+                       for k in res["posts"] if k["platform"] == "Twitter / X"}
+            self.assertIn("Caption One", by_body)
+            self.assertIn("Caption Two", by_body)
+            for _ in range(30):
+                self._raw("/api/track", "POST",
+                          body=json.dumps({"slug": "keto-snacks", "source": "twitter",
+                                           "content": by_body["Caption One"]}))
+            for _ in range(2):
+                self._raw("/api/track", "POST",
+                          body=json.dumps({"slug": "keto-snacks", "source": "twitter",
+                                           "content": by_body["Caption Two"]}))
+            st2, _, _, body2 = self._raw("/api/captions/autoclean", "POST",
+                                         body=b"{}", cookie=self.cookie)
+            self.assertEqual(st2, 200)
+            d = json.loads(body2)
+            self.assertTrue(d["ok"])
+            found = [c for c in d["changed"]
+                     if c["slug"] == "keto-snacks"
+                     and c["platform"] == "twitter / x"]
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["disabled"], [2])
+            self.assertEqual(found[0]["kept"], 1)
+            with server._lock:
+                conn = server._db()
+                en2 = conn.execute(
+                    "SELECT enabled FROM social_captions WHERE slug='keto-snacks' "
+                    "AND platform='Twitter / X' AND variant=2").fetchone()
+                en1 = conn.execute(
+                    "SELECT enabled FROM social_captions WHERE slug='keto-snacks' "
+                    "AND platform='Twitter / X' AND variant=1").fetchone()
+                conn.close()
+            self.assertEqual(en1["enabled"], 1)
+            self.assertEqual(en2["enabled"], 0)
+        finally:
+            server._set_setting("ab.captions_min_clicks", "")
+
+
 if __name__ == "__main__":
     unittest.main()
