@@ -389,6 +389,32 @@ class TestSemSeoSite(unittest.TestCase):
         self.assertEqual(st, 302)
         self.assertIn("/admin/login", loc)
 
+    def test_admin_backup_requires_auth(self):
+        st, loc, _, _ = self._raw("GET", "/admin/backup")
+        self.assertEqual(st, 302)
+        self.assertIn("/admin/login", loc)
+
+    def test_admin_backup_downloads_sql_dump(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.PORT, timeout=10)
+        conn.request("GET", "/admin/backup", headers={"Cookie": self.cookie})
+        resp = conn.getresponse()
+        body = resp.read()
+        st = resp.status
+        ct = resp.getheader("Content-Type", "")
+        cdisp = resp.getheader("Content-Disposition", "")
+        conn.close()
+        self.assertEqual(st, 200)
+        self.assertIn("application/x-sqlite3", ct)
+        self.assertIn('attachment; filename="pstore-', cdisp)
+        self.assertGreater(len(body), 1000)
+        self.assertIn(b"CREATE TABLE", body[:4000])
+
+    def test_admin_backup_link_in_analyze_nav(self):
+        st, _, _, body = self._raw("GET", "/admin/analytics", cookie=self.cookie)
+        self.assertEqual(st, 200)
+        html = body.decode("utf-8", "replace")
+        self.assertIn('/admin/backup', html)
+
     # --- Structured data + noindex on public pages -------------------------
     def test_landing_schema_has_website_org(self):
         st, _, ct, body = self._raw("GET", "/")

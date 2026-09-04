@@ -1207,7 +1207,8 @@ $("pw").addEventListener("keydown", e => {{ if (e.key === "Enter") $("go").oncli
               ("/keys", "🔑 Keys", "keys"),
               ("/admin/apikeys", "🔌 API Keys", "apikeys")]),
             ("Analyze",
-             [("/admin/analytics", "📈 Analytics", "analytics")]),
+             [("/admin/analytics", "📈 Analytics", "analytics"),
+              ("/admin/backup", "💾 Backup", "backup")]),
             ("Operate",
              [("/admin/manual", "📖 Manual", "manual"),
               ("/admin", "🗺 All pages", "admin", True),
@@ -1455,6 +1456,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._admin_emails(q)
             if path == "/admin/analytics":
                 return self._admin_analytics()
+            if path == "/admin/backup":
+                return self._admin_backup()
             if path == "/admin/marketing":
                 return self._admin_marketing()
             if path == "/admin/funnel":
@@ -7017,6 +7020,24 @@ if ($("r_save")) $("r_save").onclick = async () => {{
 {_TOTOP}
 </body></html>"""
         return self._send(200, body.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _admin_backup(self):
+        """Admin-only download of the live SQLite DB (portable backup)."""
+        try:
+            with _lock:
+                conn = _db()
+                data = "".join(conn.iterdump()).encode("utf-8")
+                conn.close()
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-sqlite3")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="pstore-%s.sql"' % ts)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            return self._send(500, {"error": str(e)})
 
     def _earnings_config(self):
         """Admin: tune the commission estimator. Persists to the DB `settings`
