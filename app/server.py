@@ -22,6 +22,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import threading
 import time
@@ -55,6 +56,23 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
 DB = os.environ.get("PSTORE_DB", os.path.join(ROOT, "pstore.db"))
 PORT = int(os.environ.get("PORT", "8765"))
+
+
+def _ensure_db_file():
+    """First boot on a persistent disk: if the configured DB file is missing,
+    seed it from the in-image copy so the baked niches/settings survive."""
+    if os.path.exists(DB):
+        return
+    seed = os.path.join(ROOT, "pstore.db")
+    if os.path.exists(seed) and os.path.abspath(seed) != os.path.abspath(DB):
+        try:
+            os.makedirs(os.path.dirname(DB) or ".", exist_ok=True)
+            shutil.copyfile(seed, DB)
+        except OSError:
+            pass
+
+
+_ensure_db_file()
 
 # --- admin auth -------------------------------------------------------------
 # Everything under /admin + the owner tools/APIs sits behind an admin email +
