@@ -647,3 +647,66 @@ a.ntile span { font-size: 12px; color: var(--muted); }
 @media (max-width: 560px) {
   .pick-head h3 { flex-basis: 100%; }
 }
+
+/* ================================================================
+   BUTTON / TOOLBAR HYGIENE — no collisions, no overflow, no overlap
+   Every button-bearing flex/grid container wraps, aligns and sizes so
+   controls never run into each other or spill past the card edge,
+   regardless of how many buttons or how narrow the viewport is.
+   ================================================================ */
+/* All the flex containers that hold a button next to inputs/other buttons. */
+.row, .toolbar, .actions, .btn-group, .badges, .chips, .courier-row,
+.sec-actions, .pick-head, #scraper-keys .prow,
+[class*="btn-row"], [class*="button-row"], [class*="button-row"] {
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: 8px;
+}
+
+/* Buttons inside such containers stay their natural size and never shrink
+   into each other or collide with an adjacent input. */
+.row > button, .toolbar button, .actions button, .btn-group button,
+.row > a.btn, .toolbar a.btn, .actions a.btn, .btn-group a.btn,
+#scraper-keys .prow button, .sec-actions button, .courier-row button,
+button.mini, a.btn {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Long button labels wrap instead of overflowing the (pill) button/container. */
+button, a.btn {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+button, a.btn { min-height: 46px; }
+button.mini, button.mini, a.btn.mini { min-height: 32px; }
+
+/* Small inline/secondary buttons never fan out wider than their text needs. */
+button.mini { white-space: nowrap; }
+
+/* Section/row headers: keep the heading on its own line if buttons are wide,
+   so the title and the controls never overlap. */
+.sec-head, .pick-head { gap: 10px 14px; }
+
+/* Input+button-in-row baseline alignment: buttons align with the field bottom
+   instead of jumping to the top when a multi-line textarea is present. */
+.row { align-items: flex-end; }
+.row > *:only-child { align-self: center; }
+
+/* Solid primary action ("Generate page copy") shouldn't stretch awkwardly but
+   still fit on one line when the container is wide enough. */
+.bigbtn { width: 100%; display: flex; align-items: center; justify-content: center; text-align: center; }
+
+/* Back-to-top + sticky CTA and any fixed pill are fixed-position by nature and
+   must never be affected by flex wrapping. */
+.totop, .sticky-cta, [class*="sticky"] { flex: 0 0 auto !important; white-space: nowrap; }
+
+/* Tiny screens: let every button take full available width in a row so two
+   side-by-side buttons never squeeze together. */
+@media (max-width: 480px) {
+  .row > button, .section-editor .sec-actions button, .courier-row button { flex: 1 1 100%; }
+}

@@ -859,6 +859,160 @@ class Handler(BaseHTTPRequestHandler):
                 _EBOOKS.clear()
         return self._send(200, out)
 
+    # ------------------------------------------------------------------ AI field autofill
+    _AI_FIELD_BRIEFS = {
+        "headline": (
+            "Write a single H1 headline for an Amazon-affiliate buying guide page about this niche. "
+            "It must front-load the niche, promise a concrete outcome (Suby dream-outcome + PAS), and "
+            "be curiosity-driven and click-worthy — not hype. One sentence, under 70 characters.",
+            "headline"),
+        "subheadline": (
+            "Write the subheadline under that headline for the same buying guide. Supportive, specific "
+            "and benefit-led: tell the reader exactly what they'll get (saved time, vetted picks, no "
+            "46 open tabs). No hype, no clichés. One or two short sentences, under 130 characters.",
+            "subheadline"),
+        "badge": (
+            "Create a short badge / eyebrow label for the top pick on a buying guide page (e.g. 'Top "
+            "pick', 'Editor's choice'). 2-4 words, confident, scannable.",
+            "subheadline"),
+        "proof_label": (
+            "Write a short social-proof label shown next to a subscriber count, e.g. 'people already "
+            "grabbed this guide'. 4-8 words, encouraging, concrete.",
+            "subheadline"),
+        "benefits_title": (
+            "Write a short section title for the 'What you'll discover inside' benefits list. Honest, "
+            "benefit-framed, one line under 50 characters.",
+            "headline"),
+        "benefit": (
+            "Write one benefit line a shopper gets from this buying guide. As a concrete outcome or "
+            "pain-removed, not a feature. Under 90 characters. Return only the single line.",
+            "subheadline"),
+        "cta": (
+            "Write a strong, low-friction call-to-action button label for a product/affiliate page, e.g. "
+            "'Check price on Amazon →'. Imperative, 3-6 words, action-first.",
+            "subheadline"),
+        "gate_headline": (
+            "Write the headline for a free-PDF email lead magnet (reciprocity). Promise the free, useful "
+            "guide for the niche, under 60 characters, benefit-led.",
+            "headline"),
+        "gate_subheadline": (
+            "Write the subheadline for a free PDF email opt-in: what the guide contains, how quick it "
+            "takes, and a no-spam reassurance. 1-2 short sentences, under 130 characters.",
+            "subheadline"),
+        "button_text": (
+            "Write a short primary button label for an opt-in form, e.g. 'Send me the guide →'. Imperative, "
+            "3-6 words, low friction.",
+            "subheadline"),
+        "faq_question": (
+            "Write a question a real shopper of this niche would type into a FAQ (honest, common). One "
+            "short question, under 70 characters.",
+            "subheadline"),
+        "faq_answer": (
+            "Write a short, honest, trust-building FAQ answer about how you pick/rank products. Transparent "
+            "(we rank live Amazon data; links are affiliate and price never changes). 2-3 clear sentences.",
+            "chapter"),
+        "testimonial": (
+            "Write one believable first-person customer-style testimonial for a buying-guide page: specific, "
+            "shows a before/after or a pain solved. Do NOT fabricate hard numbers, ratings or metric claims. "
+            "1-2 sentences.",
+            "chapter"),
+        "urgency_headline": (
+            "Write a short, honest status/scarcity headline (e.g. 'Amazon prices move daily') without fake "
+            "countdown fear. Under 55 characters.",
+            "headline"),
+        "urgency_sub": (
+            "Write a short sentence reinforcing that the niche product is competitively priced now but "
+            "stock/deals shift — honest, not manipulative. Under 110 characters.",
+            "subheadline"),
+        "guarantee_headline": (
+            "Write a short headline for a trust/guarantee section (e.g. 'Our pick promise'). Under 45 "
+            "characters, reassuring.",
+            "headline"),
+        "guarantee_body": (
+            "Write 2-3 honest, reassuring sentences for a trust section: we surface listings real buyers "
+            "keep choosing, we're transparent we don't test products ourselves, and Amazon returns protect "
+            "the buyer.",
+            "chapter"),
+        "methodology_title": (
+            "Write a short title for a 'How we pick' transparency section (e.g. 'How we pick'). Under 40 "
+            "characters.",
+            "headline"),
+        "methodology_body": (
+            "Write 2-3 honest sentences for a methodology section: we pull live Amazon data and score "
+            "products on demand, rating, review volume with a pricing nudge; no placement is for sale. "
+            "Specific and credible.",
+            "chapter"),
+        "spotlight_cta": (
+            "Write a CTA label for a product spotlight on an affiliate page (imperative, 3-5 words, e.g. "
+            "'See it on Amazon →').",
+            "subheadline"),
+        "status": (
+            "Write a short, professional status/note line for this niche context. One concise sentence.",
+            "subheadline"),
+        "generic": (
+            "Write professional, specific, on-brand copy for this field, appropriate for an Amazon-affiliate "
+            "buying guide. Plain text, no markdown, no intro lines.",
+            "subheadline"),
+    }
+
+    # Map every CMS (section_type, field) to the AI brief that fits its job, so
+    # each field gets copy written for its exact purpose (headline vs. benefit
+    # vs. FAQ answer vs. CTA). Omitted fields are structural/visual and get none.
+    _AI_FILL_FIELDS = {
+        ("hero", "headline"): "headline",
+        ("hero", "subheadline"): "subheadline",
+        ("hero", "badge_text"): "badge",
+        ("social_proof", "proof_label"): "proof_label",
+        ("benefits", "title"): "benefits_title",
+        ("product_spotlight", "cta_text"): "spotlight_cta",
+        ("email_gate", "headline"): "gate_headline",
+        ("email_gate", "subheadline"): "gate_subheadline",
+        ("email_gate", "button_text"): "button_text",
+        ("email_gate", "privacy_text"): "generic",
+        ("urgency", "headline"): "urgency_headline",
+        ("urgency", "subheadline"): "urgency_sub",
+        ("guarantee", "headline"): "guarantee_headline",
+        ("guarantee", "subheadline"): "guarantee_body",
+        ("methodology", "title"): "methodology_title",
+        ("methodology", "body"): "methodology_body",
+        ("cta_band", "headline"): "headline",
+        ("cta_band", "subheadline"): "subheadline",
+        ("cta_band", "button_text"): "button_text",
+        ("testimonials", "title"): "generic",
+        ("faq", "title"): "generic",
+    }
+
+    def _ai_fill(self):
+        body = self._body()
+        niche = (body.get("niche") or "").strip()
+        field = (body.get("field") or "generic").strip().lower()
+        current = (body.get("current") or "").strip()
+        hint = (body.get("hint") or "").strip()
+        brief, template = self._AI_FIELD_BRIEFS.get(field, self._AI_FIELD_BRIEFS["generic"])
+        if not niche:
+            return self._send(400, {"error": "missing niche"})
+        if not ai.configured():
+            return self._send(200, {
+                "ok": False, "configured": False,
+                "text": "",
+                "error": ("No AI provider key is set — add one under /keys (a free "
+                          "provider works) to enable one-click AI autofill.")})
+        extra = hint
+        if current:
+            extra = (extra + " | improve on this draft: " + current) if extra else \
+                ("improve on this draft: " + current)
+        try:
+            lines = ai.generate(template, niche, brief + ((" | " + extra) if extra else ""))
+        except Exception:
+            lines = []
+        if not lines:
+            return self._send(200, {
+                "ok": False, "configured": True, "text": "",
+                "error": "The AI provider didn't return usable copy — try again, or check the key under /keys."})
+        if field in ("benefit",):
+            return self._send(200, {"ok": True, "text": lines[0]})
+        return self._send(200, {"ok": True, "text": "\n".join(lines)})
+
     # ------------------------------------------------------------------ admin auth
     def _cookie_token(self, cookie=_COOKIE):
         raw = self.headers.get("Cookie") or ""
@@ -1391,6 +1545,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 with open(os.path.join(STATIC, "ui.js"), "rb") as fh:
                     return self._send_cached(fh.read(),
                                       "application/javascript; charset=utf-8")
+            if path == "/ai-fill.js":
+                with open(os.path.join(STATIC, "ai-fill.js"), "rb") as fh:
+                    return self._send_cached(fh.read(),
+                                      "application/javascript; charset=utf-8")
             if path == "/api/settings":
                 return self._send(200, self._settings())
             if path == "/api/ai/providers":
@@ -1528,6 +1686,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._send(200, self._subjects_autoclean())
             if parsed.path == "/api/ai/models":
                 return self._ai_models()
+            if parsed.path == "/api/ai/fill":
+                return self._ai_fill()
             if parsed.path == "/api/ai/config":
                 return self._ai_config()
             if parsed.path == "/api/opportunities/expand":
@@ -3242,6 +3402,7 @@ if (inp) inp.addEventListener("keydown", e => {{ if (e.key === "Enter" && saveBt
         body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CMS — pstore</title><link rel="stylesheet" href="/style.css">
+<script src="/ai-fill.js" defer></script>
 <meta name="robots" content="noindex,nofollow">
 <style>
 .cms-layout {{ display:grid; grid-template-columns: 1fr 340px; gap: 20px; align-items:start; }}
@@ -3513,21 +3674,25 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
         section_editors = []
         for s_idx, sec in enumerate(sections):
             fid = sec["id"]
+            stype = sec.get("section_type", "")
             content = sec.get("content") or {}
             body_editor = ""
             for field in sec.get("fields", []):
                 val = content.get(field, "")
+                ai_key = self._AI_FILL_FIELDS.get((stype, field), "")
+                ai_attr = (' data-ai-fill="%s" data-ai-niche="%s"'
+                           % (e(ai_key), e(keyword))) if ai_key else ""
                 if isinstance(val, (dict, list)):
                     import json as _json
                     val = _json.dumps(val, indent=1)
                     body_editor += ('<div class="field"><label>%s</label>'
                                     '<textarea class="sec-input items-editor" data-field="%s" '
-                                    'data-sec="%d">%s</textarea></div>'
-                                    % (field.replace("_", " ").title(), field, fid, e(val)))
+                                    'data-sec="%d"%s>%s</textarea></div>'
+                                    % (field.replace("_", " ").title(), field, fid, ai_attr, e(val)))
                 else:
                     body_editor += ('<div class="field"><label>%s</label>'
-                                    '<textarea class="sec-input" data-field="%s" data-sec="%d">%s</textarea></div>'
-                                    % (field.replace("_", " ").title(), field, fid, e(val)))
+                                    '<textarea class="sec-input" data-field="%s" data-sec="%d"%s>%s</textarea></div>'
+                                    % (field.replace("_", " ").title(), field, fid, ai_attr, e(val)))
             enabled = sec.get("enabled", True)
             section_editors.append(f"""
 <div class="section-editor" data-sec="{fid}" id="sec-{fid}">
