@@ -90,6 +90,7 @@ _SESSIONS = {}  # token -> monotonic expiry
 
 _EBOOKS = {}  # keyword -> build_ebook() dict, LRU-ish (capped below)
 _SOCIAL_WEBHOOK = os.environ.get("SOCIAL_WEBHOOK", "")  # optional real-posting hook
+_CRON_SECRET = os.environ.get("EMAIL_CRON_SECRET", "")  # keyed /api/cron/send trigger
 SOCIAL_PEAK_SLOTS = (8, 12, 19)  # high-engagement schedule hours (morning/lunch/evening)
 
 _TOTOP = ('<div class="totop"><a href="#top" aria-label="Back to top">&uarr;</a></div>'
@@ -1053,6 +1054,10 @@ class Handler(BaseHTTPRequestHandler):
                 return False
             return True
 
+    def _cron_ok(self):
+        secret = (self.headers.get("X-Cron-Secret") or "").strip()
+        return bool(_CRON_SECRET) and hmac.compare_digest(secret, _CRON_SECRET)
+
     def _new_session(self):
         tok = secrets.token_hex(32)
         with _lock:
@@ -1628,6 +1633,8 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
                 return self._track_click()
             if parsed.path == "/api/pageview":
                 return self._page_view()
+            if parsed.path == "/api/cron/send" and self._cron_ok():
+                return self._sequence_send()
             if parsed.path.startswith("/api/") and not self._authed():
                 return self._send(401, {"error": "unauthorized", "auth": False})
             if parsed.path == "/api/niches":

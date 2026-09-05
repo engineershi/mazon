@@ -569,10 +569,10 @@ class TestRoutes(unittest.TestCase):
             os.unlink(cls.db)
 
     @classmethod
-    def _raw(cls, path, method="GET", body=None, cookie=None, timeout=60):
+    def _raw(cls, path, method="GET", body=None, cookie=None, timeout=60, extra_headers=None):
         import http.client
         conn = http.client.HTTPConnection("127.0.0.1", cls.PORT, timeout=timeout)
-        headers = {}
+        headers = dict(extra_headers or {})
         if cookie:
             headers["Cookie"] = cookie
         if body is not None:
@@ -1467,6 +1467,40 @@ class TestRoutes(unittest.TestCase):
             st, _, _, body = self._raw(route)
             self.assertEqual(st, 401, route)
             self.assertIn(b"unauthorized", body)
+
+    def test_cron_send_requires_secret(self):
+        st, _, _, body = self._raw("/api/cron/send", "POST",
+                                   body=b"limit=2",
+                                   extra_headers={"X-Cron-Secret": "nope"})
+        self.assertEqual(st, 401)  # EMAIL_CRON_SECRET unset -> auth gate
+        self.assertIn(b"unauthorized", body)
+
+    def test_cron_send_secret_grants_access(self):
+        import server as srv
+        saved = srv._CRON_SECRET
+        srv._CRON_SECRET = "cron-token-abc"
+        try:
+            st, _, _, body = self._raw("/api/cron/send", "POST",
+                                       body=b"limit=2",
+                                       extra_headers={"X-Cron-Secret": "cron-token-abc"})
+            payload = json.loads(body)
+            self.assertEqual(st, 200)
+            self.assertIn("ok", payload)
+        finally:
+            srv._CRON_SECRET = saved
+
+    def test_cron_send_secret_wrong_is_rejected(self):
+        import server as srv
+        saved = srv._CRON_SECRET
+        srv._CRON_SECRET = "cron-token-abc"
+        try:
+            st, _, _, body = self._raw("/api/cron/send", "POST",
+                                       body=b"limit=2",
+                                       extra_headers={"X-Cron-Secret": "wrong"})
+            self.assertEqual(st, 401)
+            self.assertIn(b"unauthorized", body)
+        finally:
+            srv._CRON_SECRET = saved
 
     def test_login_wrong_password(self):
         st, _, set_cookie, body = self._raw(
