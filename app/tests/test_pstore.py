@@ -857,6 +857,12 @@ class TestRoutes(unittest.TestCase):
             seo._GOOGLE_SITE_VERIFICATION_RUNTIME = None
             seo.set_google_site_verification('content="tok_ABC123-xyz"')
             self.assertEqual(seo.google_site_verification(), "tok_ABC123-xyz")
+            # HTML-file form: body "google-site-verification: tok" and/or a
+            # token that arrived as the file name with .html appended
+            seo._GOOGLE_SITE_VERIFICATION_RUNTIME = None
+            seo.set_google_site_verification(
+                "google-site-verification: tok_ABC123-xyz.html")
+            self.assertEqual(seo.google_site_verification(), "tok_ABC123-xyz")
             # only the token-named .html serves the verification body
             st, _, body = self._get("/%s.html" % "tok_ABC123-xyz")
             self.assertEqual(st, 200)

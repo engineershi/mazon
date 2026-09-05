@@ -30,21 +30,28 @@ _META_RE = re.compile(r"content\s*=\s*[\"']?([^\"' >]+)[\"']?", re.I)
 
 
 def _gsc_token(value):
-    """Normalize whatever the operator pasted into the bare token: handles the
-    raw token, a `content="..."` snippet, or the entire `<meta name=...>` tag
-    Google asks them to place in <head>."""
+    """Normalize whatever the operator pasted into the bare token. Handles all
+    the ways Google hands out the value:
+      * the raw token (googlexxxx…)
+      * the HTML file NAME (googlexxxx….html)
+      * the HTML file BODY (google-site-verification: googlexxxx…)
+      * a content="…" snippet
+      * the entire <meta name=…> tag they'd place in <head>"""
     val = (value or "").strip()
     if not val:
         return ""
     if val.startswith("<"):
         m = _META_RE.search(val)
-        return (m.group(1).strip() if m else "").strip()
-    if val.lower().startswith("content="):
-        v = val[len("content="):].strip()
-        if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
-            v = v[1:-1]
-        return v.strip()
-    return val
+        val = m.group(1).strip() if m else ""
+    elif val.lower().startswith("google-site-verification:"):
+        val = val.split(":", 1)[1].strip()
+    elif val.lower().startswith("content="):
+        val = val[len("content="):].strip()
+        if len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0]:
+            val = val[1:-1]
+    if val.lower().endswith(".html"):
+        val = val[:-5]
+    return val.strip()
 
 
 def set_google_site_verification(token):
