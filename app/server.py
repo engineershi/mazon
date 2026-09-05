@@ -90,6 +90,7 @@ _SESSIONS = {}  # token -> monotonic expiry
 
 _EBOOKS = {}  # keyword -> build_ebook() dict, LRU-ish (capped below)
 _SOCIAL_WEBHOOK = os.environ.get("SOCIAL_WEBHOOK", "")  # optional real-posting hook
+_PNG_CACHE = {}  # slug -> raster og card bytes (pure-Python render, capped)
 _CRON_SECRET = os.environ.get("EMAIL_CRON_SECRET", "")  # keyed /api/cron/send trigger
 _AUTOSEND_HOURS = [int(h) for h in (os.environ.get("AUTOSEND_HOURS") or "").split(",")
                    if h.strip().isdigit()]  # UTC hours the sequence auto-sends (empty=off)
@@ -273,6 +274,37 @@ def _native_posted_count(results):
     return sum(1 for r in results or [] if r and r.get("ok") and r.get("via") == "native")
 
 
+def _webhook_payload(kit):
+    """One Make/Zapier-ready payload per kit. Everything the robot needs:
+    copy + tracked link + platform + niche (slug/keyword/board) + both share
+    cards (SVG for OG, PNG raster for Pinterest-style posting)."""
+    slug = kit.get("slug") or ""
+    keyword = (kit.get("keyword") or "").strip() or slug.replace("-", " ") or "niche"
+    board = _pinterest_board(keyword)
+    image = kit.get("image") or social.og_image_url(seo.BASE_URL, slug)
+    image_png = kit.get("image_png") or social.og_image_png_url(seo.BASE_URL, slug)
+    return {
+        "body": kit.get("body") or "",
+        "link": kit.get("link") or "",
+        "platform": kit.get("platform") or "",
+        "name": kit.get("name") or "",
+        "slug": slug,
+        "keyword": keyword,
+        "board": board,
+        "image": image,
+        "image_png": image_png,
+    }
+
+
+def _pinterest_board(keyword):
+    """Human board name for one post's niche (Make routes pins to a board per
+    keyword). Usually the title-cased keyword, capped to a sane size."""
+    name = (" ".join(w.capitalize() for w in re.split(r"[^A-Za-z0-9]+",
+                                                      keyword.replace("-", " "))
+                     if w) if keyword else "Deals") or "Deals"
+    return name[:60]
+
+
 def _webhook_fire(kits):
     """Module-level, background, fire-and-forget SOCIAL_WEBHOOK POST for each
     kit (used by the timer loop; the HTTP handler uses its own instance method
@@ -286,8 +318,7 @@ def _webhook_fire(kits):
             try:
                 req = urllib.request.Request(
                     webhook,
-                    data=json.dumps({"body": kit["body"], "link": kit["link"],
-                                     "platform": kit["platform"]}).encode("utf-8"),
+                    data=json.dumps(_webhook_payload(kit)).encode("utf-8"),
                     headers={"Content-Type": "application/json"}, method="POST")
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     resp.read()
@@ -305,7 +336,7 @@ def _flush_due_social(hook=None, now=None):
         with _lock:
             conn = _db()
             rows = conn.execute(
-                "SELECT id, slug, platform, name, body, link FROM social_posts "
+                "SELECT id, slug, keyword, platform, name, body, link FROM social_posts "
                 "WHERE status='scheduled' AND scheduled_at IS NOT NULL "
                 "AND scheduled_at <= ? ORDER BY scheduled_at", (stamp,)).fetchall()
             due = [dict(r) for r in rows]
@@ -319,7 +350,7 @@ def _flush_due_social(hook=None, now=None):
         # the platforms that had no creds (skipped) fall through to the webhook.
         due_kits = [{"platform": r["platform"], "name": r["name"] or "",
                      "body": r["body"] or "", "link": r["link"] or "",
-                     "slug": r["slug"] or ""} for r in due]
+                     "slug": r["slug"] or "", "keyword": r["keyword"] or ""} for r in due]
         webhook_kits = due_kits
         try:
             if due_kits:
@@ -1480,6 +1511,9 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             og = re.match(r"^/og/([a-z0-9-]+)$", path)
             if og:
                 return self._og_image(og.group(1))
+            ogpng = re.match(r"^/og/([a-z0-9-]+)\.png$", path)
+            if ogpng:
+                return self._og_image_png(ogpng.group(1))
             go = re.match(r"^/go/([A-Z0-9]{10})$", path)
             if go:
                 return self._go(go.group(1))
@@ -4119,6 +4153,44 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                 continue
         return self._send(404, {"error": "og image not found"})
 
+    def _og_image_png(self, slug):
+        """Raster 1200x630 share card at /og/<slug>.png — the same layout as the
+        SVG card but a real PNG so Pinterest/Twitter/Facebook render it. Renders
+        once per slug (in-memory cache, capped) to hold the pure-Python cost."""
+        with _lock:
+            hit = _PNG_CACHE.get(slug)
+        if hit is None:
+            card = None
+            for n in self._all_niches():
+                try:
+                    if slug != seo._slugify(n["keyword"]):
+                        continue
+                    items = n["products"] or []
+                    pick = market_engine.pick_for_buyers(items)
+                    title = (pick or {}).get("title") or ("Best " + n["keyword"])
+                    stars = (pick or {}).get("stars")
+                    reviews = (pick or {}).get("reviews")
+                    card = social.og_png(slug, n["keyword"], title, stars, reviews)
+                    break
+                except Exception:
+                    continue
+            if card is None:
+                return self._send(404, {"error": "og image not found"})
+            with _lock:
+                if len(_PNG_CACHE) >= 48:
+                    try:
+                        _PNG_CACHE.pop(next(iter(_PNG_CACHE)))
+                    except Exception:
+                        pass
+                _PNG_CACHE[slug] = card
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.send_header("Content-Length", str(len(card)))
+        self.end_headers()
+        self.wfile.write(card)
+        return None
+
     def _social_post_page(self, slug, code):
         """Public, standalone page for one published post. Renders the actual
         post copy (platform + body) instead of redirecting to the landing page,
@@ -4204,8 +4276,7 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
                 try:
                     req = urllib.request.Request(
                         webhook,
-                        data=json.dumps({"body": kit["body"], "link": kit["link"],
-                                         "platform": kit["platform"]}).encode("utf-8"),
+                        data=json.dumps(_webhook_payload(kit)).encode("utf-8"),
                         headers={"Content-Type": "application/json"}, method="POST")
                     with urllib.request.urlopen(req, timeout=10) as resp:
                         resp.read()

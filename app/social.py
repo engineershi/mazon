@@ -57,6 +57,13 @@ def og_image_url(base_url, slug):
     return "%s/og/%s" % (base, slug)
 
 
+def og_image_png_url(base_url, slug):
+    """Absolute URL to the raster 1200x630 share card (Pinterest/Twitter/FB
+    friendly). Lives at /og/<slug>.png — the SVG card plus a real PNG."""
+    base = (base_url or "").rstrip("/")
+    return "%s/og/%s.png" % (base, slug)
+
+
 def _clip(s, n=80):
     s = str(s or "")
     return s[:n - 1].rstrip() + "…" if len(s) > n else s
@@ -173,10 +180,12 @@ def post_kits(keyword, items, base_url, slug=None):
         link = track_link(base_url, slug, platform, content)
         kit = _COMPOSERS[platform](keyword, title, proof, price, link, slug)
         kit["slug"] = slug
+        kit["keyword"] = keyword
         kit["utm_content"] = content
         kit["proof"] = proof
         kit["target"] = "landing"
         kit["image"] = og_image_url(base_url, slug)
+        kit["image_png"] = og_image_png_url(base_url, slug)
         kits.append(kit)
     return kits
 
@@ -208,11 +217,13 @@ def topic_post_kits(term, parent_keyword, items, base_url, parent_slug=None, slu
         kit = _COMPOSERS[platform]("%s %s" % (parent_keyword, term), title, proof,
                                    price, link, slug)
         kit["slug"] = slug
+        kit["keyword"] = parent_keyword
         kit["utm_content"] = content
         kit["proof"] = proof
         kit["target"] = "topic"
         kit["term"] = term
         kit["image"] = og_image_url(base_url, parent_slug)
+        kit["image_png"] = og_image_png_url(base_url, parent_slug)
         kits.append(kit)
     return kits
 
@@ -251,3 +262,207 @@ def og_svg(slug, keyword, title, stars, reviews):
 def html_esc(s):
     import html
     return html.escape(str(s or ""), quote=True)
+
+
+# ----------------------------------------------------------------------------
+# Raster share card (real PNG, stdlib-only). Pinterest/Twitter/FB reject the
+# SVG card above, so /og/<slug>.png re-draws the same layout as a genuine
+# 1200x630 PNG using a tiny built-in 5x7 font + hand-rolled encoder. No PIL,
+# no fonts, no third-party deps — a few hundred lines of pure zlib/struct.
+# ----------------------------------------------------------------------------
+
+_CANVAS = (1200, 630)
+_COLOR_GRAD = ((255, 107, 44), (124, 92, 255))  # top -> bottom (matches SVG gradient)
+
+
+def _png_encode(width, height, rgb_rows):
+    """Encode truecolor 8-bit RGB rows into PNG bytes (stdlib zlib/struct)."""
+    import struct, zlib
+    sig = b"\x89PNG\r\n\x1a\n"
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    scanlines = b"".join(b"\x00" + bytes(rgb) for rgb in rgb_rows)
+    return (sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(scanlines, 6))
+            + chunk(b"IEND", b""))
+
+
+# 5x7 pixel font (7 rows of 5 columns, "#" = on). Lowercase maps to uppercase,
+# non-ASCII falls back to a safe substitute or space.
+_FONT = {
+    "A": ("#####", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
+    "C": (".####", "#...#", "#....", "#....", "#....", "#...#", ".####"),
+    "D": ("####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."),
+    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
+    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
+    "G": (".####", "#...#", "#....", "#.###", "#...#", "#...#", ".####"),
+    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "I": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "#####"),
+    "J": ("..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."),
+    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
+    "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
+    "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
+    "N": ("#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"),
+    "O": (".####", "#...#", "#...#", "#...#", "#...#", "#...#", ".####"),
+    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
+    "Q": (".####", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
+    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
+    "S": (".####", "#....", "#....", ".####", "....#", "....#", ".####"),
+    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
+    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".####"),
+    "V": ("#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."),
+    "W": ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"),
+    "X": ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"),
+    "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
+    "Z": ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
+    "0": (".####", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".####"),
+    "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "2": (".####", "#...#", "....#", "..##.", ".#...", "#....", "#####"),
+    "3": (".####", "#...#", "....#", "..##.", "....#", "#...#", ".####"),
+    "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
+    "5": ("#####", "#....", "####.", "....#", "....#", "#...#", ".####"),
+    "6": (".####", "#....", "#....", "####.", "#...#", "#...#", ".####"),
+    "7": ("#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."),
+    "8": (".####", "#...#", "#...#", ".####", "#...#", "#...#", ".####"),
+    "9": (".####", "#...#", "#...#", ".####", "....#", "....#", ".####"),
+    " ": (".....", ".....", ".....", ".....", ".....", ".....", "....."),
+    ".": (".....", ".....", ".....", ".....", ".....", ".....", "..#.."),
+    "-": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
+    "_": (".....", ".....", ".....", ".....", ".....", ".....", "#####"),
+    "#": ("#.#..", "#.#..", "#####", "#.#..", "#####", "#.#..", "#.#.."),
+    "!": ("..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."),
+    "?": (".###.", "#...#", "....#", "..##.", "..#..", ".....", "..#.."),
+    "&": (".##..", "#..#.", "#.#..", ".##..", "#.#.#", "#..#.", ".##.#"),
+    "%": ("##..#", "##.#.", "...#.", "..#..", ".#...", ".#.##", "#..##"),
+    "/": ("....#", "....#", "...#.", "..#..", ".#...", "#....", "#...."),
+    ":": (".....", "..#..", ".....", "..#..", ".....", "..#..", "....."),
+    "'": ("..#..", "..#..", "..#..", ".....", ".....", ".....", "....."),
+    "(": ("...#.", "..#..", ".#...", "#....", "#....", ".#...", "..#.."),
+    ")": (".#...", "..#..", "...#.", "....#", "....#", "...#.", "..#.."),
+    "+": (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."),
+    ",": (".....", ".....", ".....", ".....", "..#..", "..#..", ".#..."),
+    ">": ("#....", ".#...", "..#..", "...#.", "..#..", ".#...", "#...."),
+    "<": ("....#", "...#.", "..#..", ".#...", "..#..", "...#.", "....#"),
+    "=": (".....", ".....", "#####", ".....", "#####", ".....", "....."),
+    "*": (".....", "#.#.#", ".#.#.", "#####", ".#.#.", "#.#.#", "....."),
+    '"': (".#.#.", ".#.#.", ".#.#.", ".....", ".....", ".....", "....."),
+}
+
+_SUBST = {"\u00b7": ".", "\u2026": "...", "\u2192": ">", "\u2605": "*",
+          "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2014": "-",
+          "\u2013": "-", "\u00a9": "C", "\u00ae": "R", "\u20ac": "E",
+          "\ufffc": " "}  # non-breaking / object replacements stripped below
+
+
+def _raster_text(s, x, y, scale):
+    """Pixel positions (set of (x, y)) for the uppercase text `s` drawn at
+    origin (x, y) with the built-in 5x7 font scaled `scale`x. Non-ASCII maps
+    through _SUBST, then onto the font (uppercase fallback), else a space."""
+
+    def _rows(ch):
+        if ch in _SUBST:
+            ch = _SUBST[ch]
+        if ch in _FONT:
+            return _FONT[ch]
+        u = ch.upper()
+        if u in _FONT:
+            return _FONT[u]
+        if ch == "\n":
+            return None
+        return _FONT[" "]
+
+    advance = 6 * scale + 1
+    pts = set()
+    xx, yy = x, y
+    for raw in s:
+        rows = _rows(raw)
+        if rows is None:
+            yy += 8 * scale
+            xx = x
+            continue
+        for r_i, row in enumerate(rows):
+            for c_i, cell in enumerate(row):
+                if cell != "#":
+                    continue
+                for dx in range(scale):
+                    for dy in range(scale):
+                        pts.add((xx + c_i * scale + dx, yy + r_i * scale + dy))
+        xx += advance
+    return pts
+
+
+def og_png(slug, keyword, title, stars, reviews):
+    """Raster 1200x630 share card — same story as og_svg but a real PNG so
+    Pinterest/Twitter/Facebook render it. Pure stdlib (zlib + struct)."""
+    W, H = _CANVAS
+    t0, t1 = _COLOR_GRAD
+    img = bytearray(W * H * 3)
+    for y in range(H):
+        t = y / (H - 1)
+        r = int(t0[0] + (t1[0] - t0[0]) * t)
+        g = int(t0[1] + (t1[1] - t0[1]) * t)
+        b = int(t0[2] + (t1[2] - t0[2]) * t)
+        img[y * W * 3:(y + 1) * W * 3] = bytes((r, g, b)) * W
+
+    def _stamp(pts, rgb):
+        for (px, py) in pts:
+            if 0 <= px < W and 0 <= py < H:
+                i = (py * W + px) * 3
+                img[i] = rgb[0]; img[i + 1] = rgb[1]; img[i + 2] = rgb[2]
+
+    white = (255, 255, 255)
+    # keyword pill (uppercased)
+    kw = (keyword or slug or "niche").replace("-", " ").upper()
+    kw_t = kw if len(kw) <= 26 else kw[:25] + "..."
+    _stamp(_raster_text(kw_t, 64, 88, 4), white)
+
+    # title (one or two lines at scale 5 -> 34 chars/line)
+    tr = (title or "Best picks, ranked").upper()
+    line1 = tr if len(tr) <= 34 else tr[:33] + "..."
+    _stamp(_raster_text(line1, 64, 258, 5), white)
+    if len(tr) > 34:
+        line2 = tr[33:66]
+        _stamp(_raster_text(line2 + ("..." if len(tr) > 66 else ""), 64, 302, 5), white)
+
+    # translucent bullet + white checkmark (mirrors the SVG circle + path)
+    import math
+    cx, cy, rad = 64, 430, 46
+    for dy in range(-rad, rad + 1):
+        hw = int(math.sqrt(max(0, rad * rad - dy * dy)))
+        for x in range(cx - hw, cx + hw + 1):
+            if 0 <= x < W and 0 <= cy + dy < H:
+                i = ((cy + dy) * W + x) * 3
+                img[i] = int(0.18 * 255 + 0.82 * img[i])
+                img[i + 1] = int(0.18 * 255 + 0.82 * img[i + 1])
+                img[i + 2] = int(0.18 * 255 + 0.82 * img[i + 2])
+
+    def _check_line(x0, y0, x1, y1, rgb, width):
+        pts = set()
+        steps = max(abs(x1 - x0), abs(y1 - y0), 1)
+        for i in range(steps + 1):
+            px = int(round(x0 + (x1 - x0) * i / steps))
+            py = int(round(y0 + (y1 - y0) * i / steps))
+            for dx in range(-width, width + 1):
+                for dy in range(-width, width + 1):
+                    pts.add((px + dx, py + dy))
+        _stamp(pts, rgb)
+
+    _check_line(78, 452, 96, 470, white, 5)
+    _check_line(96, 470, 126, 440, white, 5)
+
+    # rating + proof
+    if stars:
+        pr = "%.1f STARS" % stars
+        if isinstance(reviews, (int, float)):
+            pr += " / %d REVIEWS" % reviews
+    else:
+        pr = "TOP RATED"
+    _stamp(_raster_text(pr, 132, 406, 4), white)
+
+    # footer
+    _stamp(_raster_text("PSTORE > FULL LIST + LIVE PRICES", 64, 524, 3), white)
+
+    rows = (bytes(img[i:i + W * 3]) for i in range(0, len(img), W * 3))
+    return _png_encode(W, H, rows)

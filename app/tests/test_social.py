@@ -253,8 +253,14 @@ class TestSocialSuite(unittest.TestCase):
                 deadline += 1
             self.assertEqual(len(handler.received), len(social.PLATFORMS))
             first = handler.received[0]
-            for key in ("body", "link", "platform"):
+            for key in ("body", "link", "platform", "slug", "keyword", "board",
+                        "name", "image", "image_png"):
                 self.assertIn(key, first)
+            self.assertEqual(first["keyword"], "keto snacks")
+            self.assertEqual(first["slug"], "keto-snacks")
+            self.assertEqual(first["board"], "Keto Snacks")
+            self.assertTrue(first["image"].endswith("/og/keto-snacks"))
+            self.assertTrue(first["image_png"].endswith("/og/keto-snacks.png"))
         finally:
             if saved is None:
                 os.environ.pop("SOCIAL_WEBHOOK", None)
@@ -366,9 +372,28 @@ class TestSocialSuite(unittest.TestCase):
         self.assertTrue(ctype.startswith("image/svg+xml"))
         self.assertTrue(data.lstrip().startswith(b"<svg"))
 
-    def test_og_image_404_unknown_slug(self):
-        st, _, _, _ = self._raw("/og/not-a-real-niche")
+    def test_og_png_served_as_raster_card(self):
+        st, _, ctype, data = self._raw("/og/keto-snacks.png")
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("image/png"))
+        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertGreater(len(data), 1000)
+        # !read−only IHDR: 1200x630 truecolor
+        import struct as _st
+        w, h = _st.unpack(">II", data[16:24])
+        self.assertEqual((w, h), (1200, 630))
+        self.assertEqual(data[25], 2)  # color type RGB
+
+    def test_og_png_404_unknown_slug(self):
+        st, _, _, _ = self._raw("/og/not-a-real-niche.png")
         self.assertEqual(st, 404)
+
+    def test_pinterest_board_name(self):
+        self.assertEqual(server._pinterest_board("keto snacks"), "Keto Snacks")
+        self.assertEqual(server._pinterest_board(""), "Deals")
+        self.assertEqual(server._pinterest_board("skin care"),
+                         "Skin Care")
+        self.assertLessEqual(len(server._pinterest_board("x" * 120)), 60)
 
     def test_niche_page_points_og_at_generated_card(self):
         st, _, _, data = self._raw("/n/keto-snacks")
