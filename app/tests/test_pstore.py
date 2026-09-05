@@ -857,6 +857,13 @@ class TestRoutes(unittest.TestCase):
             seo._GOOGLE_SITE_VERIFICATION_RUNTIME = None
             seo.set_google_site_verification('content="tok_ABC123-xyz"')
             self.assertEqual(seo.google_site_verification(), "tok_ABC123-xyz")
+            # only the token-named .html serves the verification body
+            st, _, body = self._get("/%s.html" % "tok_ABC123-xyz")
+            self.assertEqual(st, 200)
+            self.assertIn("google-site-verification: tok_ABC123-xyz",
+                          body.decode("utf-8", "replace"))
+            st, _, _, _ = self._raw("/some-other.html")
+            self.assertEqual(st, 404)
             seo._GOOGLE_SITE_VERIFICATION_RUNTIME = saved
         finally:
             seo._GOOGLE_SITE_VERIFICATION_RUNTIME = saved

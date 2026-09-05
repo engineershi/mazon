@@ -59,6 +59,20 @@ def google_site_verification():
     if _GOOGLE_SITE_VERIFICATION_RUNTIME is not None:
         return _GOOGLE_SITE_VERIFICATION_RUNTIME
     return _gsc_token(GOOGLE_SITE_VERIFICATION)
+
+
+def serve_verification_file(path):
+    """Google's HTML-file method asks for `/<token>.html` whose body is
+    `google-site-verification: <token>` — the same token the HTML-tag method
+    uses. A single saved token therefore satisfies both methods. Returns the
+    body to serve, or None when the path isn't the verification file."""
+    t = google_site_verification()
+    if not t:
+        return None
+    base = (path or "").strip("/")
+    if base and base.lower().endswith(".html") and base[:-5] == t:
+        return "google-site-verification: %s" % t
+    return None
 # Organization identity shown in JSON-LD (schema.org Organization / Person).
 ORG_NAME = SITE_NAME
 ORG_URL = BASE_URL

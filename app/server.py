@@ -1453,6 +1453,10 @@ border:1px solid var(--border);border-radius:999px;padding:5px 11px;margin:3px 4
             key_body = indexnow.serve_key(path)
             if key_body is not None:
                 return self._send(200, key_body.encode("utf-8"), "text/plain; charset=utf-8")
+            gsc_file = seo.serve_verification_file(path)
+            if gsc_file is not None:
+                return self._send(200, gsc_file.encode("utf-8"),
+                                  "text/html; charset=utf-8")
             if path == "/api/indexnow":
                 return self._indexnow(q)
             if path == "/":
