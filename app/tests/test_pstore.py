@@ -1385,6 +1385,22 @@ class TestRoutes(unittest.TestCase):
         self.assertEqual(st, 404)
         self.assertIn("saved niche", _json.loads(body)["error"])
 
+    def test_social_publish_defaults_to_all_platforms(self):
+        """POST /api/social/publish without a platform must default to "all"
+        and build/publish every platform kit, not silently match zero (footgun
+        fixed: the handler previously defaulted to an empty platform string)."""
+        import json as _json
+        st, _, _, body = self._raw("/api/social/publish", "POST",
+                                   body=b"keyword=keto+snacks", cookie=self.cookie)
+        self.assertEqual(st, 200, body)
+        out = _json.loads(body)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["published"], 6, out)
+        self.assertEqual(len(out["posts"]), 6, out)
+        self.assertEqual({p["platform"] for p in out["posts"]},
+                         {"Twitter / X", "Facebook", "LinkedIn",
+                          "Instagram", "Pinterest", "Threads"})
+
     def test_boosts_to_social_publishes_relink(self):
         import json as _json
         from urllib.parse import urlencode

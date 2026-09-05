@@ -4205,7 +4205,7 @@ details.copy-details summary {{ cursor:pointer; color:var(--accent,#ff6b2c); fon
         row to status 'published' and fire the webhook for genuine posting."""
         body = self._body()
         keyword = str(body.get("keyword") or "").strip()
-        platform = str(body.get("platform") or "").strip()
+        platform = str(body.get("platform") or "all").strip()
         if not keyword:
             return self._send(400, {"error": "keyword required"})
         kits = self._social_kits(keyword)
