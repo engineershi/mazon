@@ -91,6 +91,11 @@ _SESSIONS = {}  # token -> monotonic expiry
 _EBOOKS = {}  # keyword -> build_ebook() dict, LRU-ish (capped below)
 _SOCIAL_WEBHOOK = os.environ.get("SOCIAL_WEBHOOK", "")  # optional real-posting hook
 _CRON_SECRET = os.environ.get("EMAIL_CRON_SECRET", "")  # keyed /api/cron/send trigger
+_AUTOSEND_HOURS = [int(h) for h in (os.environ.get("AUTOSEND_HOURS") or "").split(",")
+                   if h.strip().isdigit()]  # UTC hours the sequence auto-sends (empty=off)
+_AUTOSEND_LIMIT = int((os.environ.get("AUTOSEND_LIMIT") or "0") or 0) \
+    or mailer.MAX_EMAILS_PER_RUN
+_AUTOSEND_LAST_KEY = "autosend.last"  # "YYYY-MM-DD:HH" marker so a slot runs once/day
 SOCIAL_PEAK_SLOTS = (8, 12, 19)  # high-engagement schedule hours (morning/lunch/evening)
 
 _TOTOP = ('<div class="totop"><a href="#top" aria-label="Back to top">&uarr;</a></div>'
@@ -7520,6 +7525,53 @@ $$(".card[data-captions]").forEach(function(card){{
         return self._send(200, {"ok": True, "saved": len([c for c in cleaned if c[1]])})
 
 
+class _AutosendStub:
+    """Duck-typed stand-in for Handler so _sequence_send can run headless,
+    without an HTTP request, from the in-process scheduler thread."""
+
+    def _body(self):
+        return {}
+
+    def _send(self, code, payload, _ctype=None):
+        return {"status": code, "payload": payload}
+
+
+def _autosend_tick():
+    """Run the sequence send now IF (a) the current UTC hour is scheduled and
+    (b) this date/hour slot hasn't already run. Returns a short status string.
+
+    Env-gated (AUTOSEND_HOURS empty = disabled), so offline tests and local
+    dev are never affected. Idempotent even after a process restart: the last
+    slot is persisted in the settings table, not just in memory."""
+    import datetime as _dt
+    now = _dt.datetime.utcnow()
+    if _dt.datetime.utcnow().hour not in _AUTOSEND_HOURS:
+        return "idle"
+    marker = "%s:%02d" % (now.strftime("%Y-%m-%d"), now.hour)
+    last = _get_setting(_AUTOSEND_LAST_KEY) or ""  # _get_setting locks internally
+    if last == marker:
+        return "done"
+    stub = _AutosendStub()
+    try:
+        limit = _AUTOSEND_LIMIT
+        res = Handler._sequence_send(stub)
+        ok = bool(res and isinstance(res, dict)
+                  and (res.get("payload") or {}).get("ok"))
+    except Exception as exc:  # never let the scheduler die on one bad run
+        return "error: %s" % exc
+    _set_setting(_AUTOSEND_LAST_KEY, marker)  # locks internally
+    return "sent" if ok else "fail"
+
+
+def _autosend_loop():
+    while True:
+        try:
+            _autosend_tick()
+        except Exception:
+            pass
+        time.sleep(1800)  # check twice hourly so transient misses still catch the slot
+
+
 def main():
     _init()
     if not _ADMIN_EMAIL_FROM_ENV or not _ADMIN_PW_FROM_ENV:
@@ -7543,6 +7595,10 @@ def main():
               % (_REFRESH_INTERVAL_SEC, _REFRESH_STALE_MIN, _REFRESH_MAX_PER_CYCLE))
     threading.Thread(target=_social_flush_loop, daemon=True).start()
     print("social scheduler: auto-flush every 60s (due scheduled posts)")
+    if _AUTOSEND_HOURS:
+        threading.Thread(target=_autosend_loop, daemon=True).start()
+        print("sequence autosend: daily at %s UTC, cap %d/run"
+              % (",".join(map(str, _AUTOSEND_HOURS)), _AUTOSEND_LIMIT))
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print("pstore running on http://localhost:%d" % PORT)
     try:

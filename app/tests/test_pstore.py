@@ -1502,6 +1502,29 @@ class TestRoutes(unittest.TestCase):
         finally:
             srv._CRON_SECRET = saved
 
+    def test_autosend_disabled_when_env_unset(self):
+        import server as srv
+        saved = srv._AUTOSEND_HOURS
+        srv._AUTOSEND_HOURS = []
+        try:
+            self.assertEqual(srv._autosend_tick(), "idle")
+        finally:
+            srv._AUTOSEND_HOURS = saved
+
+    def test_autosend_tick_runs_slot_and_marks_done(self):
+        import datetime as dt
+        import server as srv
+        saved_hours, saved_marker = srv._AUTOSEND_HOURS, srv._AUTOSEND_LAST_KEY
+        srv._AUTOSEND_HOURS = [dt.datetime.utcnow().hour]
+        srv._AUTOSEND_LAST_KEY = "autosend.test_last"
+        try:
+            first = srv._autosend_tick()
+            self.assertIn(first, ("sent", "fail"))  # no subscribers -> sent(ok) or smtp-unconfigured
+            second = srv._autosend_tick()
+            self.assertEqual(second, "done")  # marker persisted, slot won't resend
+        finally:
+            srv._AUTOSEND_HOURS, srv._AUTOSEND_LAST_KEY = saved_hours, saved_marker
+
     def test_login_wrong_password(self):
         st, _, set_cookie, body = self._raw(
             "/admin/login", "POST", body=b"email=owner@test.example&password=nope")
