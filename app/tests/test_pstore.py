@@ -835,6 +835,32 @@ class TestRoutes(unittest.TestCase):
         finally:
             seo._GOOGLE_SITE_VERIFICATION_RUNTIME = saved
 
+    def test_keys_save_gsc_accepts_full_meta_tag(self):
+        """Pasting the entire <meta name="google-site-verification" ... /> tag
+        Google hands you (or just the content="..." bit) must normalize to the
+        bare token — operators copy that snippet, not the raw token."""
+        import json as _json
+        from urllib.parse import urlencode
+        saved = seo._GOOGLE_SITE_VERIFICATION_RUNTIME
+        try:
+            snippet = '<meta name="google-site-verification" content="tok_ABC123-xyz" />'
+            body = urlencode({"group": "site", "keyid": "gsc",
+                              "key": snippet}).encode()
+            st, _, _, body = self._raw("/api/keys/save", "POST", body=body,
+                                       cookie=self.cookie)
+            self.assertEqual(st, 200)
+            self.assertTrue(_json.loads(body)["ok"])
+            self.assertEqual(seo.google_site_verification(), "tok_ABC123-xyz")
+            st, _, body = self._get("/")
+            self.assertIn('content="tok_ABC123-xyz"', body.decode("utf-8", "replace"))
+            # content-only form
+            seo._GOOGLE_SITE_VERIFICATION_RUNTIME = None
+            seo.set_google_site_verification('content="tok_ABC123-xyz"')
+            self.assertEqual(seo.google_site_verification(), "tok_ABC123-xyz")
+            seo._GOOGLE_SITE_VERIFICATION_RUNTIME = saved
+        finally:
+            seo._GOOGLE_SITE_VERIFICATION_RUNTIME = saved
+
     def test_keys_test_gsc_format(self):
         import json as _json
         from urllib.parse import urlencode

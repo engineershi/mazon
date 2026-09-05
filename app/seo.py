@@ -26,17 +26,39 @@ GOOGLE_SITE_VERIFICATION = os.environ.get("PSTORE_GOOGLE_SITE_VERIFICATION", "")
 _GOOGLE_SITE_VERIFICATION_RUNTIME = None
 
 
+_META_RE = re.compile(r"content\s*=\s*[\"']?([^\"' >]+)[\"']?", re.I)
+
+
+def _gsc_token(value):
+    """Normalize whatever the operator pasted into the bare token: handles the
+    raw token, a `content="..."` snippet, or the entire `<meta name=...>` tag
+    Google asks them to place in <head>."""
+    val = (value or "").strip()
+    if not val:
+        return ""
+    if val.startswith("<"):
+        m = _META_RE.search(val)
+        return (m.group(1).strip() if m else "").strip()
+    if val.lower().startswith("content="):
+        v = val[len("content="):].strip()
+        if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
+            v = v[1:-1]
+        return v.strip()
+    return val
+
+
 def set_google_site_verification(token):
-    """Set (or clear with "") the Google Search Console token for this process."""
+    """Set (or clear with "") the Google Search Console token for this process.
+    Accepts the bare token or the whole meta tag / content snippet."""
     global _GOOGLE_SITE_VERIFICATION_RUNTIME
-    _GOOGLE_SITE_VERIFICATION_RUNTIME = (token or "").strip()
+    _GOOGLE_SITE_VERIFICATION_RUNTIME = _gsc_token(token)
 
 
 def google_site_verification():
     """Effective token: runtime override first, else env (module-load) value."""
     if _GOOGLE_SITE_VERIFICATION_RUNTIME is not None:
         return _GOOGLE_SITE_VERIFICATION_RUNTIME
-    return GOOGLE_SITE_VERIFICATION
+    return _gsc_token(GOOGLE_SITE_VERIFICATION)
 # Organization identity shown in JSON-LD (schema.org Organization / Person).
 ORG_NAME = SITE_NAME
 ORG_URL = BASE_URL
