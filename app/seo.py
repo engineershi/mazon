@@ -69,16 +69,21 @@ def google_site_verification():
 
 
 def serve_verification_file(path):
-    """Google's HTML-file method asks for `/<token>.html` whose body is
-    `google-site-verification: <token>` — the same token the HTML-tag method
-    uses. A single saved token therefore satisfies both methods. Returns the
-    body to serve, or None when the path isn't the verification file."""
+    """Google's HTML-file method asks for `/<token>.html`. Current GSC checks
+    the served document for the matching <meta> tag (a plain
+    `google-site-verification:` text line alone is now rejected as wrong
+    content), so serve a full HTML document mirroring Google's download:
+    meta tag in <head> plus the legacy plain-text line in <body>."""
     t = google_site_verification()
     if not t:
         return None
     base = (path or "").strip("/")
     if base and base.lower().endswith(".html") and base[:-5] == t:
-        return "google-site-verification: %s" % t
+        return ("<!DOCTYPE html>\n"
+                "<html xmlns=\"http://www.w3.org/1999/xhtml\">\n"
+                "<head>\n<meta name=\"google-site-verification\" "
+                "content=\"%s\" />\n</head>\n<body>\n"
+                "google-site-verification: %s\n</body>\n</html>\n") % (t, t)
     return None
 # Organization identity shown in JSON-LD (schema.org Organization / Person).
 ORG_NAME = SITE_NAME

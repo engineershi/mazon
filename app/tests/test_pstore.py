@@ -866,8 +866,14 @@ class TestRoutes(unittest.TestCase):
             # only the token-named .html serves the verification body
             st, _, body = self._get("/%s.html" % "tok_ABC123-xyz")
             self.assertEqual(st, 200)
-            self.assertIn("google-site-verification: tok_ABC123-xyz",
-                          body.decode("utf-8", "replace"))
+            body = body.decode("utf-8", "replace")
+            self.assertIn("google-site-verification: tok_ABC123-xyz", body)
+            # GSC now requires the <meta> tag in the served file, not just the
+            # legacy plain-text line (a meta-less body is rejected as wrong
+            # content) — the served doc must carry the tag in <head>
+            self.assertIn('<meta name="google-site-verification" '
+                          'content="tok_ABC123-xyz" />', body)
+            self.assertIn("</html>", body)
             st, _, _, _ = self._raw("/some-other.html")
             self.assertEqual(st, 404)
             seo._GOOGLE_SITE_VERIFICATION_RUNTIME = saved
