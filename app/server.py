@@ -6778,6 +6778,13 @@ $("send").onclick = async () => {{
             % (p["name"], ' selected' if p["name"] == _active else "",
                seo._clean(p["label"]), " · in use" if p["active"] else "")
             for p in _providers)
+        _models_opt = "".join(
+            '<option value="%s">%s</option>' % (seo._clean(m), seo._clean(m))
+            for p in _providers for m in p.get("models") or [])
+        _models_json = json.dumps({p["name"]: p.get("models") or []
+                                   for p in _providers})
+        _models_json = (_models_json.replace("&", "&amp;").replace("<", "&lt;")
+                        .replace(">", "&gt;"))
         if _active:
             for p in _providers:
                 if p["name"] == _active:
@@ -6818,7 +6825,7 @@ $("send").onclick = async () => {{
     <label>Model <input id="ai-model" name="model" list="ai-models" placeholder="e.g. kimi-k2.5-free"></label>
     <label>Base URL <input id="ai-base" name="base_url" placeholder="optional override"></label>
   </div>
-  <datalist id="ai-models"></datalist>
+  <datalist id="ai-models">{_models_opt}</datalist>
   <div class="row" style="gap:8px">
     <button class="warm" type="button" id="ai-test">Test key ✓</button>
     <button type="button" id="ai-models-btn">Load models</button>
@@ -6840,6 +6847,16 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
   var sel=document.getElementById('ai-provider'), key=document.getElementById('ai-key'),
       model=document.getElementById('ai-model'), base=document.getElementById('ai-base'),
       dl=document.getElementById('ai-models'), out=document.getElementById('ai-out');
+  var MODELS = {_models_json};
+  function fillModels(prov){{
+    dl.innerHTML='';
+    var ids = MODELS[prov] || [];
+    ids.forEach(function(id){{ var o=document.createElement('option'); o.value=id; dl.appendChild(o); }});
+    model.placeholder = ids.length ? 'pick a free model ('+ids.length+' available)'
+                                   : 'e.g. kimi-k2.5-free';
+  }}
+  fillModels(sel.value);
+  sel.addEventListener('change', function(){{ fillModels(sel.value); model.value=''; }});
   function say(t, ok){{ out.textContent=t; out.style.color = ok ? '#1e8e3e' : '#d64545'; }}
   function str(v){{ return (v==null ? '' : String(v)).trim(); }}
   function payload(){{
@@ -6861,12 +6878,17 @@ AI status: {"<b>configured</b> (%s · %s)" % (seo._clean(_active), seo._clean(ai
     if(!str(key.value)){{ say('✗ Paste a key first, then load models.', false); return; }}
     out.textContent='Loading models…'; out.style.color='#666';
     var d = await post('/api/ai/models');
+    var fresh = d.models||[];
+    var known = MODELS[sel.value] || [];
+    var merged = [];
+    known.forEach(function(m){{ if(merged.indexOf(m) < 0) merged.push(m); }});
+    fresh.forEach(function(m){{ if(merged.indexOf(m) < 0) merged.push(m); }});
+    MODELS[sel.value] = merged;
     dl.innerHTML='';
-    var ids = d.models||[];
-    if(!ids.length){{ say('No models returned — check the key.', false); return; }}
-    ids.forEach(function(id){{ var o=document.createElement('option'); o.value=id; dl.appendChild(o); }});
-    model.placeholder='pick from '+ids.length+' models';
-    say('Loaded '+ids.length+' models.', true);
+    merged.forEach(function(id){{ var o=document.createElement('option'); o.value=id; dl.appendChild(o); }});
+    model.placeholder = 'pick from '+merged.length+' models';
+    say(fresh.length ? ('Loaded '+fresh.length+' live models.');
+                      : 'No live models returned — showing known free models.', true);
   }};
   document.getElementById('ai-use').onclick = async function(){{
     if(!str(key.value)){{ say('✗ Paste a key first.', false); return; }}

@@ -35,6 +35,10 @@ PROVIDERS = {
         "model_env": "AI_MODEL",
         "base": "https://api.openai.com/v1",
         "model": "gpt-4o-mini",
+        "models": [
+            "gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1-nano",
+            "o4-mini", "o3-mini", "gpt-5-mini",
+        ],
         "key_hint": "sk-... (platform.openai.com/api-keys)",
         "home": "https://platform.openai.com/api-keys",
         "free": False,
@@ -46,6 +50,13 @@ PROVIDERS = {
         "model_env": "OPENCODE_MODEL",
         "base": "https://opencode.ai/zen/v1",
         "model": "kimi-k2.5-free",
+        "models": [
+            "kimi-k2.5-free", "kimi-k2.5", "kimi-k2.6", "kimi-k3",
+            "mimo-v2.5-free", "mimo-v2-flash-free", "mimo-v2-pro-free",
+            "hy3-free", "ling-3.0-flash-fin-free",
+            "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
+            "glm-5.1", "glm-5.2", "qwen3.6-plus-free", "minimax-m2.5-free",
+        ],
         "key_hint": "open code key (opencode.ai/zen) — free models like kimi-k2.5-free",
         "home": "https://opencode.ai/zen",
         "free": True,
@@ -56,7 +67,11 @@ PROVIDERS = {
         "base_env": "MISTRAL_BASE_URL",
         "model_env": "MISTRAL_MODEL",
         "base": "https://api.mistral.ai/v1",
-        "model": "mistral-small-latest",
+        "model": "open-mistral-7b",
+        "models": [
+            "open-mistral-7b", "open-mixtral-8x7b",
+            "mistral-small-latest", "mistral-medium-latest", "mistral-large-latest",
+        ],
         "key_hint": "console.mistral.ai key — free Experiment plan",
         "home": "https://console.mistral.ai",
         "free": True,
@@ -68,6 +83,11 @@ PROVIDERS = {
         "model_env": "NVIDIA_MODEL",
         "base": "https://integrate.api.nvidia.com/v1",
         "model": "meta/llama-3.3-70b-instruct",
+        "models": [
+            "meta/llama-3.3-70b-instruct", "meta/llama-3.1-405b-instruct",
+            "mistralai/mistral-nemo-12b-v1", "google/gemma-2-27b-it",
+            "deepseek-ai/deepseek-v3", "nvidia/llama-3.1-nemotron-70b-instruct",
+        ],
         "key_hint": "nvapi-... (build.nvidia.com) — free NIM models",
         "home": "https://build.nvidia.com",
         "free": True,
@@ -118,6 +138,20 @@ def model_for(provider):
     return os.environ.get(meta["model_env"], "") or meta["model"]
 
 
+def models_for(provider):
+    """Selectable model ids for a provider: curated free list first, then the
+    default. Keeps the picker useful even when the provider /models API is
+    unreachable (free tiers throttle it hard)."""
+    meta = PROVIDERS.get(provider)
+    if not meta:
+        return []
+    models = list(meta.get("models") or [])
+    default = meta.get("model")
+    if default and default not in models:
+        models.insert(0, default)
+    return models
+
+
 def _has_key(provider):
     return bool(key_for(provider))
 
@@ -160,6 +194,7 @@ def providers():
             "key_env": meta["key_env"],
             "model_env": meta["model_env"],
             "default_model": meta["model"],
+            "models": models_for(name),
             "base_url": meta["base"],
             "home": meta["home"],
             "key_hint": meta["key_hint"],

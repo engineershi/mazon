@@ -1116,6 +1116,31 @@ class TestRoutes(unittest.TestCase):
                                 cookie=self.cookie)
         self.assertEqual(server._get_setting("scraper.key.scraperapi"), "scraper-secret")
 
+    def test_ai_models_curated_list_and_ebooks_selection_ui(self):
+        import ai as _ai
+        saved_runtime = dict(_ai._RUNTIME)
+        try:
+            # every provider exposes a non-empty curated model selection
+            provs = _ai.providers()
+            by_name = {p["name"]: p for p in provs}
+            self.assertIn("models", by_name["mistral"])
+            self.assertIn("open-mistral-7b", by_name["mistral"]["models"])
+            self.assertIn("kimi-k2.5-free", by_name["opencode"]["models"])
+            # models_for() includes the default first when not already present
+            self.assertEqual(_ai.models_for("mistral")[0], "open-mistral-7b")
+            # the /admin/ebooks page injects the curated map + seeds the datalist
+            st, _ct, _sc, body = self._raw("/admin/ebooks", cookie=self.cookie)
+            self.assertEqual(st, 200)
+            html = body.decode("utf-8", "replace")
+            self.assertIn("var MODELS", html)
+            self.assertIn("kimi-k2.5-free", html)
+            self.assertIn("open-mistral-7b", html)
+            self.assertIn("ai-models", html)
+            self.assertIn("fillModels", html)
+        finally:
+            _ai._RUNTIME.clear()
+            _ai._RUNTIME.update(saved_runtime)
+
     def test_twitter_subkeys_map_in_publish_key_getter(self):
         server._set_setting("social.key.twitter", "BASE")
         server._set_setting("social.key.twitter.client_id", "CK")
