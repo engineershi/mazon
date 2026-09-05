@@ -456,6 +456,35 @@ class TestSocialSuite(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertFalse(res.get("webhook"))
 
+    def test_ui_saved_webhook_activates_after_restart(self):
+        """A webhook saved on /admin/apikeys must actually fire after a
+        restart — the boot restore rehydrates _SOCIAL_WEBHOOK from the DB
+        (env still wins). Regression: UI-saved webhooks only showed in admin
+        and never reached the publishing path."""
+        saved_env = os.environ.get("SOCIAL_WEBHOOK")
+        saved_mod = server._SOCIAL_WEBHOOK
+        try:
+            os.environ.pop("SOCIAL_WEBHOOK", None)
+            server._set_setting("social.webhook", "https://hook.example/restart")
+            # simulate cold boot: module value empty, restore re-runs
+            server._SOCIAL_WEBHOOK = ""
+            server._init()
+            self.assertEqual(server._SOCIAL_WEBHOOK, "https://hook.example/restart")
+            st, _, _, data = self._raw(
+                "/api/social/publish", "POST",
+                body=json.dumps({"keyword": "keto snacks", "platform": "Facebook"}),
+                cookie=self.cookie)
+            res = json.loads(data)
+            self.assertEqual(st, 200)
+            self.assertTrue(res.get("webhook"))
+        finally:
+            server._set_setting("social.webhook", "")
+            server._SOCIAL_WEBHOOK = saved_mod
+            if saved_env is None:
+                os.environ.pop("SOCIAL_WEBHOOK", None)
+            else:
+                os.environ["SOCIAL_WEBHOOK"] = saved_env
+
     def test_auto_amplify_requeues_winner_to_scheduled(self):
         # seed a published post with clicks, old enough to be re-amplified
         import datetime as _dt

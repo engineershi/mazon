@@ -680,6 +680,15 @@ def _init():
         )
     except Exception:
         pass
+    # A social webhook saved on /admin/apikeys only took effect for the UI
+    # until now: the publishing path reads the boot-time value (env first).
+    # Rehydrate it here so a UI-saved webhook actually fires after a restart.
+    try:
+        global _SOCIAL_WEBHOOK
+        if not _SOCIAL_WEBHOOK:
+            _SOCIAL_WEBHOOK = _get_setting("social.webhook") or ""
+    except Exception:
+        pass
     # Rehydrate key groups that were persisted via the UI so they survive a
     # restart/redeploy (env vars still take priority at read time). Scraper
     # keys + AI provider keys come back into the in-memory runtime modules.
