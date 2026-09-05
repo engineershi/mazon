@@ -1056,6 +1056,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _cron_ok(self):
         secret = (self.headers.get("X-Cron-Secret") or "").strip()
+        if not secret:
+            parsed = urllib.parse.urlsplit(self.path)
+            return bool(_CRON_SECRET) and any(
+                hmac.compare_digest(v, _CRON_SECRET)
+                for v in urllib.parse.parse_qs(parsed.query).get("cron_secret", []))
         return bool(_CRON_SECRET) and hmac.compare_digest(secret, _CRON_SECRET)
 
     def _new_session(self):
